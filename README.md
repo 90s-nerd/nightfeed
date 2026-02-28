@@ -57,6 +57,57 @@ Important deployment note:
 - Because of that, the Docker image is configured with a single Gunicorn worker.
 - Running multiple web workers would start multiple scheduler threads and can lead to duplicate refresh attempts.
 
+## GHCR Publishing
+
+This repo includes a GitHub Actions workflow that publishes container images to GitHub Container Registry.
+
+Published tags:
+
+- push to `main`: `ghcr.io/90s-nerd/nightfeed:edge`
+- push a release tag like `v0.1.0`:
+  - `ghcr.io/90s-nerd/nightfeed:v0.1.0`
+  - `ghcr.io/90s-nerd/nightfeed:sha-<commit>`
+  - `ghcr.io/90s-nerd/nightfeed:latest`
+
+How to use it:
+
+1. Push commits to `main` when you want an `edge` image.
+2. Create and push a tag when you want a stable release image:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+3. In your homelab, pin the compose file to a release tag instead of `latest`:
+
+```yaml
+services:
+  nightfeed:
+    image: ghcr.io/90s-nerd/nightfeed:v0.1.0
+    ports:
+      - "5000:5000"
+    environment:
+      NIGHTFEED_DATABASE_PATH: /app/data/rss_site_bridge.db
+      NIGHTFEED_START_SCHEDULER: "1"
+    volumes:
+      - /opt/nightfeed/data:/app/data
+    restart: unless-stopped
+```
+
+4. Deploy or update on the homelab host with:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+GitHub setup notes:
+
+- The workflow uses the built-in `GITHUB_TOKEN`; no extra registry password is required for publishing to GHCR from this repo.
+- Make sure GitHub Actions is enabled for the repository.
+- If you want anonymous pulls in the homelab, set the published package visibility to public in the GitHub package settings.
+
 ## Older Pip Fallback
 
 If your local `pip` or setuptools environment is too old to build directly from `pyproject.toml`, use the compatibility fallback:
