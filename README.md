@@ -46,6 +46,13 @@ Files are persisted by mounting the local `./data` directory into the container:
 - host: `./data`
 - container: `/app/data`
 
+If the container was previously started with a different image and failed to open the SQLite database, rebuild and recreate it:
+
+```bash
+docker compose down
+docker compose up --build -d
+```
+
 Environment variables supported by the container:
 
 - `NIGHTFEED_DATABASE_PATH`: SQLite database path inside the container. Default: `/app/data/rss_site_bridge.db`
