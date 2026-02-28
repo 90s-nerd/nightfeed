@@ -704,6 +704,47 @@ class AppTestCase(unittest.TestCase):
 
             self.assertEqual(200, response.status_code)
             self.assertIn(b"Overview", response.data)
+            self.assertIn(f"http://localhost/feeds/{profile.feed_token}.xml".encode(), response.data)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_profile_route_uses_forwarded_https_host_from_reverse_proxy(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+
+            client = app.test_client()
+            response = client.get(
+                f"/profiles/{profile.id}",
+                headers={
+                    "X-Forwarded-Proto": "https",
+                    "X-Forwarded-Host": "rss.example.com",
+                    "X-Forwarded-Port": "443",
+                },
+            )
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(f"https://rss.example.com/feeds/{profile.feed_token}.xml".encode(), response.data)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_purge_route_removes_stored_entries_without_deleting_profile(self):
@@ -1198,12 +1239,82 @@ class AppTestCase(unittest.TestCase):
             client = app.test_client()
             response = client.post(
                 "/settings",
-                data={"timezone_name": "America/Chicago"},
+                data={
+                    "timezone_name": "America/Chicago",
+                    "public_base_url": "https://rss.example.com",
+                },
             )
 
             self.assertEqual(302, response.status_code)
             settings = get_app_settings(db_path)
             self.assertEqual("America/Chicago", settings.timezone_name)
+            self.assertEqual("https://rss.example.com", settings.public_base_url)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_settings_route_rejects_invalid_public_base_url(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            client = app.test_client()
+            response = client.post(
+                "/settings",
+                data={
+                    "timezone_name": "UTC",
+                    "public_base_url": "https://rss.example.com/base",
+                },
+            )
+
+            self.assertEqual(400, response.status_code)
+            self.assertIn(b"Public base URL must include only scheme and host", response.data)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_profile_route_uses_public_base_url_override_for_feed_url(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+
+            client = app.test_client()
+            client.post(
+                "/settings",
+                data={
+                    "timezone_name": "UTC",
+                    "public_base_url": "https://rss.example.com",
+                },
+            )
+
+            response = client.get(f"/profiles/{profile.id}")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(f"https://rss.example.com/feeds/{profile.feed_token}.xml".encode(), response.data)
+            self.assertIn(f"/feeds/{profile.feed_token}/view".encode(), response.data)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_ajax_refresh_route_returns_json_without_redirect(self):

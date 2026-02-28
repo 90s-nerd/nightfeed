@@ -115,6 +115,11 @@ GitHub setup notes:
 - Make sure GitHub Actions is enabled for the repository.
 - If you want anonymous pulls in the homelab, set the published package visibility to public in the GitHub package settings.
 
+Reverse proxy note:
+
+- Nightfeed honors standard `X-Forwarded-Proto`, `X-Forwarded-Host`, and related proxy headers, so feed URLs can render as `https://...` when the app is behind Nginx Proxy Manager, Traefik, or a similar reverse proxy.
+- If you want feed URLs to always use a fixed public host, set `Public base URL` in the Nightfeed settings page.
+
 ## Older Pip Fallback
 
 If your local `pip` or setuptools environment is too old to build directly from `pyproject.toml`, use the compatibility fallback:

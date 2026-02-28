@@ -10,7 +10,7 @@
   </div>
   <div class="topbar-actions">
     <a class="btn btn-secondary" href="/profiles/{{ profile.id }}">Back to feed</a>
-    <a class="btn btn-primary" href="/feeds/{{ profile.feed_token }}.xml">Open raw XML</a>
+    <a class="btn btn-primary" href="{{ feed_url }}">Open raw XML</a>
   </div>
 </header>
 {% endblock %}
