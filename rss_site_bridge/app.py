@@ -35,6 +35,11 @@ except ModuleNotFoundError:
     stream_with_context = None
     url_for = None
 
+try:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+except ModuleNotFoundError:
+    ProxyFix = None
+
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_USER_AGENT = "rss-site-bridge/0.2 (+https://localhost)"
@@ -133,6 +138,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         raise RuntimeError("Flask is required to run the web application.")
 
     app = Flask(__name__)
+    if ProxyFix is not None:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 
     db_path = Path(os.environ.get("NIGHTFEED_DATABASE_PATH", "data/rss_site_bridge.db"))
     start_scheduler = os.environ.get("NIGHTFEED_START_SCHEDULER", "1").strip().lower() not in {

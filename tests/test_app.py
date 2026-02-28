@@ -707,6 +707,46 @@ class AppTestCase(unittest.TestCase):
             self.assertIn(f"http://localhost/feeds/{profile.feed_token}.xml".encode(), response.data)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_profile_route_uses_forwarded_https_host_from_reverse_proxy(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+
+            client = app.test_client()
+            response = client.get(
+                f"/profiles/{profile.id}",
+                headers={
+                    "X-Forwarded-Proto": "https",
+                    "X-Forwarded-Host": "rss.example.com",
+                    "X-Forwarded-Port": "443",
+                },
+            )
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(f"https://rss.example.com/feeds/{profile.feed_token}.xml".encode(), response.data)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_purge_route_removes_stored_entries_without_deleting_profile(self):
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "rss.db"
