@@ -7,9 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN adduser --disabled-password --gecos "" appuser \
-    && mkdir -p /app/data \
-    && chown -R appuser:appuser /app
+RUN mkdir -p /app/data
 
 COPY pyproject.toml setup.py README.md ./
 COPY rss_site_bridge ./rss_site_bridge
@@ -17,8 +15,6 @@ COPY wsgi.py ./
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
-
-USER appuser
 
 EXPOSE 5000
 
