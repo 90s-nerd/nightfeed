@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}{{ profile.feed_title }} XML · Nightfeed{% endblock %}
+
+{% block page_header %}
+<header class="topbar">
+  <div class="page-title">
+    <h1>{{ profile.feed_title }} XML</h1>
+    <p>Formatted XML view inside Nightfeed.</p>
+  </div>
+  <div class="topbar-actions">
+    <a class="btn btn-secondary" href="/profiles/{{ profile.id }}">Back to feed</a>
+    <a class="btn btn-primary" href="/feeds/{{ profile.feed_token }}.xml">Open raw XML</a>
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<section class="surface section">
+  <div class="section-head">
+    <div>
+      <div class="section-kicker">Formatted output</div>
+      <h2>RSS XML</h2>
+      <p>Compact syntax highlighting with the same visual system as the rest of the app.</p>
+    </div>
+  </div>
+
+  <div style="border:1px solid var(--line); border-radius:16px; background:#1a2230; overflow:auto;">
+    <pre style="margin:0; padding:18px; white-space:pre-wrap; word-break:break-word; line-height:1.2; font-size:0.84rem; color:#f8fafc; font-family:ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;"><span class="xml-view">{{ xml_payload | safe }}</span></pre>
+  </div>
+</section>
+
+<style>
+  .xml-view .xml-prolog { color: #c792ea; }
+  .xml-view .xml-tag-name { color: #7dd3fc; }
+  .xml-view .xml-attr-name { color: #f9a8d4; }
+  .xml-view .xml-attr-value { color: #86efac; }
+  .xml-view .xml-punct { color: #d8e1eb; }
+  .xml-view .xml-text { color: #f8fafc; }
+</style>
+{% endblock %}

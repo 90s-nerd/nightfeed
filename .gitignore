@@ -1,0 +1,29 @@
+.DS_Store
+
+# Python caches and artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local app data
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Editor files
+.idea/
+.vscode/

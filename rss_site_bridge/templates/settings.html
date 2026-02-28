@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Settings · Nightfeed{% endblock %}
+
+{% block page_header %}
+<header class="topbar">
+  <div class="page-title">
+    <h1>Settings</h1>
+    <p>Set the timezone Nightfeed should use when rendering refresh and item timestamps.</p>
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<section class="surface section" style="max-width: 720px;">
+  <div class="section-head">
+    <div>
+      <div class="section-kicker">Regional settings</div>
+      <h2>Timezone</h2>
+      <p>Use a valid IANA timezone name such as <span class="link-text">America/Chicago</span>, <span class="link-text">America/New_York</span>, or <span class="link-text">UTC</span>.</p>
+    </div>
+  </div>
+
+  <form action="/settings" method="post">
+    <div class="field">
+      <label for="timezone_name">Timezone</label>
+      <input id="timezone_name" name="timezone_name" value="{{ settings.timezone_name }}" placeholder="America/Chicago" required>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit">Save settings</button>
+    </div>
+  </form>
+
+  {% if saved %}
+  <div class="notice" style="background: rgba(63, 196, 138, 0.1); border-color: rgba(63, 196, 138, 0.2); margin-top: 16px;">
+    <strong>Settings saved</strong>
+    <p>All refresh and item times now render in {{ settings.timezone_name }}.</p>
+  </div>
+  {% endif %}
+
+  {% if error %}
+  <p class="error-text">{{ error }}</p>
+  {% endif %}
+</section>
+{% endblock %}

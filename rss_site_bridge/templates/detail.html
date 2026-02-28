@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}{{ profile.feed_title }} · Nightfeed{% endblock %}
+
+{% block page_header %}
+<header class="topbar">
+  <div class="page-title">
+    <h1>{{ profile.feed_title }}</h1>
+    <p><a class="link-text" href="{{ profile.source_url }}">{{ profile.source_url }}</a></p>
+  </div>
+  <div class="topbar-actions">
+    <a class="btn btn-secondary" href="/">Back to dashboard</a>
+    <form class="inline-form" action="/profiles/{{ profile.id }}/toggle-active" method="post">
+      <button class="btn btn-secondary" type="submit">{{ 'Disable feed' if profile.active else 'Enable feed' }}</button>
+    </form>
+    {% if profile.active %}
+    <form class="inline-form" action="/profiles/{{ profile.id }}/refresh" method="post">
+      <button class="btn btn-primary" type="submit">Refresh</button>
+    </form>
+    {% endif %}
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="compose-grid" style="grid-template-columns:minmax(0, 1.2fr) minmax(320px, 0.8fr);">
+  <div class="list-stack">
+    <section class="surface section">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker">Feed summary</div>
+          <h2>Overview</h2>
+        </div>
+        <div class="button-row">
+          <a class="btn btn-secondary" href="/feeds/{{ profile.feed_token }}/view">View XML</a>
+          <a class="btn btn-secondary" href="/feeds/{{ profile.feed_token }}.xml">Raw XML</a>
+        </div>
+      </div>
+
+      <div class="detail-metrics">
+        <div class="metric-card">
+          <div class="metric-label">Status</div>
+          <div class="metric-value">{{ 'disabled' if not profile.active else profile.last_status }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Stored items</div>
+          <div class="metric-value">{{ profile.item_count }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Refresh interval</div>
+          <div class="metric-value">{{ profile.refresh_interval_minutes }} min</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Last refreshed</div>
+          <div class="metric-value" style="font-size:0.96rem;">{{ profile.last_refreshed_at | human_datetime }}</div>
+        </div>
+      </div>
+
+      <div class="copy-row">
+        <div class="copy-meta">
+          <div class="copy-label">Feed URL</div>
+          <div class="copy-value">{{ feed_url }}</div>
+        </div>
+      </div>
+
+      {% if profile.last_error %}
+      <div class="notice">
+        <strong>Latest refresh issue</strong>
+        <p>{{ profile.last_error }}</p>
+      </div>
+      {% endif %}
+
+      {% if purged %}
+      <div class="notice-soft">
+        <strong>Stored entries cleared</strong>
+        <p>The feed configuration is unchanged. Refresh the feed to repopulate items.</p>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="surface section">
+      <div class="section-head">
+        <div>
+          <div class="section-kicker">Stored content</div>
+          <h2>Latest topics</h2>
+          <p>Topic links open in a new tab.</p>
+        </div>
+        <form class="inline-form" action="/profiles/{{ profile.id }}/purge" method="post">
+          <button class="btn btn-danger" type="submit">Purge entries</button>
+        </form>
+      </div>
+
+      {% if items %}
+      <div class="list-stack">
+        {% for item in items %}
+        <article class="item-card">
+          <h3>{{ item.title }}</h3>
+          {% if item.summary %}
+          <p class="meta">{{ item.summary }}</p>
+          {% endif %}
+          <div class="item-footer" style="margin-top:12px;">
+            <span>{{ item.published_at | human_datetime }}</span>
+            <a class="link-text" href="{{ item.link }}" target="_blank" rel="noreferrer">Open topic</a>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">No stored items yet. Refresh the feed after validating the selectors.</div>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="surface section">
+    <div class="section-head">
+      <div>
+        <div class="section-kicker">Settings</div>
+        <h2>Edit feed</h2>
+        <p>Update selectors and fetch behavior for this source.</p>
+      </div>
+    </div>
+
+    <form action="/profiles/{{ profile.id }}/edit" method="post" data-loading-form data-preview-form>
+      <input type="hidden" name="preview" value="1">
+      <div class="field">
+        <label for="edit_feed_title">Feed name</label>
+        <input id="edit_feed_title" name="feed_title" value="{{ edit_form.get('feed_title', profile.feed_title) }}" required>
+      </div>
+      <div class="field">
+        <label for="edit_source_url">Source URL</label>
+        <input id="edit_source_url" name="source_url" value="{{ edit_form.get('source_url', profile.source_url) }}" required>
+      </div>
+      <div class="field">
+        <label for="edit_item_selector">Item selector</label>
+        <input id="edit_item_selector" name="item_selector" value="{{ edit_form.get('item_selector', profile.item_selector) }}" required>
+      </div>
+      <div class="field">
+        <label for="edit_title_selector">Title selector</label>
+        <input id="edit_title_selector" name="title_selector" value="{{ edit_form.get('title_selector', profile.title_selector) }}" required>
+      </div>
+      <div class="field">
+        <label for="edit_link_selector">Link selector</label>
+        <input id="edit_link_selector" name="link_selector" value="{{ edit_form.get('link_selector', profile.link_selector) }}" required>
+      </div>
+      <div class="field">
+        <label for="edit_summary_selector">Summary selector</label>
+        <input id="edit_summary_selector" name="summary_selector" value="{{ edit_form.get('summary_selector', profile.summary_selector) }}">
+      </div>
+      <div class="field">
+        <label for="edit_filter_rules">Include filters</label>
+        <textarea id="edit_filter_rules" name="filter_rules" placeholder="(alpha OR beta OR gamma) AND premium&#10;build-2?&#10;&quot;release candidate&quot; AND stable">{{ edit_form.get('filter_rules', profile.filter_rules) }}</textarea>
+        <div class="field-hint">Optional. One rule per line. Supports <code>AND</code>, <code>OR</code>, parentheses, quoted phrases, and wildcards.</div>
+      </div>
+      <div class="field">
+        <label for="edit_exclude_filter_rules">Exclude filters</label>
+        <textarea id="edit_exclude_filter_rules" name="exclude_filter_rules" placeholder="draft OR preview&#10;*beta*&#10;&quot;sample item&quot;">{{ edit_form.get('exclude_filter_rules', profile.exclude_filter_rules) }}</textarea>
+        <div class="field-hint">Optional. Matching titles are removed after include filters are applied.</div>
+      </div>
+      <div class="field">
+        <label for="edit_max_items">Max items</label>
+        <input id="edit_max_items" name="max_items" type="number" min="1" max="100" value="{{ edit_form.get('max_items', profile.max_items) }}" required>
+      </div>
+      <div class="field">
+        <label for="edit_refresh_interval_minutes">Refresh interval (minutes)</label>
+        <input id="edit_refresh_interval_minutes" name="refresh_interval_minutes" type="number" min="0" max="1440" value="{{ edit_form.get('refresh_interval_minutes', profile.refresh_interval_minutes) }}" required>
+        <div class="field-hint">Set to <code>0</code> to disable automatic refresh. The feed will refresh only when you trigger it manually.</div>
+      </div>
+      <div class="field">
+        <label for="edit_fetch_mode">Fetch mode</label>
+        <select id="edit_fetch_mode" name="fetch_mode">
+          <option value="http" {% if edit_form.get('fetch_mode', profile.fetch_mode) == "http" %}selected{% endif %}>HTTP only</option>
+          <option value="browser" {% if edit_form.get('fetch_mode', profile.fetch_mode) == "browser" %}selected{% endif %}>Browser</option>
+        </select>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-secondary" type="submit" formaction="/profiles/{{ profile.id }}" formmethod="get" data-loading-label="Running preview" data-preview-url="/profiles/{{ profile.id }}/preview" data-preview-stream-url="/profiles/{{ profile.id }}/preview/stream" data-preview-target="detail-preview">Preview changes</button>
+        <button class="btn btn-primary" type="submit">Save changes</button>
+      </div>
+    </form>
+
+    <div class="loading-note" data-loading-note>
+      <div class="loading-label">
+        <span class="spinner" aria-hidden="true"></span>
+        Preview progress
+      </div>
+      <div class="loading-status">
+        <div>
+          <strong data-loading-title>Accessing website</strong>
+          <span data-loading-detail>Opening the source page and validating the request.</span>
+        </div>
+        <span class="loading-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </div>
+    </div>
+
+    {% if edit_error %}
+    <p class="error-text">{{ edit_error }}</p>
+    {% endif %}
+
+    <section style="margin-top:18px;" data-preview-panel="detail-preview">
+      <div class="section-head" style="margin-bottom:12px;">
+        <div>
+          <div class="section-kicker">Preview</div>
+          <h2>Extracted titles and links</h2>
+          <p data-preview-count>{{ preview|length }} items found with the current selectors.</p>
+        </div>
+      </div>
+
+      {% if preview %}
+      <div class="list-stack" data-preview-list="detail-preview">
+        {% for item in preview %}
+        <article class="preview-card">
+          <h3>{{ item.title }}</h3>
+          <p class="meta">{{ item.link }}</p>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="list-stack" data-preview-list="detail-preview" hidden></div>
+      {% endif %}
+      <p class="error-text" data-preview-error {% if not preview_error %}hidden{% endif %}>{{ preview_error or "" }}</p>
+      <div class="empty-state" data-preview-empty {% if preview or preview_error %}hidden{% endif %}>Run a preview to inspect extracted titles and links before saving.</div>
+    </section>
+
+    <div class="notice">
+      <strong>Delete feed</strong>
+      <p>Removing this feed also deletes all stored items.</p>
+      <form class="inline-form" action="/profiles/{{ profile.id }}/delete" method="post" style="margin-top:12px;" onsubmit="return window.confirm('Delete this feed and all stored items?');">
+        <button class="btn btn-danger" type="submit">Delete feed</button>
+      </form>
+    </div>
+  </section>
+</div>
+{% endblock %}

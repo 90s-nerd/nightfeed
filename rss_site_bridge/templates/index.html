@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block title %}My Feeds · Nightfeed{% endblock %}
+
+{% block page_header %}
+<header class="topbar">
+  <div class="page-title">
+    <h1>My Feeds (<span data-feed-count>{{ profiles|length }}</span>)</h1>
+    <p>Dashboard view only shows each feed, its last refresh time, and stored item count.</p>
+  </div>
+  <div class="topbar-actions">
+    <a class="btn btn-primary" href="/compose">New Feed</a>
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<section class="surface section">
+  {% if profiles %}
+  <div class="feed-grid">
+    {% for profile in profiles %}
+    {% set effective_status = 'disabled' if not profile.active else profile.last_status %}
+    {% set status_class = 'disabled' if effective_status == 'disabled' else 'error' if effective_status == 'error' else 'ok' if effective_status == 'ok' else 'idle' %}
+    {% set status_label = 'Disabled' if effective_status == 'disabled' else 'Issue' if effective_status == 'error' else 'Healthy' if effective_status == 'ok' else 'Idle' %}
+    {% set status_icon = '⏸' if effective_status == 'disabled' else '×' if effective_status == 'error' else '✓' if effective_status == 'ok' else '•' %}
+    <a
+      class="feed-card"
+      href="/profiles/{{ profile.id }}"
+      data-profile-card
+      data-profile-id="{{ profile.id }}"
+      data-refresh-url="/profiles/{{ profile.id }}/refresh"
+      data-toggle-url="/profiles/{{ profile.id }}/toggle-active"
+      data-clone-url="/profiles/{{ profile.id }}/clone"
+      data-delete-url="/profiles/{{ profile.id }}/delete"
+      data-active="{{ 'true' if profile.active else 'false' }}"
+      data-status="{{ effective_status }}"
+      data-profile-title="{{ profile.feed_title }}"
+      style="position:relative;"
+    >
+      <div
+        class="feed-card-spinner"
+        aria-hidden="true"
+        style="display:none; position:absolute; inset:0; border-radius:18px; background:rgba(13,18,26,0.72); align-items:center; justify-content:center; font-weight:600; letter-spacing:0.01em;"
+      >
+        Refreshing...
+      </div>
+      <div class="meta-row">
+        <h3>{{ profile.feed_title }}</h3>
+        <span class="status-badge {{ status_class }}" data-status-badge>
+          <span class="status-icon" data-status-icon>{{ status_icon }}</span>
+          <span data-status-label>{{ status_label }}</span>
+        </span>
+      </div>
+      <div class="feed-url">{{ profile.source_url }}</div>
+      <div class="meta-row" style="margin-top:14px;">
+        <span class="pill" data-item-count>{{ profile.item_count }} items</span>
+      </div>
+      <div class="meta-row" style="margin-top:12px;">
+        <span class="meta">Last refreshed</span>
+        <span data-last-refreshed>{{ profile.last_refreshed_at | human_datetime }}</span>
+      </div>
+    </a>
+    {% endfor %}
+
+    <a class="feed-card" href="/compose" style="display:grid; place-items:center; min-height:166px; text-align:center;">
+      <div>
+        <div style="font-size:2rem; line-height:1; color:#ffbc8f;">+</div>
+        <div style="margin-top:8px; font-weight:600;">New Feed</div>
+      </div>
+    </a>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    No feeds yet. Start by creating the first source profile.
+    <div style="margin-top:14px;">
+      <a class="btn btn-primary" href="/compose">Create feed</a>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+{% if profiles %}
+<div
+  id="feed-context-menu"
+  style="display:none; position:fixed; min-width:180px; padding:8px; border-radius:14px; border:1px solid var(--line-strong); background:rgba(22,29,41,0.98); box-shadow:0 18px 40px rgba(0,0,0,0.3); z-index:1000;"
+>
+  <button
+    id="feed-context-refresh"
+    type="button"
+    class="btn btn-secondary"
+    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent;"
+  >
+    Refresh feed
+  </button>
+  <button
+    id="feed-context-toggle"
+    type="button"
+    class="btn btn-secondary"
+    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent;"
+  >
+    Disable feed
+  </button>
+  <button
+    id="feed-context-clone"
+    type="button"
+    class="btn btn-secondary"
+    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent;"
+  >
+    Clone feed
+  </button>
+  <button
+    id="feed-context-delete"
+    type="button"
+    class="btn btn-secondary"
+    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent; color:#ffb7b5;"
+  >
+    Delete feed
+  </button>
+</div>
+
+<script>
+  (() => {
+    const menu = document.getElementById("feed-context-menu");
+    const refreshButton = document.getElementById("feed-context-refresh");
+    const toggleButton = document.getElementById("feed-context-toggle");
+    const cloneButton = document.getElementById("feed-context-clone");
+    const deleteButton = document.getElementById("feed-context-delete");
+    const cards = document.querySelectorAll("[data-profile-card]");
+    const feedCount = document.querySelector("[data-feed-count]");
+    const csrfSafeHeaders = {"X-Requested-With": "XMLHttpRequest"};
+    let activeCard = null;
+    let activeRefreshUrl = "";
+    let activeToggleUrl = "";
+    let activeCloneUrl = "";
+    let activeDeleteUrl = "";
+
+    if (!menu || !refreshButton || !toggleButton || !cloneButton || !deleteButton || !cards.length) {
+      return;
+    }
+
+    const closeMenu = () => {
+      menu.style.display = "none";
+      activeCard = null;
+      activeRefreshUrl = "";
+      activeToggleUrl = "";
+      activeCloneUrl = "";
+      activeDeleteUrl = "";
+    };
+
+    const setCardRefreshing = (card, isRefreshing) => {
+      if (!card) {
+        return;
+      }
+      const spinner = card.querySelector(".feed-card-spinner");
+      if (spinner) {
+        spinner.style.display = isRefreshing ? "flex" : "none";
+      }
+      card.style.pointerEvents = isRefreshing ? "none" : "";
+    };
+
+    const applyStatus = (card, status) => {
+      const badge = card.querySelector("[data-status-badge]");
+      const icon = card.querySelector("[data-status-icon]");
+      const label = card.querySelector("[data-status-label]");
+      if (!badge || !icon || !label) {
+        return;
+      }
+
+      badge.classList.remove("ok", "error", "idle", "disabled");
+      if (status === "ok") {
+        badge.classList.add("ok");
+        icon.textContent = "✓";
+        label.textContent = "Healthy";
+        card.dataset.status = "ok";
+        card.dataset.active = "true";
+        return;
+      }
+      if (status === "error") {
+        badge.classList.add("error");
+        icon.textContent = "×";
+        label.textContent = "Issue";
+        card.dataset.status = "error";
+        card.dataset.active = "true";
+        return;
+      }
+      if (status === "disabled") {
+        badge.classList.add("disabled");
+        icon.textContent = "⏸";
+        label.textContent = "Disabled";
+        card.dataset.status = "disabled";
+        card.dataset.active = "false";
+        return;
+      }
+      badge.classList.add("idle");
+      icon.textContent = "•";
+      label.textContent = "Idle";
+      card.dataset.status = "idle";
+      card.dataset.active = "true";
+    };
+
+    const submitRefresh = async () => {
+      if (!activeRefreshUrl || !activeCard) {
+        return;
+      }
+      const card = activeCard;
+      const refreshUrl = activeRefreshUrl;
+      closeMenu();
+      setCardRefreshing(card, true);
+      try {
+        const response = await fetch(refreshUrl, {
+          method: "POST",
+          headers: csrfSafeHeaders,
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Refresh failed.");
+        }
+        const itemCount = card.querySelector("[data-item-count]");
+        const lastRefreshed = card.querySelector("[data-last-refreshed]");
+        if (itemCount) {
+          itemCount.textContent = `${payload.item_count} items`;
+        }
+        if (lastRefreshed) {
+          lastRefreshed.textContent = payload.last_refreshed_at;
+        }
+        applyStatus(card, payload.status);
+      } catch (error) {
+        applyStatus(card, "error");
+        window.alert(error.message || "Refresh failed.");
+      } finally {
+        setCardRefreshing(card, false);
+      }
+    };
+
+    const submitClone = () => {
+      if (!activeCloneUrl) {
+        return;
+      }
+      const cloneUrl = activeCloneUrl;
+      closeMenu();
+      window.location.href = cloneUrl;
+    };
+
+    const submitToggle = async () => {
+      if (!activeToggleUrl || !activeCard) {
+        return;
+      }
+      const card = activeCard;
+      const toggleUrl = activeToggleUrl;
+      closeMenu();
+      setCardRefreshing(card, true);
+      try {
+        const response = await fetch(toggleUrl, {
+          method: "POST",
+          headers: csrfSafeHeaders,
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Unable to update feed state.");
+        }
+        applyStatus(card, payload.status);
+        const lastRefreshed = card.querySelector("[data-last-refreshed]");
+        if (lastRefreshed) {
+          lastRefreshed.textContent = payload.last_refreshed_at;
+        }
+      } catch (error) {
+        window.alert(error.message || "Unable to update feed state.");
+      } finally {
+        setCardRefreshing(card, false);
+      }
+    };
+
+    const submitDelete = async () => {
+      if (!activeDeleteUrl || !activeCard) {
+        return;
+      }
+      const card = activeCard;
+      const deleteUrl = activeDeleteUrl;
+      const title = card.dataset.profileTitle || "this feed";
+      closeMenu();
+      if (!window.confirm(`Delete "${title}" and all stored items?`)) {
+        return;
+      }
+      setCardRefreshing(card, true);
+      try {
+        const response = await fetch(deleteUrl, {
+          method: "POST",
+          headers: csrfSafeHeaders,
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Delete failed.");
+        }
+        card.remove();
+        const remainingCards = document.querySelectorAll("[data-profile-card]");
+        if (feedCount) {
+          feedCount.textContent = String(remainingCards.length);
+        }
+        if (!remainingCards.length) {
+          window.location.reload();
+        }
+      } catch (error) {
+        setCardRefreshing(card, false);
+        window.alert(error.message || "Delete failed.");
+        return;
+      }
+    };
+
+    cards.forEach((card) => {
+      card.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        activeCard = card;
+        activeRefreshUrl = card.dataset.refreshUrl || "";
+        activeToggleUrl = card.dataset.toggleUrl || "";
+        activeCloneUrl = card.dataset.cloneUrl || "";
+        activeDeleteUrl = card.dataset.deleteUrl || "";
+        const isActive = card.dataset.active === "true";
+        refreshButton.style.display = isActive ? "flex" : "none";
+        toggleButton.textContent = isActive ? "Disable feed" : "Enable feed";
+        menu.style.display = "block";
+        menu.style.left = `${event.clientX}px`;
+        menu.style.top = `${event.clientY}px`;
+
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+          menu.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
+        }
+        if (rect.bottom > window.innerHeight) {
+          menu.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
+        }
+      });
+    });
+
+    refreshButton.addEventListener("click", submitRefresh);
+    toggleButton.addEventListener("click", submitToggle);
+    cloneButton.addEventListener("click", submitClone);
+    deleteButton.addEventListener("click", submitDelete);
+    document.addEventListener("click", closeMenu);
+    document.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}
