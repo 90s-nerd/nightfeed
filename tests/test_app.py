@@ -636,6 +636,24 @@ class AppTestCase(unittest.TestCase):
             self.assertIn(b"Topic A", response.data)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_request_id_header_is_echoed_in_response(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            client = app.test_client()
+            response = client.get("/", headers={"X-Request-ID": "trace-123"})
+
+            self.assertEqual(200, response.status_code)
+            self.assertEqual("trace-123", response.headers.get("X-Request-ID"))
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_feed_routes_return_404_when_profile_is_disabled(self):
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "rss.db"

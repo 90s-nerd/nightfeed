@@ -18,4 +18,4 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "4", "wsgi:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "4", "--access-logfile", "-", "--error-logfile", "-", "--capture-output", "--log-level", "info", "wsgi:app"]
