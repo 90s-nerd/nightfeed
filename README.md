@@ -31,6 +31,32 @@ pip install ".[browser]"
 playwright install chromium
 ```
 
+## Docker
+
+Build and run with Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+The app will be available at `http://127.0.0.1:5000`.
+
+Files are persisted by mounting the local `./data` directory into the container:
+
+- host: `./data`
+- container: `/app/data`
+
+Environment variables supported by the container:
+
+- `NIGHTFEED_DATABASE_PATH`: SQLite database path inside the container. Default: `/app/data/rss_site_bridge.db`
+- `NIGHTFEED_START_SCHEDULER`: set to `1` or `0` to enable or disable the built-in background scheduler
+
+Important deployment note:
+
+- Nightfeed currently runs its refresh scheduler inside the web process.
+- Because of that, the Docker image is configured with a single Gunicorn worker.
+- Running multiple web workers would start multiple scheduler threads and can lead to duplicate refresh attempts.
+
 ## Older Pip Fallback
 
 If your local `pip` or setuptools environment is too old to build directly from `pyproject.toml`, use the compatibility fallback:

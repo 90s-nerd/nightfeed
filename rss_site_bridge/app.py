@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import json
+import os
 import secrets
 import re
 import sqlite3
@@ -132,10 +133,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     app = Flask(__name__)
 
-    db_path = Path("data/rss_site_bridge.db")
+    db_path = Path(os.environ.get("NIGHTFEED_DATABASE_PATH", "data/rss_site_bridge.db"))
+    start_scheduler = os.environ.get("NIGHTFEED_START_SCHEDULER", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
     app.config.update(
         DATABASE_PATH=db_path,
-        START_SCHEDULER=True,
+        START_SCHEDULER=start_scheduler,
         TESTING=False,
     )
     if test_config:

@@ -12,6 +12,7 @@ setup(
     install_requires=[
         "beautifulsoup4>=4.12.3",
         "Flask>=3.1.0",
+        "gunicorn>=23.0.0",
     ],
     extras_require={
         "browser": ["playwright>=1.53.0"],
