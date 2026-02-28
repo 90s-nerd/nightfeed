@@ -103,6 +103,35 @@ After you save a source, the app shows a permanent feed URL in the form:
 
 That URL can be added directly to an RSS reader.
 
+## Refresh Behavior
+
+Nightfeed has a built-in background scheduler. When the web app is running, it checks for due feeds every 30 seconds. There is no separate cron job required for the current setup.
+
+Automatic refresh only runs when all of these are true:
+
+- the feed is enabled
+- `Refresh interval (minutes)` is greater than `0`
+- the current time is past the next due time for that feed
+
+The next due time is based on the most recent of these timestamps:
+
+- feed creation time for a newly created feed
+- enable time when a disabled feed is enabled again
+- the most recent manual refresh time
+- the most recent automatic refresh time
+
+Current lifecycle rules:
+
+- New feeds are saved as `idle` and are not fetched immediately.
+- A new feed will first auto-refresh after its configured interval from creation time.
+- If the user manually refreshes a feed, the next automatic refresh is scheduled from that manual refresh time.
+- Disabling a feed stops automatic refresh and hides refresh actions in the dashboard.
+- Enabling a feed moves it back to `idle`, and the next automatic refresh is scheduled from the time it was enabled.
+- Setting `Refresh interval (minutes)` to `0` disables automatic refresh completely and makes the feed manual-only.
+- Disabled feeds are not served from the XML endpoints.
+
+Feed requests also perform a due-check on access, so if a feed URL is opened after it becomes due, Nightfeed may refresh it on demand before returning XML.
+
 ## Limits
 
 - HTTP mode blocks redirects, so use the final canonical listing URL.
