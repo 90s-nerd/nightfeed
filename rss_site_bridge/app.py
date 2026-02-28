@@ -118,6 +118,7 @@ class StoredProfile:
 @dataclass
 class AppSettings:
     timezone_name: str = "UTC"
+    public_base_url: str = ""
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
@@ -259,12 +260,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         preview_error: str | None = None,
         purged: bool = False,
     ) -> str:
+        settings = getattr(g, "app_settings", AppSettings())
         return render_template(
             "detail.html",
             profiles=list_profiles(Path(app.config["DATABASE_PATH"])),
             profile=profile,
             items=list_feed_items(Path(app.config["DATABASE_PATH"]), profile.id, profile.max_items),
-            feed_url=build_feed_url(request.url_root, profile.feed_token),
+            feed_url=build_feed_url(request.url_root, profile.feed_token, settings.public_base_url),
             edit_error=edit_error,
             edit_form=edit_form or {},
             preview=preview or [],
@@ -334,6 +336,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             settings = update_app_settings(
                 Path(app.config["DATABASE_PATH"]),
                 timezone_name=request.form.get("timezone_name", ""),
+                public_base_url=request.form.get("public_base_url", ""),
             )
             g.app_settings = settings
             return redirect(url_for("settings_route", saved=1))
@@ -341,7 +344,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return (
                 render_template(
                     "settings.html",
-                    settings=AppSettings(timezone_name=request.form.get("timezone_name", "").strip() or "UTC"),
+                    settings=AppSettings(
+                        timezone_name=request.form.get("timezone_name", "").strip() or "UTC",
+                        public_base_url=request.form.get("public_base_url", "").strip(),
+                    ),
                     error=str(exc),
                     saved=False,
                 ),
@@ -558,6 +564,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return render_template(
             "xml_view.html",
             profile=profile,
+            feed_url=build_feed_url(request.url_root, profile.feed_token, getattr(g, "app_settings", AppSettings()).public_base_url),
             xml_payload=highlight_xml(format_xml(xml_payload)),
         )
 
@@ -1306,14 +1313,16 @@ def init_db(db_path: Path) -> None:
             """
             CREATE TABLE IF NOT EXISTS app_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                timezone_name TEXT NOT NULL
+                timezone_name TEXT NOT NULL,
+                public_base_url TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        ensure_column(conn, "app_settings", "public_base_url", "TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
-            INSERT OR IGNORE INTO app_settings (id, timezone_name)
-            VALUES (1, 'UTC')
+            INSERT OR IGNORE INTO app_settings (id, timezone_name, public_base_url)
+            VALUES (1, 'UTC', '')
             """
         )
         ensure_column(conn, "profiles", "filter_rules", "TEXT NOT NULL DEFAULT ''")
@@ -1340,26 +1349,35 @@ def ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, d
 def get_app_settings(db_path: Path) -> AppSettings:
     with closing(connect_db(db_path)) as conn:
         row = conn.execute(
-            "SELECT timezone_name FROM app_settings WHERE id = 1"
+            "SELECT timezone_name, public_base_url FROM app_settings WHERE id = 1"
         ).fetchone()
     if row is None:
         return AppSettings()
-    return AppSettings(timezone_name=row["timezone_name"])
+    return AppSettings(
+        timezone_name=row["timezone_name"],
+        public_base_url=row["public_base_url"],
+    )
 
 
-def update_app_settings(db_path: Path, *, timezone_name: str) -> AppSettings:
+def update_app_settings(db_path: Path, *, timezone_name: str, public_base_url: str) -> AppSettings:
     normalized_timezone = parse_timezone_name(timezone_name)
+    normalized_public_base_url = parse_public_base_url(public_base_url)
     with closing(connect_db(db_path)) as conn:
         conn.execute(
             """
-            INSERT INTO app_settings (id, timezone_name)
-            VALUES (1, ?)
-            ON CONFLICT(id) DO UPDATE SET timezone_name = excluded.timezone_name
+            INSERT INTO app_settings (id, timezone_name, public_base_url)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                timezone_name = excluded.timezone_name,
+                public_base_url = excluded.public_base_url
             """,
-            (normalized_timezone,),
+            (normalized_timezone, normalized_public_base_url),
         )
         conn.commit()
-    return AppSettings(timezone_name=normalized_timezone)
+    return AppSettings(
+        timezone_name=normalized_timezone,
+        public_base_url=normalized_public_base_url,
+    )
 
 
 def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
@@ -1671,8 +1689,10 @@ def utcnow_text() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def build_feed_url(root_url: str, token: str) -> str:
-    return f"{root_url}feeds/{token}.xml"
+def build_feed_url(root_url: str, token: str, public_base_url: str = "") -> str:
+    base_url = public_base_url.strip() or root_url
+    normalized_base = base_url.rstrip("/") + "/"
+    return f"{normalized_base}feeds/{token}.xml"
 
 
 def load_feed_payload(db_path: Path, token: str) -> tuple[StoredProfile | None, list[FeedEntry]]:
@@ -1705,6 +1725,18 @@ def parse_timezone_name(value: str) -> str:
     except ZoneInfoNotFoundError as exc:
         raise ValueError("Timezone must be a valid IANA name such as America/Chicago.") from exc
     return timezone_name
+
+
+def parse_public_base_url(value: str) -> str:
+    public_base_url = value.strip()
+    if not public_base_url:
+        return ""
+    parsed = urlparse(public_base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Public base URL must be a valid URL such as https://rss.example.com.")
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError("Public base URL must include only scheme and host, without a path or query string.")
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def humanize_datetime(value: str | datetime, timezone_name: str = "UTC") -> str:

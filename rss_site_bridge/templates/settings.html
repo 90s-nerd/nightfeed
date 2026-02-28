@@ -6,7 +6,7 @@
 <header class="topbar">
   <div class="page-title">
     <h1>Settings</h1>
-    <p>Set the timezone Nightfeed should use when rendering refresh and item timestamps.</p>
+    <p>Set the timezone and optional public base URL that Nightfeed should use when rendering feed links.</p>
   </div>
 </header>
 {% endblock %}
@@ -15,9 +15,9 @@
 <section class="surface section" style="max-width: 720px;">
   <div class="section-head">
     <div>
-      <div class="section-kicker">Regional settings</div>
-      <h2>Timezone</h2>
-      <p>Use a valid IANA timezone name such as <span class="link-text">America/Chicago</span>, <span class="link-text">America/New_York</span>, or <span class="link-text">UTC</span>.</p>
+      <div class="section-kicker">App settings</div>
+      <h2>Timezone and feed URL</h2>
+      <p>Use a valid IANA timezone name such as <span class="link-text">America/Chicago</span>, <span class="link-text">America/New_York</span>, or <span class="link-text">UTC</span>. Optionally set a public base URL to override the displayed feed URL host.</p>
     </div>
   </div>
 
@@ -25,6 +25,11 @@
     <div class="field">
       <label for="timezone_name">Timezone</label>
       <input id="timezone_name" name="timezone_name" value="{{ settings.timezone_name }}" placeholder="America/Chicago" required>
+    </div>
+    <div class="field">
+      <label for="public_base_url">Public base URL</label>
+      <input id="public_base_url" name="public_base_url" value="{{ settings.public_base_url }}" placeholder="https://rss.example.com">
+      <div class="field-hint">Optional. When set, displayed feed URLs will use this scheme and host instead of the current request URL.</div>
     </div>
 
     <div class="form-actions">
@@ -35,7 +40,7 @@
   {% if saved %}
   <div class="notice" style="background: rgba(63, 196, 138, 0.1); border-color: rgba(63, 196, 138, 0.2); margin-top: 16px;">
     <strong>Settings saved</strong>
-    <p>All refresh and item times now render in {{ settings.timezone_name }}.</p>
+    <p>All refresh and item times now render in {{ settings.timezone_name }}. Feed URLs {% if settings.public_base_url %}now use {{ settings.public_base_url }}.{% else %}use the current request host by default.{% endif %}</p>
   </div>
   {% endif %}
 
