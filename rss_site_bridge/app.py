@@ -13,21 +13,26 @@ from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+import hashlib
 import json
+import logging
 import os
 import secrets
 import re
 import sqlite3
+import sys
+import time
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
-    from flask import Flask, Response, g, jsonify, redirect, render_template, request, stream_with_context, url_for
+    from flask import Flask, Response, g, has_request_context, jsonify, redirect, render_template, request, stream_with_context, url_for
 except ModuleNotFoundError:
     Flask = Any  # type: ignore[assignment]
     Response = Any  # type: ignore[assignment]
     g = None
+    has_request_context = None
     jsonify = None
     redirect = None
     render_template = None
@@ -44,8 +49,11 @@ except ModuleNotFoundError:
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_USER_AGENT = "rss-site-bridge/0.2 (+https://localhost)"
 SCHEDULER_INTERVAL_SECONDS = 30
+REQUEST_ID_HEADER = "X-Request-ID"
 _scheduler_lock = Lock()
 _scheduler_started = False
+_logging_lock = Lock()
+_logging_configured = False
 
 
 class RedirectBlocked(URLError):
@@ -126,6 +134,114 @@ class AppSettings:
     public_base_url: str = ""
 
 
+class JsonLogFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+        }
+        event = getattr(record, "event", None)
+        if event:
+            payload["event"] = event
+
+        message = record.getMessage()
+        if message and message != event:
+            payload["message"] = message
+
+        fields = getattr(record, "fields", {})
+        if isinstance(fields, dict):
+            payload.update({key: serialize_log_value(value) for key, value in fields.items() if value is not None})
+
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+
+        return json.dumps(payload, sort_keys=True)
+
+
+def serialize_log_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): serialize_log_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [serialize_log_value(item) for item in value]
+    return str(value)
+
+
+def get_logger() -> logging.Logger:
+    global _logging_configured
+
+    logger = logging.getLogger("nightfeed")
+    level_name = os.environ.get("NIGHTFEED_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+    level = getattr(logging, level_name, logging.INFO)
+
+    with _logging_lock:
+        logger.setLevel(level)
+        if not _logging_configured:
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setFormatter(JsonLogFormatter())
+            logger.handlers.clear()
+            logger.addHandler(handler)
+            logger.propagate = False
+            _logging_configured = True
+
+    return logger
+
+
+def current_request_id() -> str | None:
+    if has_request_context is None or not has_request_context() or g is None:
+        return None
+    return getattr(g, "request_id", None)
+
+
+def get_elapsed_ms(started_at: float | None) -> int | None:
+    if started_at is None:
+        return None
+    return int((time.perf_counter() - started_at) * 1000)
+
+
+def log_event(level: int, event: str, *, exc_info: Any = None, **fields: Any) -> None:
+    if "request_id" not in fields:
+        request_id = current_request_id()
+        if request_id:
+            fields["request_id"] = request_id
+    get_logger().log(level, event, extra={"event": event, "fields": fields}, exc_info=exc_info)
+
+
+def request_route_pattern() -> str | None:
+    if request is None or has_request_context is None or not has_request_context():
+        return None
+    if request.url_rule is not None:
+        return request.url_rule.rule
+    return sanitize_request_path(request.path)
+
+
+def sanitize_request_path(path: str) -> str:
+    path = re.sub(r"/feeds/[^/]+\.xml", "/feeds/<token>.xml", path)
+    return re.sub(r"/feeds/[^/]+/view", "/feeds/<token>/view", path)
+
+
+def request_client_ip() -> str | None:
+    if request is None or has_request_context is None or not has_request_context():
+        return None
+    if request.access_route:
+        return request.access_route[0]
+    return request.remote_addr
+
+
+def source_host(source_url: str) -> str:
+    return urlparse(source_url).netloc
+
+
+def token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     if (
         render_template is None
@@ -159,10 +275,66 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     init_db(Path(app.config["DATABASE_PATH"]))
     if app.config.get("START_SCHEDULER") and not app.config.get("TESTING"):
         ensure_scheduler(app)
+    log_event(
+        logging.INFO,
+        "app_initialized",
+        database_path=Path(app.config["DATABASE_PATH"]),
+        scheduler_enabled=bool(app.config.get("START_SCHEDULER")) and not bool(app.config.get("TESTING")),
+        testing=bool(app.config.get("TESTING")),
+    )
 
     @app.before_request
     def load_app_settings_into_context() -> None:
+        g.request_started_at = time.perf_counter()
+        g.request_id = request.headers.get(REQUEST_ID_HEADER, "").strip() or secrets.token_hex(8)
         g.app_settings = get_app_settings(Path(app.config["DATABASE_PATH"]))
+        log_event(
+            logging.INFO,
+            "request_started",
+            request_id=g.request_id,
+            method=request.method,
+            route=request_route_pattern(),
+            path=sanitize_request_path(request.path),
+            remote_addr=request_client_ip(),
+            forwarded_for=request.headers.get("X-Forwarded-For"),
+            user_agent=request.user_agent.string,
+            content_length=request.content_length,
+            content_type=request.content_type,
+            query_keys=sorted(request.args.keys()),
+        )
+
+    @app.after_request
+    def log_request_response(response: Response) -> Response:
+        response.headers[REQUEST_ID_HEADER] = getattr(g, "request_id", "")
+        log_event(
+            logging.INFO,
+            "request_completed",
+            request_id=getattr(g, "request_id", None),
+            method=request.method,
+            route=request_route_pattern(),
+            path=sanitize_request_path(request.path),
+            status_code=response.status_code,
+            duration_ms=get_elapsed_ms(getattr(g, "request_started_at", None)),
+            response_bytes=response.calculate_content_length(),
+        )
+        return response
+
+    @app.teardown_request
+    def log_request_exception(exc: BaseException | None) -> None:
+        if exc is None:
+            return
+        log_event(
+            logging.ERROR,
+            "request_failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            request_id=getattr(g, "request_id", None),
+            method=request.method,
+            route=request_route_pattern(),
+            path=sanitize_request_path(request.path),
+            duration_ms=get_elapsed_ms(getattr(g, "request_started_at", None)),
+            error=str(exc),
+            exception_type=type(exc).__name__,
+        )
 
     @app.template_filter("human_datetime")
     def human_datetime_filter(value: str | datetime) -> str:
@@ -197,6 +369,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     def stream_preview_response(config: FeedRequest) -> Response:
         event_queue: Queue[str | None] = Queue()
+        preview_started_at = time.perf_counter()
+        preview_request_id = current_request_id()
+
+        log_event(
+            logging.INFO,
+            "preview_stream_started",
+            request_id=preview_request_id,
+            source_host=source_host(config.source_url),
+            fetch_mode=config.fetch_mode,
+            max_items=config.max_items,
+        )
 
         def emit_progress_event(title: str, detail: str) -> None:
             event_queue.put(
@@ -224,6 +407,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     config,
                     progress=emit_progress_event,
                 )
+                log_event(
+                    logging.INFO,
+                    "preview_stream_completed",
+                    request_id=preview_request_id,
+                    source_host=source_host(config.source_url),
+                    fetch_mode=config.fetch_mode,
+                    entry_count=len(preview),
+                    duration_ms=get_elapsed_ms(preview_started_at),
+                )
                 event_queue.put(
                     sse_event(
                         "result",
@@ -234,6 +426,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     )
                 )
             except (ValueError, RuntimeError) as exc:
+                log_event(
+                    logging.WARNING,
+                    "preview_stream_failed",
+                    request_id=preview_request_id,
+                    source_host=source_host(config.source_url),
+                    fetch_mode=config.fetch_mode,
+                    duration_ms=get_elapsed_ms(preview_started_at),
+                    error=str(exc),
+                )
                 event_queue.put(sse_event("error", {"error": str(exc)}))
             finally:
                 event_queue.put(sse_event("done", {}))
@@ -301,6 +502,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 preview = extract_feed_entries(config)
             except (ValueError, RuntimeError) as exc:
                 error = str(exc)
+                log_event(logging.WARNING, "compose_preview_failed", error=str(exc))
 
         return render_compose_page(form=form, preview=preview, error=error)
 
@@ -309,8 +511,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         try:
             config = parse_request_values(request.form)
             preview = extract_feed_entries(config)
+            log_event(
+                logging.INFO,
+                "preview_completed",
+                preview_scope="compose",
+                source_host=source_host(config.source_url),
+                fetch_mode=config.fetch_mode,
+                entry_count=len(preview),
+            )
             return jsonify({"items": serialize_preview(preview), "error": None})
         except (ValueError, RuntimeError) as exc:
+            log_event(logging.WARNING, "preview_failed", preview_scope="compose", error=str(exc))
             return jsonify({"items": [], "error": str(exc)}), 400
 
     @app.get("/preview/stream")
@@ -318,6 +529,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         try:
             config = parse_request_values(request.args)
         except (ValueError, RuntimeError) as exc:
+            log_event(logging.WARNING, "preview_stream_request_invalid", preview_scope="compose", error=str(exc))
             return Response(
                 sse_event("error", {"error": str(exc)}) + sse_event("done", {}),
                 mimetype="text/event-stream",
@@ -346,8 +558,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 public_base_url=request.form.get("public_base_url", ""),
             )
             g.app_settings = settings
+            log_event(
+                logging.INFO,
+                "settings_updated",
+                timezone_name=settings.timezone_name,
+                public_base_url_host=source_host(settings.public_base_url) if settings.public_base_url else None,
+            )
             return redirect(url_for("settings_route", saved=1))
         except ValueError as exc:
+            log_event(logging.WARNING, "settings_update_failed", error=str(exc))
             return (
                 render_template(
                     "settings.html",
@@ -366,8 +585,25 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         try:
             config = parse_request_values(request.form)
             profile = create_profile(Path(app.config["DATABASE_PATH"]), config)
+            log_event(
+                logging.INFO,
+                "profile_created",
+                profile_id=profile.id,
+                feed_title=profile.feed_title,
+                source_host=source_host(profile.source_url),
+                fetch_mode=profile.fetch_mode,
+                refresh_interval_minutes=profile.refresh_interval_minutes,
+                max_items=profile.max_items,
+            )
             return redirect(url_for("profile_detail", profile_id=profile.id))
         except (ValueError, RuntimeError) as exc:
+            log_event(
+                logging.WARNING,
+                "profile_create_failed",
+                error=str(exc),
+                source_host=source_host(request.form.get("source_url", "")) if request.form.get("source_url") else None,
+                fetch_mode=request.form.get("fetch_mode", "") or None,
+            )
             return (
                 render_compose_page(
                     form=load_form() | request.form.to_dict(),
@@ -381,8 +617,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def clone_profile_route(profile_id: int) -> Response:
         profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
         if profile is None:
+            log_event(logging.WARNING, "profile_clone_failed", profile_id=profile_id, error="Profile not found.")
             return Response("Profile not found.", status=404, mimetype="text/plain; charset=utf-8")
         clone_title = build_clone_title(Path(app.config["DATABASE_PATH"]), profile.feed_title)
+        log_event(logging.INFO, "profile_clone_requested", profile_id=profile_id, clone_title=clone_title)
         return redirect(
             url_for(
                 "compose_route",
@@ -402,19 +640,28 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/profiles/<int:profile_id>/refresh")
     def refresh_profile_route(profile_id: int) -> Response:
+        log_event(
+            logging.INFO,
+            "profile_manual_refresh_requested",
+            profile_id=profile_id,
+            request_kind="ajax" if request.headers.get("X-Requested-With") == "XMLHttpRequest" else "browser",
+        )
         try:
             refresh_profile(Path(app.config["DATABASE_PATH"]), profile_id)
         except ValueError as exc:
+            log_event(logging.WARNING, "profile_manual_refresh_failed", profile_id=profile_id, error=str(exc))
             if request.headers.get("X-Requested-With") == "XMLHttpRequest":
                 return jsonify({"error": str(exc), "status": "error"}), 404
             return Response(str(exc), status=404, mimetype="text/plain; charset=utf-8")
         except RuntimeError as exc:
+            log_event(logging.WARNING, "profile_manual_refresh_failed", profile_id=profile_id, error=str(exc))
             if request.headers.get("X-Requested-With") == "XMLHttpRequest":
                 return jsonify({"error": str(exc), "status": "error"}), 400
             return Response(str(exc), status=400, mimetype="text/plain; charset=utf-8")
         if request.headers.get("X-Requested-With") == "XMLHttpRequest":
             profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
             if profile is None:
+                log_event(logging.WARNING, "profile_manual_refresh_failed", profile_id=profile_id, error="Profile not found.")
                 return jsonify({"error": "Profile not found.", "status": "error"}), 404
             settings = getattr(g, "app_settings", AppSettings())
             return jsonify(
@@ -431,11 +678,21 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def edit_profile_route(profile_id: int) -> Response | tuple[str, int]:
         try:
             config = parse_request_values(request.form)
-            update_profile(Path(app.config["DATABASE_PATH"]), profile_id, config)
+            updated_profile = update_profile(Path(app.config["DATABASE_PATH"]), profile_id, config)
+            log_event(
+                logging.INFO,
+                "profile_updated",
+                profile_id=updated_profile.id,
+                feed_title=updated_profile.feed_title,
+                source_host=source_host(updated_profile.source_url),
+                fetch_mode=updated_profile.fetch_mode,
+            )
             return redirect(url_for("profile_detail", profile_id=profile_id))
         except ValueError as exc:
+            log_event(logging.WARNING, "profile_update_failed", profile_id=profile_id, error=str(exc))
             return Response(str(exc), status=404, mimetype="text/plain; charset=utf-8")
         except RuntimeError as exc:
+            log_event(logging.WARNING, "profile_update_failed", profile_id=profile_id, error=str(exc))
             profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
             if profile is None:
                 return Response("Profile not found.", status=404, mimetype="text/plain; charset=utf-8")
@@ -453,9 +710,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         try:
             delete_profile(Path(app.config["DATABASE_PATH"]), profile_id)
         except ValueError as exc:
+            log_event(logging.WARNING, "profile_delete_failed", profile_id=profile_id, error=str(exc))
             if request.headers.get("X-Requested-With") == "XMLHttpRequest":
                 return jsonify({"error": str(exc)}), 404
             return Response(str(exc), status=404, mimetype="text/plain; charset=utf-8")
+        log_event(logging.INFO, "profile_deleted", profile_id=profile_id)
         if request.headers.get("X-Requested-With") == "XMLHttpRequest":
             return jsonify({"deleted": True})
         return redirect(url_for("index"))
@@ -465,18 +724,22 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         try:
             purge_feed_items(Path(app.config["DATABASE_PATH"]), profile_id)
         except ValueError as exc:
+            log_event(logging.WARNING, "profile_purge_failed", profile_id=profile_id, error=str(exc))
             return Response(str(exc), status=404, mimetype="text/plain; charset=utf-8")
+        log_event(logging.INFO, "profile_purged", profile_id=profile_id)
         return redirect(url_for("profile_detail", profile_id=profile_id, purged=1))
 
     @app.post("/profiles/<int:profile_id>/toggle-active")
     def toggle_profile_active_route(profile_id: int) -> Response:
         profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
         if profile is None:
+            log_event(logging.WARNING, "profile_toggle_failed", profile_id=profile_id, error="Profile not found.")
             if request.headers.get("X-Requested-With") == "XMLHttpRequest":
                 return jsonify({"error": "Profile not found."}), 404
             return Response("Profile not found.", status=404, mimetype="text/plain; charset=utf-8")
 
         toggled = set_profile_active(Path(app.config["DATABASE_PATH"]), profile_id, active=not profile.active)
+        log_event(logging.INFO, "profile_toggled", profile_id=profile_id, active=toggled.active, status=toggled.last_status)
         if request.headers.get("X-Requested-With") == "XMLHttpRequest":
             settings = getattr(g, "app_settings", AppSettings())
             return jsonify(
@@ -492,6 +755,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def profile_detail(profile_id: int) -> Response | str:
         profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
         if profile is None:
+            log_event(logging.WARNING, "profile_detail_failed", profile_id=profile_id, error="Profile not found.")
             return Response("Profile not found.", status=404, mimetype="text/plain; charset=utf-8")
         edit_form: dict[str, str] = {}
         preview: list[FeedEntry] = []
@@ -504,6 +768,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 preview = extract_feed_entries(config)
             except (ValueError, RuntimeError) as exc:
                 preview_error = str(exc)
+                log_event(logging.WARNING, "profile_preview_failed", profile_id=profile_id, error=str(exc))
         return render_detail_page(
             profile=profile,
             edit_error=None,
@@ -517,18 +782,30 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def profile_preview_route(profile_id: int) -> Response:
         profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
         if profile is None:
+            log_event(logging.WARNING, "preview_failed", preview_scope="profile", profile_id=profile_id, error="Profile not found.")
             return jsonify({"items": [], "error": "Profile not found."}), 404
         try:
             config = parse_request_values(request.form)
             preview = extract_feed_entries(config)
+            log_event(
+                logging.INFO,
+                "preview_completed",
+                preview_scope="profile",
+                profile_id=profile_id,
+                source_host=source_host(config.source_url),
+                fetch_mode=config.fetch_mode,
+                entry_count=len(preview),
+            )
             return jsonify({"items": serialize_preview(preview), "error": None})
         except (ValueError, RuntimeError) as exc:
+            log_event(logging.WARNING, "preview_failed", preview_scope="profile", profile_id=profile_id, error=str(exc))
             return jsonify({"items": [], "error": str(exc)}), 400
 
     @app.get("/profiles/<int:profile_id>/preview/stream")
     def profile_preview_stream_route(profile_id: int) -> Response:
         profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
         if profile is None:
+            log_event(logging.WARNING, "preview_stream_request_invalid", preview_scope="profile", profile_id=profile_id, error="Profile not found.")
             return Response(
                 sse_event("error", {"error": "Profile not found."}) + sse_event("done", {}),
                 mimetype="text/event-stream",
@@ -540,6 +817,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         try:
             config = parse_request_values(request.args)
         except (ValueError, RuntimeError) as exc:
+            log_event(logging.WARNING, "preview_stream_request_invalid", preview_scope="profile", profile_id=profile_id, error=str(exc))
             return Response(
                 sse_event("error", {"error": str(exc)}) + sse_event("done", {}),
                 mimetype="text/event-stream",
@@ -552,22 +830,60 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/feeds/<token>.xml")
     def feed_route(token: str) -> Response:
+        token_hash = token_fingerprint(token)
+        log_event(logging.INFO, "feed_requested", token_hash=token_hash, response_format="xml")
         profile, entries = load_feed_payload(Path(app.config["DATABASE_PATH"]), token)
         if profile is None:
+            log_event(logging.WARNING, "feed_request_failed", token_hash=token_hash, response_format="xml", error="Feed not found.")
             return Response("Feed not found.", status=404, mimetype="text/plain; charset=utf-8")
         if not profile.active:
+            log_event(
+                logging.WARNING,
+                "feed_request_failed",
+                token_hash=token_hash,
+                profile_id=profile.id,
+                response_format="xml",
+                error="Feed not found.",
+            )
             return Response("Feed not found.", status=404, mimetype="text/plain; charset=utf-8")
         xml_payload = render_rss(profile.to_feed_request(), entries)
+        log_event(
+            logging.INFO,
+            "feed_served",
+            token_hash=token_hash,
+            profile_id=profile.id,
+            response_format="xml",
+            item_count=len(entries),
+        )
         return Response(xml_payload, mimetype="application/rss+xml; charset=utf-8")
 
     @app.get("/feeds/<token>/view")
     def feed_view_route(token: str) -> Response | str:
+        token_hash = token_fingerprint(token)
+        log_event(logging.INFO, "feed_requested", token_hash=token_hash, response_format="html")
         profile, entries = load_feed_payload(Path(app.config["DATABASE_PATH"]), token)
         if profile is None:
+            log_event(logging.WARNING, "feed_request_failed", token_hash=token_hash, response_format="html", error="Feed not found.")
             return Response("Feed not found.", status=404, mimetype="text/plain; charset=utf-8")
         if not profile.active:
+            log_event(
+                logging.WARNING,
+                "feed_request_failed",
+                token_hash=token_hash,
+                profile_id=profile.id,
+                response_format="html",
+                error="Feed not found.",
+            )
             return Response("Feed not found.", status=404, mimetype="text/plain; charset=utf-8")
         xml_payload = render_rss(profile.to_feed_request(), entries)
+        log_event(
+            logging.INFO,
+            "feed_served",
+            token_hash=token_hash,
+            profile_id=profile.id,
+            response_format="html",
+            item_count=len(entries),
+        )
         return render_template(
             "xml_view.html",
             profile=profile,
@@ -595,11 +911,27 @@ def ensure_scheduler(app: Flask) -> None:
         thread.start()
         app.config["SCHEDULER_THREAD"] = thread
         _scheduler_started = True
+        log_event(
+            logging.INFO,
+            "scheduler_started",
+            database_path=Path(app.config["DATABASE_PATH"]),
+            interval_seconds=SCHEDULER_INTERVAL_SECONDS,
+            thread_name=thread.name,
+        )
 
 
 def run_scheduler_loop(db_path: Path, stop_event: Event) -> None:
     while not stop_event.is_set():
-        refresh_due_profiles(db_path)
+        try:
+            refresh_due_profiles(db_path)
+        except Exception as exc:
+            log_event(
+                logging.ERROR,
+                "scheduler_sweep_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+                database_path=db_path,
+                error=str(exc),
+            )
         stop_event.wait(SCHEDULER_INTERVAL_SECONDS)
 
 
@@ -725,6 +1057,15 @@ def extract_feed_entries(
     except ModuleNotFoundError as exc:
         raise RuntimeError("beautifulsoup4 is required to extract topics from HTML.") from exc
 
+    log_event(
+        logging.INFO,
+        "entry_extraction_started",
+        source_host=source_host(config.source_url),
+        fetch_mode=config.fetch_mode,
+        max_items=config.max_items,
+        include_filter_count=len(parse_filter_rule_lines(config.filter_rules)),
+        exclude_filter_count=len(parse_filter_rule_lines(config.exclude_filter_rules)),
+    )
     emit_progress(progress, "Accessing website", "Opening the source page.")
     html = fetch_html(config.source_url, config.fetch_mode, progress=progress)
     emit_progress(progress, "Analyzing document", "Parsing the returned HTML.")
@@ -732,6 +1073,13 @@ def extract_feed_entries(
     emit_progress(progress, "Matching selectors", "Locating item nodes from the page.")
     nodes = soup.select(config.item_selector)
     if not nodes:
+        log_event(
+            logging.WARNING,
+            "entry_extraction_failed",
+            source_host=source_host(config.source_url),
+            fetch_mode=config.fetch_mode,
+            error="No topic nodes matched the item selector.",
+        )
         raise ValueError("No topic nodes matched the item selector.")
     emit_progress(progress, "Matching selectors", f"Matched {len(nodes)} item nodes.")
 
@@ -739,6 +1087,7 @@ def extract_feed_entries(
     parsed_exclude_filter_rules = parse_filter_rules(config.exclude_filter_rules)
     now = datetime.now(timezone.utc)
     emit_progress(progress, "Extracting entries", "Reading titles and links from matched nodes.")
+    container_fallback_used = False
     entries = extract_entries_from_item_nodes(
         nodes,
         config,
@@ -759,12 +1108,33 @@ def extract_feed_entries(
         )
         if len(container_entries) > len(entries):
             entries = container_entries
+            container_fallback_used = True
 
     if not entries:
+        log_event(
+            logging.WARNING,
+            "entry_extraction_failed",
+            source_host=source_host(config.source_url),
+            fetch_mode=config.fetch_mode,
+            matched_node_count=len(nodes),
+            error="Matched nodes did not contain usable titles and links.",
+        )
         raise ValueError("Matched nodes did not contain usable titles and links.")
     emit_progress(progress, "Applying filters", "Evaluating filter rules against extracted titles.")
     filtered_entries = apply_entry_filters(entries, parsed_filter_rules, parsed_exclude_filter_rules)[: config.max_items]
     emit_progress(progress, "Preparing preview", "Formatting extracted titles and links.")
+    log_event(
+        logging.INFO,
+        "entry_extraction_completed",
+        source_host=source_host(config.source_url),
+        fetch_mode=config.fetch_mode,
+        matched_node_count=len(nodes),
+        extracted_entry_count=len(entries),
+        returned_entry_count=len(filtered_entries),
+        include_filter_count=len(parsed_filter_rules),
+        exclude_filter_count=len(parsed_exclude_filter_rules),
+        container_fallback_used=container_fallback_used,
+    )
     return filtered_entries
 
 
@@ -1153,6 +1523,7 @@ def fetch_html_http(
     *,
     progress: Callable[[str, str], None] | None = None,
 ) -> str:
+    started_at = time.perf_counter()
     opener = build_opener(BlockRedirects)
     req = Request(
         source_url,
@@ -1164,22 +1535,78 @@ def fetch_html_http(
     )
 
     emit_progress(progress, "Fetching content", "Downloading the page HTML over HTTP.")
+    log_event(logging.INFO, "upstream_fetch_started", fetch_mode="http", source_host=source_host(source_url))
     try:
         with opener.open(req, timeout=15) as response:
+            status_code = response.status
             content_type = response.headers.get_content_type()
             if content_type not in {"text/html", "application/xhtml+xml"}:
+                log_event(
+                    logging.WARNING,
+                    "upstream_fetch_failed",
+                    fetch_mode="http",
+                    source_host=source_host(source_url),
+                    status_code=status_code,
+                    content_type=content_type,
+                    duration_ms=get_elapsed_ms(started_at),
+                    error=f"Expected HTML but received {content_type}.",
+                )
                 raise ValueError(f"Expected HTML but received {content_type}.")
             data = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
+        log_event(
+            logging.WARNING,
+            "upstream_fetch_failed",
+            fetch_mode="http",
+            source_host=source_host(source_url),
+            status_code=exc.code,
+            duration_ms=get_elapsed_ms(started_at),
+            error=f"Upstream HTTP error: {exc.code} {exc.reason}",
+        )
         raise ValueError(f"Upstream HTTP error: {exc.code} {exc.reason}") from exc
     except RedirectBlocked as exc:
+        log_event(
+            logging.WARNING,
+            "upstream_fetch_failed",
+            fetch_mode="http",
+            source_host=source_host(source_url),
+            duration_ms=get_elapsed_ms(started_at),
+            error=str(exc),
+        )
         raise ValueError(str(exc)) from exc
     except URLError as exc:
+        log_event(
+            logging.WARNING,
+            "upstream_fetch_failed",
+            fetch_mode="http",
+            source_host=source_host(source_url),
+            duration_ms=get_elapsed_ms(started_at),
+            error=f"Upstream connection error: {exc.reason}",
+        )
         raise ValueError(f"Upstream connection error: {exc.reason}") from exc
 
     if len(data) > MAX_RESPONSE_BYTES:
+        log_event(
+            logging.WARNING,
+            "upstream_fetch_failed",
+            fetch_mode="http",
+            source_host=source_host(source_url),
+            status_code=status_code,
+            duration_ms=get_elapsed_ms(started_at),
+            error="Source page exceeded the 2 MB response limit.",
+        )
         raise ValueError("Source page exceeded the 2 MB response limit.")
 
+    log_event(
+        logging.INFO,
+        "upstream_fetch_completed",
+        fetch_mode="http",
+        source_host=source_host(source_url),
+        status_code=status_code,
+        content_type=content_type,
+        bytes_read=len(data),
+        duration_ms=get_elapsed_ms(started_at),
+    )
     return data.decode("utf-8", errors="replace")
 
 
@@ -1197,6 +1624,10 @@ def fetch_html_browser(
         ) from exc
 
     parsed_source = urlparse(source_url)
+    started_at = time.perf_counter()
+    blocked_requests = {"resource_type": 0, "scheme": 0, "offsite": 0}
+
+    log_event(logging.INFO, "upstream_fetch_started", fetch_mode="browser", source_host=source_host(source_url))
 
     try:
         with sync_playwright() as playwright:
@@ -1214,12 +1645,15 @@ def fetch_html_browser(
                 resource_type = route.request.resource_type
                 parsed_request = urlparse(route.request.url)
                 if resource_type in {"image", "media", "font", "websocket"}:
+                    blocked_requests["resource_type"] += 1
                     route.abort()
                     return
                 if parsed_request.scheme not in {"http", "https"}:
+                    blocked_requests["scheme"] += 1
                     route.abort()
                     return
                 if parsed_request.netloc and parsed_request.netloc != parsed_source.netloc:
+                    blocked_requests["offsite"] += 1
                     route.abort()
                     return
                 route.continue_()
@@ -1230,24 +1664,79 @@ def fetch_html_browser(
             emit_progress(progress, "Fetching content", "Loading the rendered page in the browser.")
             response = page.goto(source_url, wait_until="domcontentloaded")
             if response is None:
+                log_event(
+                    logging.WARNING,
+                    "upstream_fetch_failed",
+                    fetch_mode="browser",
+                    source_host=source_host(source_url),
+                    duration_ms=get_elapsed_ms(started_at),
+                    error="Browser mode did not receive a document response.",
+                )
                 raise ValueError("Browser mode did not receive a document response.")
             if not response.ok:
+                log_event(
+                    logging.WARNING,
+                    "upstream_fetch_failed",
+                    fetch_mode="browser",
+                    source_host=source_host(source_url),
+                    status_code=response.status,
+                    duration_ms=get_elapsed_ms(started_at),
+                    error=f"Upstream HTTP error: {response.status} {response.status_text}",
+                )
                 raise ValueError(f"Upstream HTTP error: {response.status} {response.status_text}")
 
             final_url = urlparse(page.url)
             if final_url.netloc != parsed_source.netloc:
+                log_event(
+                    logging.WARNING,
+                    "upstream_fetch_failed",
+                    fetch_mode="browser",
+                    source_host=source_host(source_url),
+                    final_url_host=final_url.netloc,
+                    duration_ms=get_elapsed_ms(started_at),
+                    error="Browser navigation left the source host and was blocked.",
+                )
                 raise ValueError("Browser navigation left the source host and was blocked.")
 
             emit_progress(progress, "Rendering page", "Waiting briefly for the topic list to settle.")
             page.wait_for_timeout(1000)
             html = page.content()
             if len(html.encode("utf-8")) > MAX_RESPONSE_BYTES:
+                log_event(
+                    logging.WARNING,
+                    "upstream_fetch_failed",
+                    fetch_mode="browser",
+                    source_host=source_host(source_url),
+                    status_code=response.status,
+                    duration_ms=get_elapsed_ms(started_at),
+                    error="Source page exceeded the 2 MB response limit.",
+                )
                 raise ValueError("Source page exceeded the 2 MB response limit.")
 
             context.close()
             browser.close()
+            log_event(
+                logging.INFO,
+                "upstream_fetch_completed",
+                fetch_mode="browser",
+                source_host=source_host(source_url),
+                status_code=response.status,
+                final_url_host=final_url.netloc,
+                bytes_read=len(html.encode("utf-8")),
+                blocked_requests=blocked_requests,
+                duration_ms=get_elapsed_ms(started_at),
+            )
             return html
     except PlaywrightError as exc:
+        log_event(
+            logging.ERROR,
+            "upstream_fetch_failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            fetch_mode="browser",
+            source_host=source_host(source_url),
+            duration_ms=get_elapsed_ms(started_at),
+            error=f"Browser mode failed: {exc}",
+        )
         raise RuntimeError(f"Browser mode failed: {exc}") from exc
 
 
@@ -1569,12 +2058,45 @@ def get_profile_by_token(db_path: Path, token: str) -> StoredProfile | None:
 
 
 def refresh_due_profiles(db_path: Path) -> None:
-    for profile in list_profiles(db_path):
-        if profile.active and should_refresh(profile):
-            try:
-                refresh_profile(db_path, profile.id)
-            except RuntimeError:
-                continue
+    profiles = list_profiles(db_path)
+    due_profiles = [profile for profile in profiles if profile.active and should_refresh(profile)]
+    refreshed_count = 0
+    failed_count = 0
+
+    if due_profiles:
+        log_event(
+            logging.INFO,
+            "scheduler_refresh_sweep_started",
+            database_path=db_path,
+            total_profile_count=len(profiles),
+            due_profile_count=len(due_profiles),
+        )
+
+    for profile in due_profiles:
+        try:
+            refresh_profile(db_path, profile.id)
+            refreshed_count += 1
+        except RuntimeError as exc:
+            failed_count += 1
+            log_event(
+                logging.WARNING,
+                "scheduler_profile_refresh_failed",
+                profile_id=profile.id,
+                source_host=source_host(profile.source_url),
+                fetch_mode=profile.fetch_mode,
+                error=str(exc),
+            )
+
+    if due_profiles or failed_count:
+        log_event(
+            logging.INFO,
+            "scheduler_refresh_sweep_completed",
+            database_path=db_path,
+            total_profile_count=len(profiles),
+            due_profile_count=len(due_profiles),
+            refreshed_profile_count=refreshed_count,
+            failed_profile_count=failed_count,
+        )
 
 
 def should_refresh(profile: StoredProfile) -> bool:
@@ -1600,6 +2122,15 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
         raise RuntimeError("Feed is disabled.")
 
     now = utcnow_text()
+    refresh_started_at = time.perf_counter()
+    log_event(
+        logging.INFO,
+        "profile_refresh_started",
+        profile_id=profile_id,
+        source_host=source_host(profile.source_url),
+        fetch_mode=profile.fetch_mode,
+        refresh_interval_minutes=profile.refresh_interval_minutes,
+    )
     try:
         entries = extract_feed_entries(profile.to_feed_request())
     except (ValueError, RuntimeError) as exc:
@@ -1613,6 +2144,15 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
                 (str(exc), now, now, now, profile_id),
             )
             conn.commit()
+        log_event(
+            logging.WARNING,
+            "profile_refresh_failed",
+            profile_id=profile_id,
+            source_host=source_host(profile.source_url),
+            fetch_mode=profile.fetch_mode,
+            duration_ms=get_elapsed_ms(refresh_started_at),
+            error=str(exc),
+        )
         raise RuntimeError(str(exc)) from exc
 
     with closing(connect_db(db_path)) as conn:
@@ -1641,6 +2181,15 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
             (now, now, now, profile_id),
         )
         conn.commit()
+    log_event(
+        logging.INFO,
+        "profile_refresh_completed",
+        profile_id=profile_id,
+        source_host=source_host(profile.source_url),
+        fetch_mode=profile.fetch_mode,
+        entry_count=len(entries),
+        duration_ms=get_elapsed_ms(refresh_started_at),
+    )
 
 
 def list_feed_items(db_path: Path, profile_id: int, limit: int) -> list[FeedEntry]:
@@ -1708,10 +2257,24 @@ def load_feed_payload(db_path: Path, token: str) -> tuple[StoredProfile | None, 
         return None, []
 
     if should_refresh(profile):
+        log_event(
+            logging.INFO,
+            "feed_request_triggered_refresh",
+            token_hash=token_fingerprint(token),
+            profile_id=profile.id,
+            source_host=source_host(profile.source_url),
+            fetch_mode=profile.fetch_mode,
+        )
         try:
             refresh_profile(db_path, profile.id)
             profile = get_profile_by_token(db_path, token)
         except RuntimeError:
+            log_event(
+                logging.WARNING,
+                "feed_request_refresh_failed",
+                token_hash=token_fingerprint(token),
+                profile_id=profile.id,
+            )
             profile = get_profile_by_token(db_path, token)
 
     if profile is None:
