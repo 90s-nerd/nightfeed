@@ -3,7 +3,9 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from email.utils import format_datetime
+from email.utils import formataddr, parseaddr
 from fnmatch import fnmatchcase
 from html import escape
 from pathlib import Path
@@ -12,14 +14,16 @@ from threading import Event, Lock, Thread
 from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request, build_opener
 import hashlib
 import json
 import logging
 import os
 import secrets
 import re
+import smtplib
 import sqlite3
+import ssl
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -56,15 +60,6 @@ _logging_lock = Lock()
 _logging_configured = False
 
 
-class RedirectBlocked(URLError):
-    pass
-
-
-class BlockRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise RedirectBlocked(f"Blocked redirect to {newurl}")
-
-
 @dataclass
 class FeedRequest:
     feed_title: str
@@ -76,6 +71,8 @@ class FeedRequest:
     max_items: int
     refresh_interval_minutes: int
     fetch_mode: str
+    notify_on_success: bool = False
+    notify_on_failure: bool = True
     filter_rules: str = ""
     exclude_filter_rules: str = ""
 
@@ -86,6 +83,12 @@ class FeedEntry:
     link: str
     summary: str
     published_at: datetime
+
+
+@dataclass
+class FetchedDocument:
+    html: str
+    final_url: str
 
 
 @dataclass
@@ -103,6 +106,8 @@ class StoredProfile:
     max_items: int
     refresh_interval_minutes: int
     fetch_mode: str
+    notify_on_success: bool
+    notify_on_failure: bool
     active: bool
     last_status: str
     last_error: str
@@ -125,6 +130,8 @@ class StoredProfile:
             max_items=self.max_items,
             refresh_interval_minutes=self.refresh_interval_minutes,
             fetch_mode=self.fetch_mode,
+            notify_on_success=self.notify_on_success,
+            notify_on_failure=self.notify_on_failure,
         )
 
 
@@ -132,6 +139,14 @@ class StoredProfile:
 class AppSettings:
     timezone_name: str = "UTC"
     public_base_url: str = ""
+    smtp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 0
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    smtp_to_email: str = ""
+    smtp_from_email: str = ""
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -353,6 +368,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             form=form,
             preview=preview,
             error=error,
+            smtp_enabled=getattr(g, "app_settings", AppSettings()).smtp_enabled,
         )
 
     def serialize_preview(entries: list[FeedEntry]) -> list[dict[str, str]]:
@@ -480,6 +496,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             preview=preview or [],
             preview_error=preview_error,
             purged=purged,
+            smtp_enabled=settings.smtp_enabled,
         )
 
     @app.get("/")
@@ -547,22 +564,25 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             settings=getattr(g, "app_settings", AppSettings()),
             error=None,
             saved=request.args.get("saved") == "1",
+            test_sent=request.args.get("test_sent") == "1",
+            test_error=request.args.get("test_error", "").strip(),
         )
 
     @app.post("/settings")
     def update_settings_route() -> Response | tuple[str, int]:
         try:
-            settings = update_app_settings(
-                Path(app.config["DATABASE_PATH"]),
-                timezone_name=request.form.get("timezone_name", ""),
-                public_base_url=request.form.get("public_base_url", ""),
-            )
+            settings = update_settings_route_from_form(Path(app.config["DATABASE_PATH"]), request.form)
             g.app_settings = settings
             log_event(
                 logging.INFO,
                 "settings_updated",
                 timezone_name=settings.timezone_name,
                 public_base_url_host=source_host(settings.public_base_url) if settings.public_base_url else None,
+                smtp_enabled=settings.smtp_enabled,
+                smtp_host=settings.smtp_host or None,
+                smtp_port=settings.smtp_port if settings.smtp_enabled else None,
+                smtp_use_tls=settings.smtp_use_tls if settings.smtp_enabled else None,
+                smtp_to_email=settings.smtp_to_email or None,
             )
             return redirect(url_for("settings_route", saved=1))
         except ValueError as exc:
@@ -570,12 +590,49 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return (
                 render_template(
                     "settings.html",
-                    settings=AppSettings(
-                        timezone_name=request.form.get("timezone_name", "").strip() or "UTC",
-                        public_base_url=request.form.get("public_base_url", "").strip(),
-                    ),
+                    settings=settings_from_form(request.form),
                     error=str(exc),
                     saved=False,
+                    test_sent=False,
+                    test_error="",
+                ),
+                400,
+            )
+
+    @app.post("/settings/test-email")
+    def send_test_email_route() -> Response | tuple[str, int]:
+        try:
+            settings = validate_settings_form(Path(app.config["DATABASE_PATH"]), request.form)
+            g.app_settings = settings
+            if not smtp_configured(settings):
+                raise ValueError("Enable SMTP notifications and complete all required SMTP fields before sending a test email.")
+            send_test_email(settings)
+            log_event(
+                logging.INFO,
+                "settings_test_email_sent",
+                smtp_host=settings.smtp_host,
+                smtp_port=settings.smtp_port,
+                smtp_use_tls=settings.smtp_use_tls,
+                smtp_to_email=settings.smtp_to_email,
+            )
+            return render_template(
+                "settings.html",
+                settings=settings_from_form(request.form),
+                error=None,
+                saved=False,
+                test_sent=True,
+                test_error="",
+            )
+        except (ValueError, RuntimeError, OSError, smtplib.SMTPException) as exc:
+            log_event(logging.WARNING, "settings_test_email_failed", error=str(exc))
+            return (
+                render_template(
+                    "settings.html",
+                    settings=settings_from_form(request.form),
+                    error=None,
+                    saved=False,
+                    test_sent=False,
+                    test_error=str(exc),
                 ),
                 400,
             )
@@ -635,6 +692,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 max_items=profile.max_items,
                 refresh_interval_minutes=profile.refresh_interval_minutes,
                 fetch_mode=profile.fetch_mode,
+                notify_on_success="1" if profile.notify_on_success else "",
+                notify_on_failure="1" if profile.notify_on_failure else "",
             )
         )
 
@@ -677,7 +736,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/profiles/<int:profile_id>/edit")
     def edit_profile_route(profile_id: int) -> Response | tuple[str, int]:
         try:
-            config = parse_request_values(request.form)
+            profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
+            if profile is None:
+                log_event(logging.WARNING, "profile_update_failed", profile_id=profile_id, error="Profile not found.")
+                return Response("Profile not found.", status=404, mimetype="text/plain; charset=utf-8")
+            config = parse_request_values(request.form, existing_profile=profile)
             updated_profile = update_profile(Path(app.config["DATABASE_PATH"]), profile_id, config)
             log_event(
                 logging.INFO,
@@ -764,7 +827,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             edit_form = request.args.to_dict()
             edit_form.pop("preview", None)
             try:
-                config = parse_request_values(edit_form)
+                config = parse_request_values(edit_form, existing_profile=profile)
                 preview = extract_feed_entries(config)
             except (ValueError, RuntimeError) as exc:
                 preview_error = str(exc)
@@ -785,7 +848,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             log_event(logging.WARNING, "preview_failed", preview_scope="profile", profile_id=profile_id, error="Profile not found.")
             return jsonify({"items": [], "error": "Profile not found."}), 404
         try:
-            config = parse_request_values(request.form)
+            config = parse_request_values(request.form, existing_profile=profile)
             preview = extract_feed_entries(config)
             log_event(
                 logging.INFO,
@@ -815,7 +878,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 },
             )
         try:
-            config = parse_request_values(request.args)
+            config = parse_request_values(request.args, existing_profile=profile)
         except (ValueError, RuntimeError) as exc:
             log_event(logging.WARNING, "preview_stream_request_invalid", preview_scope="profile", profile_id=profile_id, error=str(exc))
             return Response(
@@ -948,6 +1011,8 @@ def load_form() -> dict[str, str]:
         "max_items": "25",
         "refresh_interval_minutes": "60",
         "fetch_mode": "http",
+        "notify_on_success": "",
+        "notify_on_failure": "1",
     }
 
 
@@ -970,11 +1035,21 @@ def build_clone_title(db_path: Path, original_title: str) -> str:
         suffix += 1
 
 
-def parse_request_values(values: Any) -> FeedRequest:
+def parse_request_values(values: Any, existing_profile: StoredProfile | None = None) -> FeedRequest:
     source_url = normalize_source_url(values.get("source_url", ""))
     fetch_mode = values.get("fetch_mode", "http").strip() or "http"
     if fetch_mode not in {"http", "browser"}:
         raise ValueError("Fetch mode must be http or browser.")
+    notify_on_success = (
+        parse_checkbox(values.get("notify_on_success"))
+        if "notify_on_success" in values
+        else (existing_profile.notify_on_success if existing_profile is not None else False)
+    )
+    notify_on_failure = (
+        parse_checkbox(values.get("notify_on_failure"))
+        if "notify_on_failure" in values
+        else (existing_profile.notify_on_failure if existing_profile is not None else True)
+    )
 
     return FeedRequest(
         feed_title=require_text(values.get("feed_title", ""), "Feed title"),
@@ -988,6 +1063,8 @@ def parse_request_values(values: Any) -> FeedRequest:
         max_items=parse_max_items(values.get("max_items", "25")),
         refresh_interval_minutes=parse_refresh_interval(values.get("refresh_interval_minutes", "60")),
         fetch_mode=fetch_mode,
+        notify_on_success=notify_on_success,
+        notify_on_failure=notify_on_failure,
     )
 
 
@@ -1067,7 +1144,14 @@ def extract_feed_entries(
         exclude_filter_count=len(parse_filter_rule_lines(config.exclude_filter_rules)),
     )
     emit_progress(progress, "Accessing website", "Opening the source page.")
-    html = fetch_html(config.source_url, config.fetch_mode, progress=progress)
+    fetched_document = fetch_html(config.source_url, config.fetch_mode, progress=progress)
+    if isinstance(fetched_document, FetchedDocument):
+        html = fetched_document.html
+        if fetched_document.final_url != config.source_url:
+            config.source_url = fetched_document.final_url
+            emit_progress(progress, "Following redirect", f"Resolved to {config.source_url}.")
+    else:
+        html = fetched_document
     emit_progress(progress, "Analyzing document", "Parsing the returned HTML.")
     soup = BeautifulSoup(html, "html.parser")
     emit_progress(progress, "Matching selectors", "Locating item nodes from the page.")
@@ -1512,7 +1596,7 @@ def fetch_html(
     fetch_mode: str,
     *,
     progress: Callable[[str, str], None] | None = None,
-) -> str:
+) -> FetchedDocument:
     if fetch_mode == "browser":
         return fetch_html_browser(source_url, progress=progress)
     return fetch_html_http(source_url, progress=progress)
@@ -1522,9 +1606,9 @@ def fetch_html_http(
     source_url: str,
     *,
     progress: Callable[[str, str], None] | None = None,
-) -> str:
+) -> FetchedDocument:
     started_at = time.perf_counter()
-    opener = build_opener(BlockRedirects)
+    opener = build_opener()
     req = Request(
         source_url,
         headers={
@@ -1540,6 +1624,18 @@ def fetch_html_http(
         with opener.open(req, timeout=15) as response:
             status_code = response.status
             content_type = response.headers.get_content_type()
+            final_url = response.geturl()
+            parsed_final = urlparse(final_url)
+            if parsed_final.scheme not in {"http", "https"} or not parsed_final.netloc:
+                log_event(
+                    logging.WARNING,
+                    "upstream_fetch_failed",
+                    fetch_mode="http",
+                    source_host=source_host(source_url),
+                    duration_ms=get_elapsed_ms(started_at),
+                    error=f"Blocked redirect to unsupported URL: {final_url}",
+                )
+                raise ValueError(f"Blocked redirect to unsupported URL: {final_url}")
             if content_type not in {"text/html", "application/xhtml+xml"}:
                 log_event(
                     logging.WARNING,
@@ -1564,16 +1660,6 @@ def fetch_html_http(
             error=f"Upstream HTTP error: {exc.code} {exc.reason}",
         )
         raise ValueError(f"Upstream HTTP error: {exc.code} {exc.reason}") from exc
-    except RedirectBlocked as exc:
-        log_event(
-            logging.WARNING,
-            "upstream_fetch_failed",
-            fetch_mode="http",
-            source_host=source_host(source_url),
-            duration_ms=get_elapsed_ms(started_at),
-            error=str(exc),
-        )
-        raise ValueError(str(exc)) from exc
     except URLError as exc:
         log_event(
             logging.WARNING,
@@ -1603,18 +1689,22 @@ def fetch_html_http(
         fetch_mode="http",
         source_host=source_host(source_url),
         status_code=status_code,
+        final_url_host=urlparse(final_url).netloc,
         content_type=content_type,
         bytes_read=len(data),
         duration_ms=get_elapsed_ms(started_at),
     )
-    return data.decode("utf-8", errors="replace")
+    return FetchedDocument(
+        html=data.decode("utf-8", errors="replace"),
+        final_url=final_url,
+    )
 
 
 def fetch_html_browser(
     source_url: str,
     *,
     progress: Callable[[str, str], None] | None = None,
-) -> str:
+) -> FetchedDocument:
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
@@ -1686,17 +1776,16 @@ def fetch_html_browser(
                 raise ValueError(f"Upstream HTTP error: {response.status} {response.status_text}")
 
             final_url = urlparse(page.url)
-            if final_url.netloc != parsed_source.netloc:
+            if final_url.scheme not in {"http", "https"} or not final_url.netloc:
                 log_event(
                     logging.WARNING,
                     "upstream_fetch_failed",
                     fetch_mode="browser",
                     source_host=source_host(source_url),
-                    final_url_host=final_url.netloc,
                     duration_ms=get_elapsed_ms(started_at),
-                    error="Browser navigation left the source host and was blocked.",
+                    error=f"Blocked redirect to unsupported URL: {page.url}",
                 )
-                raise ValueError("Browser navigation left the source host and was blocked.")
+                raise ValueError(f"Blocked redirect to unsupported URL: {page.url}")
 
             emit_progress(progress, "Rendering page", "Waiting briefly for the topic list to settle.")
             page.wait_for_timeout(1000)
@@ -1726,7 +1815,10 @@ def fetch_html_browser(
                 blocked_requests=blocked_requests,
                 duration_ms=get_elapsed_ms(started_at),
             )
-            return html
+            return FetchedDocument(
+                html=html,
+                final_url=page.url,
+            )
     except PlaywrightError as exc:
         log_event(
             logging.ERROR,
@@ -1781,6 +1873,8 @@ def init_db(db_path: Path) -> None:
                 max_items INTEGER NOT NULL,
                 refresh_interval_minutes INTEGER NOT NULL,
                 fetch_mode TEXT NOT NULL,
+                notify_on_success INTEGER NOT NULL DEFAULT 0,
+                notify_on_failure INTEGER NOT NULL DEFAULT 1,
                 active INTEGER NOT NULL DEFAULT 1,
                 last_status TEXT NOT NULL DEFAULT 'idle',
                 last_error TEXT NOT NULL DEFAULT '',
@@ -1810,19 +1904,54 @@ def init_db(db_path: Path) -> None:
             CREATE TABLE IF NOT EXISTS app_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 timezone_name TEXT NOT NULL,
-                public_base_url TEXT NOT NULL DEFAULT ''
+                public_base_url TEXT NOT NULL DEFAULT '',
+                smtp_enabled INTEGER NOT NULL DEFAULT 0,
+                smtp_host TEXT NOT NULL DEFAULT '',
+                smtp_port INTEGER NOT NULL DEFAULT 0,
+                smtp_username TEXT NOT NULL DEFAULT '',
+                smtp_password TEXT NOT NULL DEFAULT '',
+                smtp_use_tls INTEGER NOT NULL DEFAULT 1,
+                smtp_to_email TEXT NOT NULL DEFAULT '',
+                smtp_from_email TEXT NOT NULL DEFAULT ''
             )
             """
         )
         ensure_column(conn, "app_settings", "public_base_url", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "app_settings", "smtp_enabled", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "app_settings", "smtp_host", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "app_settings", "smtp_port", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "app_settings", "smtp_username", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "app_settings", "smtp_password", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "app_settings", "smtp_use_tls", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column(conn, "app_settings", "smtp_to_email", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "app_settings", "smtp_from_email", "TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
-            INSERT OR IGNORE INTO app_settings (id, timezone_name, public_base_url)
-            VALUES (1, 'UTC', '')
+            INSERT OR IGNORE INTO app_settings (
+                id, timezone_name, public_base_url, smtp_enabled, smtp_host, smtp_port, smtp_username,
+                smtp_password, smtp_use_tls, smtp_to_email, smtp_from_email
+            )
+            VALUES (1, 'UTC', '', 0, '', 0, '', '', 1, '', '')
+            """
+        )
+        conn.execute(
+            """
+            UPDATE app_settings
+            SET smtp_port = 0, smtp_from_email = ''
+            WHERE id = 1
+              AND smtp_enabled = 0
+              AND smtp_host = ''
+              AND smtp_username = ''
+              AND smtp_password = ''
+              AND smtp_to_email = ''
+              AND smtp_port = 587
+              AND smtp_from_email = 'Nightfeed <noreply@example.com>'
             """
         )
         ensure_column(conn, "profiles", "filter_rules", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "profiles", "exclude_filter_rules", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "profiles", "notify_on_success", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "profiles", "notify_on_failure", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(conn, "profiles", "refresh_anchor_at", "TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
@@ -1845,34 +1974,187 @@ def ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, d
 def get_app_settings(db_path: Path) -> AppSettings:
     with closing(connect_db(db_path)) as conn:
         row = conn.execute(
-            "SELECT timezone_name, public_base_url FROM app_settings WHERE id = 1"
+            """
+            SELECT timezone_name, public_base_url, smtp_enabled, smtp_host, smtp_port, smtp_username,
+                   smtp_password, smtp_use_tls, smtp_to_email, smtp_from_email
+            FROM app_settings
+            WHERE id = 1
+            """
         ).fetchone()
     if row is None:
         return AppSettings()
     return AppSettings(
         timezone_name=row["timezone_name"],
         public_base_url=row["public_base_url"],
+        smtp_enabled=bool(row["smtp_enabled"]),
+        smtp_host=row["smtp_host"],
+        smtp_port=row["smtp_port"],
+        smtp_username=row["smtp_username"],
+        smtp_password=row["smtp_password"],
+        smtp_use_tls=bool(row["smtp_use_tls"]),
+        smtp_to_email=row["smtp_to_email"],
+        smtp_from_email=row["smtp_from_email"],
     )
 
 
-def update_app_settings(db_path: Path, *, timezone_name: str, public_base_url: str) -> AppSettings:
-    normalized_timezone = parse_timezone_name(timezone_name)
-    normalized_public_base_url = parse_public_base_url(public_base_url)
+def update_app_settings(
+    db_path: Path,
+    *,
+    timezone_name: str,
+    public_base_url: str,
+    smtp_enabled: str,
+    smtp_host: str,
+    smtp_port: str,
+    smtp_username: str,
+    smtp_password: str,
+    smtp_use_tls: str,
+    smtp_to_email: str,
+    smtp_from_email: str,
+) -> AppSettings:
+    existing_settings = get_app_settings(db_path)
+    normalized_settings = normalize_app_settings(
+        existing_settings,
+        timezone_name=timezone_name,
+        public_base_url=public_base_url,
+        smtp_enabled=smtp_enabled,
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_username=smtp_username,
+        smtp_password=smtp_password,
+        smtp_use_tls=smtp_use_tls,
+        smtp_to_email=smtp_to_email,
+        smtp_from_email=smtp_from_email,
+    )
     with closing(connect_db(db_path)) as conn:
         conn.execute(
             """
-            INSERT INTO app_settings (id, timezone_name, public_base_url)
-            VALUES (1, ?, ?)
+            INSERT INTO app_settings (
+                id, timezone_name, public_base_url, smtp_enabled, smtp_host, smtp_port, smtp_username,
+                smtp_password, smtp_use_tls, smtp_to_email, smtp_from_email
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 timezone_name = excluded.timezone_name,
-                public_base_url = excluded.public_base_url
+                public_base_url = excluded.public_base_url,
+                smtp_enabled = excluded.smtp_enabled,
+                smtp_host = excluded.smtp_host,
+                smtp_port = excluded.smtp_port,
+                smtp_username = excluded.smtp_username,
+                smtp_password = excluded.smtp_password,
+                smtp_use_tls = excluded.smtp_use_tls,
+                smtp_to_email = excluded.smtp_to_email,
+                smtp_from_email = excluded.smtp_from_email
             """,
-            (normalized_timezone, normalized_public_base_url),
+            (
+                normalized_settings.timezone_name,
+                normalized_settings.public_base_url,
+                int(normalized_settings.smtp_enabled),
+                normalized_settings.smtp_host,
+                normalized_settings.smtp_port,
+                normalized_settings.smtp_username,
+                normalized_settings.smtp_password,
+                int(normalized_settings.smtp_use_tls),
+                normalized_settings.smtp_to_email,
+                normalized_settings.smtp_from_email,
+            ),
         )
         conn.commit()
+    return normalized_settings
+
+
+def settings_from_form(form: Any) -> AppSettings:
+    return AppSettings(
+        timezone_name=form.get("timezone_name", "").strip() or "UTC",
+        public_base_url=form.get("public_base_url", "").strip(),
+        smtp_enabled=parse_checkbox(form.get("smtp_enabled", "")),
+        smtp_host=form.get("smtp_host", "").strip(),
+        smtp_port=parse_int_or_default(form.get("smtp_port", ""), 0),
+        smtp_username=form.get("smtp_username", "").strip(),
+        smtp_password=form.get("smtp_password", ""),
+        smtp_use_tls=parse_checkbox(form.get("smtp_use_tls")),
+        smtp_to_email=form.get("smtp_to_email", "").strip(),
+        smtp_from_email=form.get("smtp_from_email", "").strip(),
+    )
+
+
+def normalize_app_settings(
+    existing_settings: AppSettings,
+    *,
+    timezone_name: str,
+    public_base_url: str,
+    smtp_enabled: str,
+    smtp_host: str,
+    smtp_port: str,
+    smtp_username: str,
+    smtp_password: str,
+    smtp_use_tls: str,
+    smtp_to_email: str,
+    smtp_from_email: str,
+) -> AppSettings:
+    normalized_timezone = parse_timezone_name(timezone_name)
+    normalized_public_base_url = parse_public_base_url(public_base_url)
+    normalized_smtp_enabled = parse_checkbox(smtp_enabled)
+    normalized_smtp_password = smtp_password if smtp_password else existing_settings.smtp_password
+    normalized_smtp_port = parse_smtp_port(smtp_port, default=existing_settings.smtp_port)
+    normalized_smtp_use_tls = parse_checkbox(smtp_use_tls)
+    normalized_smtp_from_email = parse_mailbox(smtp_from_email, "From email") if normalized_smtp_enabled else smtp_from_email.strip()
+    normalized_smtp_to_email = parse_mailbox(smtp_to_email, "To email") if normalized_smtp_enabled else smtp_to_email.strip()
+    normalized_smtp_host = smtp_host.strip()
+    normalized_smtp_username = smtp_username.strip()
+    if normalized_smtp_enabled:
+        if normalized_smtp_port == 0:
+            raise ValueError("SMTP port is required.")
+        require_text(normalized_smtp_host, "SMTP host")
+        require_text(normalized_smtp_username, "SMTP username")
+        require_text(normalized_smtp_password, "SMTP password")
+    else:
+        normalized_smtp_host = normalized_smtp_host or existing_settings.smtp_host
+        normalized_smtp_username = normalized_smtp_username or existing_settings.smtp_username
+        normalized_smtp_from_email = normalized_smtp_from_email or existing_settings.smtp_from_email
+        normalized_smtp_to_email = normalized_smtp_to_email or existing_settings.smtp_to_email
     return AppSettings(
         timezone_name=normalized_timezone,
         public_base_url=normalized_public_base_url,
+        smtp_enabled=normalized_smtp_enabled,
+        smtp_host=normalized_smtp_host,
+        smtp_port=normalized_smtp_port,
+        smtp_username=normalized_smtp_username,
+        smtp_password=normalized_smtp_password,
+        smtp_use_tls=normalized_smtp_use_tls,
+        smtp_to_email=normalized_smtp_to_email,
+        smtp_from_email=normalized_smtp_from_email,
+    )
+
+
+def validate_settings_form(db_path: Path, form: Any) -> AppSettings:
+    return normalize_app_settings(
+        get_app_settings(db_path),
+        timezone_name=form.get("timezone_name", ""),
+        public_base_url=form.get("public_base_url", ""),
+        smtp_enabled=form.get("smtp_enabled", ""),
+        smtp_host=form.get("smtp_host", ""),
+        smtp_port=form.get("smtp_port", ""),
+        smtp_username=form.get("smtp_username", ""),
+        smtp_password=form.get("smtp_password", ""),
+        smtp_use_tls=form.get("smtp_use_tls"),
+        smtp_to_email=form.get("smtp_to_email", ""),
+        smtp_from_email=form.get("smtp_from_email", ""),
+    )
+
+
+def update_settings_route_from_form(db_path: Path, form: Any) -> AppSettings:
+    return update_app_settings(
+        db_path,
+        timezone_name=form.get("timezone_name", ""),
+        public_base_url=form.get("public_base_url", ""),
+        smtp_enabled=form.get("smtp_enabled", ""),
+        smtp_host=form.get("smtp_host", ""),
+        smtp_port=form.get("smtp_port", ""),
+        smtp_username=form.get("smtp_username", ""),
+        smtp_password=form.get("smtp_password", ""),
+        smtp_use_tls=form.get("smtp_use_tls"),
+        smtp_to_email=form.get("smtp_to_email", ""),
+        smtp_from_email=form.get("smtp_from_email", ""),
     )
 
 
@@ -1884,9 +2166,10 @@ def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
             """
             INSERT INTO profiles (
                 feed_token, feed_title, source_url, item_selector, title_selector, link_selector,
-                summary_selector, filter_rules, exclude_filter_rules, max_items, refresh_interval_minutes, fetch_mode, active,
+                summary_selector, filter_rules, exclude_filter_rules, max_items, refresh_interval_minutes, fetch_mode,
+                notify_on_success, notify_on_failure, active,
                 last_status, last_error, last_refreshed_at, refresh_anchor_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'idle', '', '', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'idle', '', '', ?, ?, ?)
             """,
             (
                 token,
@@ -1901,6 +2184,8 @@ def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
                 config.max_items,
                 config.refresh_interval_minutes,
                 config.fetch_mode,
+                int(config.notify_on_success),
+                int(config.notify_on_failure),
                 now,
                 now,
                 now,
@@ -1925,6 +2210,7 @@ def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> Store
             UPDATE profiles
             SET feed_title = ?, source_url = ?, item_selector = ?, title_selector = ?, link_selector = ?,
                 summary_selector = ?, filter_rules = ?, exclude_filter_rules = ?, max_items = ?, refresh_interval_minutes = ?, fetch_mode = ?,
+                notify_on_success = ?, notify_on_failure = ?,
                 last_status = 'idle', last_error = '', updated_at = ?
             WHERE id = ?
             """,
@@ -1940,6 +2226,8 @@ def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> Store
                 config.max_items,
                 config.refresh_interval_minutes,
                 config.fetch_mode,
+                int(config.notify_on_success),
+                int(config.notify_on_failure),
                 now,
                 profile_id,
             ),
@@ -2131,8 +2419,9 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
         fetch_mode=profile.fetch_mode,
         refresh_interval_minutes=profile.refresh_interval_minutes,
     )
+    request_config = profile.to_feed_request()
     try:
-        entries = extract_feed_entries(profile.to_feed_request())
+        entries = extract_feed_entries(request_config)
     except (ValueError, RuntimeError) as exc:
         with closing(connect_db(db_path)) as conn:
             conn.execute(
@@ -2144,11 +2433,20 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
                 (str(exc), now, now, now, profile_id),
             )
             conn.commit()
+        failed_profile = get_profile_by_id(db_path, profile_id) or profile
+        maybe_send_refresh_notification(
+            db_path,
+            failed_profile,
+            status="error",
+            source_url=request_config.source_url,
+            refreshed_at=now,
+            error_message=str(exc),
+        )
         log_event(
             logging.WARNING,
             "profile_refresh_failed",
             profile_id=profile_id,
-            source_host=source_host(profile.source_url),
+            source_host=source_host(request_config.source_url),
             fetch_mode=profile.fetch_mode,
             duration_ms=get_elapsed_ms(refresh_started_at),
             error=str(exc),
@@ -2175,17 +2473,26 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
         conn.execute(
             """
             UPDATE profiles
-            SET last_status = 'ok', last_error = '', last_refreshed_at = ?, refresh_anchor_at = ?, updated_at = ?
+            SET source_url = ?, last_status = 'ok', last_error = '', last_refreshed_at = ?, refresh_anchor_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            (now, now, now, profile_id),
+            (request_config.source_url, now, now, now, profile_id),
         )
         conn.commit()
+    refreshed_profile = get_profile_by_id(db_path, profile_id) or profile
+    maybe_send_refresh_notification(
+        db_path,
+        refreshed_profile,
+        status="ok",
+        source_url=request_config.source_url,
+        refreshed_at=now,
+        entry_count=len(entries),
+    )
     log_event(
         logging.INFO,
         "profile_refresh_completed",
         profile_id=profile_id,
-        source_host=source_host(profile.source_url),
+        source_host=source_host(request_config.source_url),
         fetch_mode=profile.fetch_mode,
         entry_count=len(entries),
         duration_ms=get_elapsed_ms(refresh_started_at),
@@ -2230,6 +2537,8 @@ def profile_from_row(row: sqlite3.Row) -> StoredProfile:
         max_items=row["max_items"],
         refresh_interval_minutes=row["refresh_interval_minutes"],
         fetch_mode=row["fetch_mode"],
+        notify_on_success=bool(row["notify_on_success"]),
+        notify_on_failure=bool(row["notify_on_failure"]),
         active=bool(row["active"]),
         last_status=row["last_status"],
         last_error=row["last_error"],
@@ -2249,6 +2558,22 @@ def build_feed_url(root_url: str, token: str, public_base_url: str = "") -> str:
     base_url = public_base_url.strip() or root_url
     normalized_base = base_url.rstrip("/") + "/"
     return f"{normalized_base}feeds/{token}.xml"
+
+
+def parse_checkbox(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return default
+    return normalized not in {"0", "false", "no", "off"}
+
+
+def parse_int_or_default(value: str, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return default
 
 
 def load_feed_payload(db_path: Path, token: str) -> tuple[StoredProfile | None, list[FeedEntry]]:
@@ -2307,6 +2632,284 @@ def parse_public_base_url(value: str) -> str:
     if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
         raise ValueError("Public base URL must include only scheme and host, without a path or query string.")
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def parse_smtp_port(value: str, *, default: int = 0) -> int:
+    normalized = value.strip()
+    if not normalized:
+        return default
+    try:
+        port = int(normalized)
+    except ValueError as exc:
+        raise ValueError("SMTP port must be a number.") from exc
+    if port < 1 or port > 65535:
+        raise ValueError("SMTP port must be between 1 and 65535.")
+    return port
+
+
+def parse_mailbox(value: str, label: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{label} is required.")
+    display_name, email_address = parseaddr(normalized)
+    if "@" not in email_address:
+        raise ValueError(f"{label} must be a valid email address.")
+    return formataddr((display_name, email_address)) if display_name else email_address
+
+
+def smtp_configured(settings: AppSettings) -> bool:
+    return settings.smtp_enabled and bool(settings.smtp_host and settings.smtp_port and settings.smtp_to_email and settings.smtp_from_email)
+
+
+def maybe_send_refresh_notification(
+    db_path: Path,
+    profile: StoredProfile,
+    *,
+    status: str,
+    source_url: str,
+    refreshed_at: str,
+    entry_count: int = 0,
+    error_message: str = "",
+) -> None:
+    if status == "ok" and not profile.notify_on_success:
+        return
+    if status == "error" and not profile.notify_on_failure:
+        return
+    settings = get_app_settings(db_path)
+    if not smtp_configured(settings):
+        return
+    try:
+        send_refresh_notification_email(
+            settings,
+            profile,
+            status=status,
+            source_url=source_url,
+            refreshed_at=refreshed_at,
+            entry_count=entry_count,
+            error_message=error_message,
+        )
+        log_event(
+            logging.INFO,
+            "refresh_notification_sent",
+            profile_id=profile.id,
+            status=status,
+            smtp_host=settings.smtp_host,
+            to_email=settings.smtp_to_email,
+        )
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "refresh_notification_failed",
+            profile_id=profile.id,
+            status=status,
+            smtp_host=settings.smtp_host,
+            to_email=settings.smtp_to_email,
+            error=str(exc),
+        )
+
+
+def send_refresh_notification_email(
+    settings: AppSettings,
+    profile: StoredProfile,
+    *,
+    status: str,
+    source_url: str,
+    refreshed_at: str,
+    entry_count: int,
+    error_message: str,
+) -> None:
+    message = EmailMessage()
+    message["Subject"] = f"Nightfeed refresh {'succeeded' if status == 'ok' else 'failed'}: {profile.feed_title}"
+    message["From"] = settings.smtp_from_email
+    message["To"] = settings.smtp_to_email
+    message.set_content(
+        render_refresh_notification_text(
+            settings,
+            profile,
+            status=status,
+            source_url=source_url,
+            refreshed_at=refreshed_at,
+            entry_count=entry_count,
+            error_message=error_message,
+        )
+    )
+    message.add_alternative(
+        render_refresh_notification_html(
+            settings,
+            profile,
+            status=status,
+            source_url=source_url,
+            refreshed_at=refreshed_at,
+            entry_count=entry_count,
+            error_message=error_message,
+        ),
+        subtype="html",
+    )
+    send_smtp_message(settings, message)
+
+
+def send_test_email(settings: AppSettings) -> None:
+    message = EmailMessage()
+    message["Subject"] = "Nightfeed SMTP test"
+    message["From"] = settings.smtp_from_email
+    message["To"] = settings.smtp_to_email
+    sent_at = humanize_datetime(utcnow_text(), settings.timezone_name)
+    message.set_content(
+        "\n".join(
+            [
+                "Nightfeed SMTP test email",
+                "",
+                "Your SMTP settings are working.",
+                f"Sent at: {sent_at}",
+                f"SMTP host: {settings.smtp_host}",
+                f"Port: {settings.smtp_port}",
+                f"STARTTLS: {'Enabled' if settings.smtp_use_tls else 'Disabled'}",
+                f"Recipient: {settings.smtp_to_email}",
+            ]
+        )
+    )
+    message.add_alternative(render_test_email_html(settings, sent_at=sent_at), subtype="html")
+    send_smtp_message(settings, message)
+
+
+def send_smtp_message(settings: AppSettings, message: EmailMessage) -> None:
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+        smtp.ehlo()
+        if settings.smtp_use_tls:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.ehlo()
+        smtp.login(settings.smtp_username, settings.smtp_password)
+        smtp.send_message(message)
+
+
+def render_test_email_html(settings: AppSettings, *, sent_at: str) -> str:
+    detail_rows = [
+        ("Status", "SMTP test succeeded"),
+        ("Sent at", sent_at),
+        ("SMTP host", settings.smtp_host),
+        ("Port", str(settings.smtp_port)),
+        ("STARTTLS", "Enabled" if settings.smtp_use_tls else "Disabled"),
+        ("Recipient", settings.smtp_to_email),
+        ("Sender", settings.smtp_from_email),
+    ]
+    rendered_rows = "".join(
+        f"<tr><td style=\"padding:12px 0; color:#64748b; font-size:13px; vertical-align:top;\">{escape(label)}</td>"
+        f"<td style=\"padding:12px 0; color:#0f172a; font-size:14px; font-weight:600; vertical-align:top;\">{escape(value)}</td></tr>"
+        for label, value in detail_rows
+    )
+    return (
+        "<!doctype html><html><body style=\"margin:0; padding:32px 16px; background:#f8fafc; color:#0f172a; "
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;\">"
+        "<div style=\"max-width:680px; margin:0 auto;\">"
+        "<div style=\"background:#ffffff; border:1px solid #e2e8f0; border-radius:24px; overflow:hidden; "
+        "box-shadow:0 16px 40px rgba(15,23,42,0.08);\">"
+        "<div style=\"padding:28px 32px; background:linear-gradient(135deg, #0f172a 0%, #2563eb 100%); color:#ffffff;\">"
+        "<div style=\"font-size:12px; letter-spacing:0.14em; text-transform:uppercase; opacity:0.8;\">Nightfeed</div>"
+        "<h1 style=\"margin:14px 0 8px; font-size:28px; line-height:1.2;\">SMTP test email delivered</h1>"
+        "<p style=\"margin:0; font-size:15px; line-height:1.6; max-width:520px; opacity:0.92;\">Your notification settings are valid and Nightfeed can send email from this environment.</p>"
+        "</div><div style=\"padding:28px 32px 32px;\">"
+        "<div style=\"display:inline-block; padding:8px 12px; border-radius:999px; background:#dbeafe; color:#1d4ed8; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;\">SMTP ready</div>"
+        "<p style=\"margin:20px 0 24px; color:#334155; font-size:15px; line-height:1.7;\">This is a one-time verification email from your Nightfeed settings page.</p>"
+        f"<table style=\"width:100%; border-collapse:collapse;\">{rendered_rows}</table>"
+        "<div style=\"margin-top:28px; padding-top:20px; border-top:1px solid #e2e8f0; color:#64748b; font-size:12px; line-height:1.6;\">You can now rely on refresh success and failure emails using this same SMTP configuration.</div>"
+        "</div></div></div></body></html>"
+    )
+
+
+def render_refresh_notification_html(
+    settings: AppSettings,
+    profile: StoredProfile,
+    *,
+    status: str,
+    source_url: str,
+    refreshed_at: str,
+    entry_count: int,
+    error_message: str,
+) -> str:
+    accent = "#16a34a" if status == "ok" else "#dc2626"
+    badge_background = "#dcfce7" if status == "ok" else "#fee2e2"
+    badge_text = "#166534" if status == "ok" else "#991b1b"
+    headline = "Refresh completed successfully" if status == "ok" else "Refresh failed"
+    summary = (
+        f"Nightfeed saved {entry_count} entr{'y' if entry_count == 1 else 'ies'} for this refresh."
+        if status == "ok"
+        else "Nightfeed could not refresh this feed. The latest error details are included below."
+    )
+    feed_url = build_feed_url("https://nightfeed.local", profile.feed_token, settings.public_base_url) if settings.public_base_url else ""
+    detail_rows = [
+        ("Feed", profile.feed_title),
+        ("Status", "Success" if status == "ok" else "Error"),
+        ("Refresh time", humanize_datetime(refreshed_at, settings.timezone_name)),
+        ("Fetch mode", profile.fetch_mode.upper()),
+        ("Source URL", source_url),
+        ("Entries returned", str(entry_count if status == "ok" else 0)),
+        ("Stored item count", str(profile.item_count)),
+    ]
+    if feed_url:
+        detail_rows.append(("Feed URL", feed_url))
+    if error_message:
+        detail_rows.append(("Error", error_message))
+    rendered_rows = "".join(
+        f"<tr><td style=\"padding:12px 0; color:#64748b; font-size:13px; vertical-align:top;\">{escape(label)}</td>"
+        f"<td style=\"padding:12px 0; color:#0f172a; font-size:14px; font-weight:600; vertical-align:top;\">{escape(value)}</td></tr>"
+        for label, value in detail_rows
+    )
+    button_html = (
+        f"<a href=\"{escape(feed_url)}\" style=\"display:inline-block; padding:12px 18px; border-radius:999px; "
+        f"background:{accent}; color:#ffffff; text-decoration:none; font-weight:600;\">Open feed</a>"
+        if feed_url
+        else ""
+    )
+    return (
+        "<!doctype html><html><body style=\"margin:0; padding:32px 16px; background:#f8fafc; color:#0f172a; "
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;\">"
+        "<div style=\"max-width:680px; margin:0 auto;\">"
+        "<div style=\"background:#ffffff; border:1px solid #e2e8f0; border-radius:24px; overflow:hidden; "
+        "box-shadow:0 16px 40px rgba(15,23,42,0.08);\">"
+        f"<div style=\"padding:28px 32px; background:linear-gradient(135deg, {accent} 0%, #0f172a 100%); color:#ffffff;\">"
+        "<div style=\"font-size:12px; letter-spacing:0.14em; text-transform:uppercase; opacity:0.8;\">Nightfeed</div>"
+        f"<h1 style=\"margin:14px 0 8px; font-size:28px; line-height:1.2;\">{escape(headline)}</h1>"
+        f"<p style=\"margin:0; font-size:15px; line-height:1.6; max-width:520px; opacity:0.92;\">{escape(summary)}</p>"
+        "</div><div style=\"padding:28px 32px 32px;\">"
+        f"<div style=\"display:inline-block; padding:8px 12px; border-radius:999px; background:{badge_background}; "
+        f"color:{badge_text}; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;\">"
+        f"{'Success' if status == 'ok' else 'Error'}</div>"
+        f"<p style=\"margin:20px 0 24px; color:#334155; font-size:15px; line-height:1.7;\">{escape(profile.feed_title)} "
+        f"was refreshed in {escape(settings.timezone_name)}.</p>"
+        f"<table style=\"width:100%; border-collapse:collapse;\">{rendered_rows}</table>"
+        f"<div style=\"margin-top:28px;\">{button_html}</div>"
+        "<div style=\"margin-top:28px; padding-top:20px; border-top:1px solid #e2e8f0; color:#64748b; font-size:12px; line-height:1.6;\">"
+        "This message was sent automatically by Nightfeed."
+        "</div></div></div></div></body></html>"
+    )
+
+
+def render_refresh_notification_text(
+    settings: AppSettings,
+    profile: StoredProfile,
+    *,
+    status: str,
+    source_url: str,
+    refreshed_at: str,
+    entry_count: int,
+    error_message: str,
+) -> str:
+    lines = [
+        f"Nightfeed refresh {'succeeded' if status == 'ok' else 'failed'}",
+        "",
+        f"Feed: {profile.feed_title}",
+        f"Status: {'Success' if status == 'ok' else 'Error'}",
+        f"Refresh time: {humanize_datetime(refreshed_at, settings.timezone_name)}",
+        f"Fetch mode: {profile.fetch_mode.upper()}",
+        f"Source URL: {source_url}",
+        f"Entries returned: {entry_count if status == 'ok' else 0}",
+        f"Stored item count: {profile.item_count}",
+    ]
+    if settings.public_base_url:
+        lines.append(f"Feed URL: {build_feed_url('https://nightfeed.local', profile.feed_token, settings.public_base_url)}")
+    if error_message:
+        lines.extend(["", f"Error: {error_message}"])
+    return "\n".join(lines)
 
 
 def humanize_datetime(value: str | datetime, timezone_name: str = "UTC") -> str:

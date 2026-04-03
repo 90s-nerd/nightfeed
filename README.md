@@ -223,7 +223,7 @@ Feed requests also perform a due-check on access, so if a feed URL is opened aft
 
 ## Limits
 
-- HTTP mode blocks redirects, so use the final canonical listing URL.
+- Top-level page redirects are followed, and successful refreshes save the final canonical listing URL.
 - The upstream response is capped at 2 MB.
 - Only `http` and `https` URLs are accepted.
 - Feed items must stay on the same host as the source page.

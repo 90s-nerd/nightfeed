@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import smtplib
 import sqlite3
+import sys
+import types
 import unittest
 from unittest.mock import patch
 
@@ -12,12 +15,15 @@ except ModuleNotFoundError:
 
 from rss_site_bridge.app import (
     FeedEntry,
+    FetchedDocument,
     FeedRequest,
+    AppSettings,
     build_clone_title,
     create_app,
     create_profile,
     delete_profile,
     extract_feed_entries,
+    fetch_html_browser,
     get_app_settings,
     get_profile_by_token,
     get_profile_by_id,
@@ -29,6 +35,7 @@ from rss_site_bridge.app import (
     normalize_topic_link,
     refresh_due_profiles,
     refresh_profile,
+    send_test_email,
     render_rss,
     set_profile_active,
     should_refresh,
@@ -348,6 +355,399 @@ class AppTestCase(unittest.TestCase):
             self.assertEqual(2, len(stored_entries))
             self.assertEqual("Topic A", stored_entries[0].title)
             self.assertEqual("Topic B", stored_entries[1].title)
+
+    def test_extract_feed_entries_uses_final_redirect_url_for_relative_links(self):
+        config = FeedRequest(
+            feed_title="Forum Feed",
+            source_url="https://old.example/forum",
+            item_selector=".topic",
+            title_selector="a",
+            link_selector="a",
+            summary_selector="",
+            max_items=10,
+            refresh_interval_minutes=60,
+            fetch_mode="http",
+        )
+        html = """
+        <html>
+          <body>
+            <article class="topic"><a href="/forums/topic/alpha">Alpha Topic</a></article>
+          </body>
+        </html>
+        """
+
+        with patch(
+            "rss_site_bridge.app.fetch_html",
+            return_value=FetchedDocument(html=html, final_url="https://new.example/forum"),
+        ):
+            entries = extract_feed_entries(config)
+
+        self.assertEqual(1, len(entries))
+        self.assertEqual("https://new.example/forums/topic/alpha", entries[0].link)
+        self.assertEqual("https://new.example/forum", config.source_url)
+
+    def test_fetch_html_browser_allows_same_origin_requests(self):
+        class FakeResponse:
+            ok = True
+            status = 200
+            status_text = "OK"
+
+        class FakeRoute:
+            def __init__(self, url: str):
+                self.request = types.SimpleNamespace(resource_type="document", url=url)
+                self.continued = False
+                self.aborted = False
+
+            def abort(self):
+                self.aborted = True
+
+            def continue_(self):
+                self.continued = True
+
+        class FakePage:
+            def __init__(self):
+                self.url = "https://example.com/forum"
+                self._handler = None
+
+            def set_default_navigation_timeout(self, _timeout: int):
+                return None
+
+            def set_default_timeout(self, _timeout: int):
+                return None
+
+            def route(self, _pattern: str, handler):
+                self._handler = handler
+
+            def on(self, _event: str, _handler):
+                return None
+
+            def goto(self, _url: str, wait_until: str):
+                self._handler(FakeRoute("https://example.com/forum"))
+                return FakeResponse()
+
+            def wait_for_timeout(self, _timeout: int):
+                return None
+
+            def content(self) -> str:
+                return "<html><body>ok</body></html>"
+
+        class FakeContext:
+            def __init__(self):
+                self.page = FakePage()
+
+            def new_page(self):
+                return self.page
+
+            def close(self):
+                return None
+
+        class FakeBrowser:
+            def __init__(self):
+                self.context = FakeContext()
+
+            def new_context(self, **_kwargs):
+                return self.context
+
+            def close(self):
+                return None
+
+        class FakeChromium:
+            def launch(self, headless: bool):
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakePlaywrightManager:
+            def __enter__(self):
+                return FakePlaywright()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        fake_sync_api = types.ModuleType("playwright.sync_api")
+        fake_sync_api.Error = RuntimeError
+        fake_sync_api.sync_playwright = lambda: FakePlaywrightManager()
+        fake_playwright = types.ModuleType("playwright")
+        fake_playwright.sync_api = fake_sync_api
+
+        with patch.dict(sys.modules, {"playwright": fake_playwright, "playwright.sync_api": fake_sync_api}):
+            fetched = fetch_html_browser("https://example.com/forum")
+
+        self.assertEqual("<html><body>ok</body></html>", fetched.html)
+        self.assertEqual("https://example.com/forum", fetched.final_url)
+
+    def test_refresh_profile_persists_canonical_source_url_after_redirect(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://old.example/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+
+            now = datetime.now(timezone.utc)
+            entries = [
+                FeedEntry(
+                    title="Topic A",
+                    link="https://new.example/forum/topic-a",
+                    summary="",
+                    published_at=now,
+                )
+            ]
+
+            with patch(
+                "rss_site_bridge.app.extract_feed_entries",
+                side_effect=lambda request_config: (
+                    setattr(request_config, "source_url", "https://new.example/forum") or entries
+                ),
+            ):
+                refresh_profile(db_path, profile.id)
+
+            updated = get_profile_by_id(db_path, profile.id)
+            self.assertIsNotNone(updated)
+            assert updated is not None
+            self.assertEqual("https://new.example/forum", updated.source_url)
+
+    def test_refresh_profile_sends_success_notification_when_smtp_enabled(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                    notify_on_success=True,
+                ),
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE app_settings
+                    SET smtp_enabled = 1, smtp_host = 'smtp.example.com', smtp_port = 587, smtp_username = 'alerts@example.com',
+                        smtp_password = 'secret', smtp_use_tls = 1, smtp_to_email = 'user@example.com',
+                        smtp_from_email = 'Nightfeed <noreply@example.com>'
+                    WHERE id = 1
+                    """
+                )
+                conn.commit()
+
+            entries = [
+                FeedEntry(
+                    title="Topic A",
+                    link="https://example.com/forum/topic-a",
+                    summary="",
+                    published_at=datetime.now(timezone.utc),
+                )
+            ]
+
+            with patch("rss_site_bridge.app.extract_feed_entries", return_value=entries), patch(
+                "rss_site_bridge.app.maybe_send_refresh_notification"
+            ) as mocked_notify:
+                refresh_profile(db_path, profile.id)
+
+            mocked_notify.assert_called_once()
+            _, kwargs = mocked_notify.call_args
+            self.assertEqual("ok", kwargs["status"])
+            self.assertEqual(1, kwargs["entry_count"])
+            self.assertEqual("https://example.com/forum", kwargs["source_url"])
+
+    def test_refresh_profile_sends_error_notification_when_refresh_fails(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE app_settings
+                    SET smtp_enabled = 1, smtp_host = 'smtp.example.com', smtp_port = 587, smtp_username = 'alerts@example.com',
+                        smtp_password = 'secret', smtp_use_tls = 1, smtp_to_email = 'user@example.com',
+                        smtp_from_email = 'Nightfeed <noreply@example.com>'
+                    WHERE id = 1
+                    """
+                )
+                conn.commit()
+
+            with patch("rss_site_bridge.app.extract_feed_entries", side_effect=ValueError("Upstream exploded")), patch(
+                "rss_site_bridge.app.maybe_send_refresh_notification"
+            ) as mocked_notify:
+                with self.assertRaises(RuntimeError):
+                    refresh_profile(db_path, profile.id)
+
+            mocked_notify.assert_called_once()
+            _, kwargs = mocked_notify.call_args
+            self.assertEqual("error", kwargs["status"])
+            self.assertEqual("Upstream exploded", kwargs["error_message"])
+
+    def test_new_profiles_default_to_failure_notifications_only(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+
+            self.assertFalse(profile.notify_on_success)
+            self.assertTrue(profile.notify_on_failure)
+
+    def test_update_profile_persists_notification_preferences(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+
+            updated = update_profile(
+                db_path,
+                profile.id,
+                FeedRequest(
+                    feed_title="Updated Feed",
+                    source_url="https://example.com/new",
+                    item_selector=".row",
+                    title_selector=".title",
+                    link_selector=".title a",
+                    summary_selector=".summary",
+                    max_items=20,
+                    refresh_interval_minutes=120,
+                    fetch_mode="browser",
+                    notify_on_success=True,
+                    notify_on_failure=False,
+                ),
+            )
+
+            self.assertTrue(updated.notify_on_success)
+            self.assertFalse(updated.notify_on_failure)
+
+    def test_refresh_profile_skips_success_notification_when_feed_disables_it(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                    notify_on_success=False,
+                    notify_on_failure=True,
+                ),
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE app_settings
+                    SET smtp_enabled = 1, smtp_host = 'smtp.example.com', smtp_port = 587, smtp_username = 'alerts@example.com',
+                        smtp_password = 'secret', smtp_use_tls = 1, smtp_to_email = 'user@example.com',
+                        smtp_from_email = 'Nightfeed <noreply@example.com>'
+                    WHERE id = 1
+                    """
+                )
+                conn.commit()
+
+            entries = [
+                FeedEntry(
+                    title="Topic A",
+                    link="https://example.com/forum/topic-a",
+                    summary="",
+                    published_at=datetime.now(timezone.utc),
+                )
+            ]
+
+            with patch("rss_site_bridge.app.extract_feed_entries", return_value=entries), patch(
+                "rss_site_bridge.app.send_refresh_notification_email"
+            ) as mocked_email:
+                refresh_profile(db_path, profile.id)
+
+            mocked_email.assert_not_called()
+
+    def test_send_test_email_uses_smtp_sender(self):
+        settings = AppSettings(
+            timezone_name="America/Chicago",
+            smtp_enabled=True,
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_username="alerts@example.com",
+            smtp_password="secret",
+            smtp_use_tls=True,
+            smtp_to_email="user@example.com",
+            smtp_from_email="Nightfeed <noreply@example.com>",
+        )
+
+        with patch("rss_site_bridge.app.send_smtp_message") as mocked_send:
+            send_test_email(settings)
+
+        mocked_send.assert_called_once()
+        sent_settings, message = mocked_send.call_args.args
+        self.assertEqual(settings, sent_settings)
+        self.assertEqual("Nightfeed SMTP test", message["Subject"])
+        self.assertEqual("user@example.com", message["To"])
+        self.assertEqual("Nightfeed <noreply@example.com>", message["From"])
+
+    def test_app_settings_do_not_prefill_smtp_port_or_from_email(self):
+        settings = AppSettings()
+        self.assertEqual(0, settings.smtp_port)
+        self.assertEqual("", settings.smtp_from_email)
 
     def test_due_refresh_runs_for_stale_profiles(self):
         with TemporaryDirectory() as tmpdir:
@@ -1260,6 +1660,14 @@ class AppTestCase(unittest.TestCase):
                 data={
                     "timezone_name": "America/Chicago",
                     "public_base_url": "https://rss.example.com",
+                    "smtp_enabled": "1",
+                    "smtp_host": "smtp.example.com",
+                    "smtp_port": "587",
+                    "smtp_username": "alerts@example.com",
+                    "smtp_password": "secret",
+                    "smtp_use_tls": "1",
+                    "smtp_to_email": "user@example.com",
+                    "smtp_from_email": "Nightfeed <noreply@example.com>",
                 },
             )
 
@@ -1267,6 +1675,14 @@ class AppTestCase(unittest.TestCase):
             settings = get_app_settings(db_path)
             self.assertEqual("America/Chicago", settings.timezone_name)
             self.assertEqual("https://rss.example.com", settings.public_base_url)
+            self.assertTrue(settings.smtp_enabled)
+            self.assertEqual("smtp.example.com", settings.smtp_host)
+            self.assertEqual(587, settings.smtp_port)
+            self.assertEqual("alerts@example.com", settings.smtp_username)
+            self.assertEqual("secret", settings.smtp_password)
+            self.assertTrue(settings.smtp_use_tls)
+            self.assertEqual("user@example.com", settings.smtp_to_email)
+            self.assertEqual("Nightfeed <noreply@example.com>", settings.smtp_from_email)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_settings_route_rejects_invalid_public_base_url(self):
@@ -1291,6 +1707,160 @@ class AppTestCase(unittest.TestCase):
 
             self.assertEqual(400, response.status_code)
             self.assertIn(b"Public base URL must include only scheme and host", response.data)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_settings_route_requires_smtp_values_when_notifications_enabled(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            client = app.test_client()
+            response = client.post(
+                "/settings",
+                data={
+                    "timezone_name": "UTC",
+                    "public_base_url": "",
+                    "smtp_enabled": "1",
+                    "smtp_port": "587",
+                    "smtp_use_tls": "1",
+                    "smtp_to_email": "user@example.com",
+                    "smtp_from_email": "Nightfeed <noreply@example.com>",
+                },
+            )
+
+            self.assertEqual(400, response.status_code)
+            self.assertIn(b"SMTP host is required.", response.data)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_compose_route_hides_feed_notification_preferences_when_smtp_disabled(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            client = app.test_client()
+            response = client.get("/compose")
+
+            self.assertEqual(200, response.status_code)
+            self.assertNotIn(b"Success notifications", response.data)
+            self.assertNotIn(b"Failure notifications", response.data)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_compose_route_shows_feed_notification_preferences_when_smtp_enabled(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE app_settings
+                    SET smtp_enabled = 1, smtp_host = 'smtp.example.com', smtp_port = 587, smtp_username = 'alerts@example.com',
+                        smtp_password = 'secret', smtp_use_tls = 1, smtp_to_email = 'user@example.com',
+                        smtp_from_email = 'Nightfeed <noreply@example.com>'
+                    WHERE id = 1
+                    """
+                )
+                conn.commit()
+
+            client = app.test_client()
+            response = client.get("/compose")
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(b"Success notifications", response.data)
+            self.assertIn(b"Failure notifications", response.data)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_settings_test_email_route_sends_message(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            client = app.test_client()
+            with patch("rss_site_bridge.app.send_test_email") as mocked_send:
+                response = client.post(
+                    "/settings/test-email",
+                    data={
+                        "timezone_name": "America/Chicago",
+                        "public_base_url": "https://rss.example.com",
+                        "smtp_enabled": "1",
+                        "smtp_host": "smtp.example.com",
+                        "smtp_port": "587",
+                        "smtp_username": "alerts@example.com",
+                        "smtp_password": "secret",
+                        "smtp_use_tls": "1",
+                        "smtp_to_email": "user@example.com",
+                        "smtp_from_email": "Nightfeed <noreply@example.com>",
+                    },
+                )
+
+            self.assertEqual(200, response.status_code)
+            self.assertIn(b"Test email sent", response.data)
+            mocked_send.assert_called_once()
+            settings = get_app_settings(db_path)
+            self.assertFalse(settings.smtp_enabled)
+            self.assertEqual("", settings.smtp_host)
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_settings_test_email_route_handles_transport_errors(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+
+            client = app.test_client()
+            with patch(
+                "rss_site_bridge.app.send_test_email",
+                side_effect=smtplib.SMTPAuthenticationError(535, b"bad credentials"),
+            ):
+                response = client.post(
+                    "/settings/test-email",
+                    data={
+                        "timezone_name": "America/Chicago",
+                        "public_base_url": "https://rss.example.com",
+                        "smtp_enabled": "1",
+                        "smtp_host": "smtp.example.com",
+                        "smtp_port": "587",
+                        "smtp_username": "alerts@example.com",
+                        "smtp_password": "secret",
+                        "smtp_use_tls": "1",
+                        "smtp_to_email": "user@example.com",
+                        "smtp_from_email": "Nightfeed <noreply@example.com>",
+                    },
+                )
+
+            self.assertEqual(400, response.status_code)
+            self.assertIn(b"bad credentials", response.data)
+            settings = get_app_settings(db_path)
+            self.assertFalse(settings.smtp_enabled)
+            self.assertEqual("", settings.smtp_host)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_profile_route_uses_public_base_url_override_for_feed_url(self):

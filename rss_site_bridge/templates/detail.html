@@ -173,6 +173,23 @@
         </select>
       </div>
 
+      {% if smtp_enabled %}
+      <div class="field">
+        <label>Refresh notifications</label>
+        <div class="field-hint">Choose which refresh outcomes should send email for this feed.</div>
+        <div class="check-stack">
+        <label class="check-option">
+          <input name="notify_on_success" type="checkbox" value="1" {% if edit_form.get('notify_on_success', '1' if profile.notify_on_success else '') %}checked{% endif %}>
+          <span>Success notifications</span>
+        </label>
+        <label class="check-option">
+          <input name="notify_on_failure" type="checkbox" value="1" {% if edit_form.get('notify_on_failure', '1' if profile.notify_on_failure else '') %}checked{% endif %}>
+          <span>Failure notifications</span>
+        </label>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="form-actions">
         <button class="btn btn-secondary" type="submit" formaction="/profiles/{{ profile.id }}" formmethod="get" data-loading-label="Running preview" data-preview-url="/profiles/{{ profile.id }}/preview" data-preview-stream-url="/profiles/{{ profile.id }}/preview/stream" data-preview-target="detail-preview">Preview changes</button>
         <button class="btn btn-primary" type="submit">Save changes</button>
