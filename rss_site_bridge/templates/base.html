@@ -485,6 +485,61 @@
         font-size: 0.8rem;
       }
 
+      .check-stack {
+        display: grid;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .check-option {
+        display: inline-grid;
+        grid-template-columns: 20px auto;
+        gap: 10px;
+        align-items: center;
+        color: var(--text);
+        cursor: pointer;
+        justify-content: start;
+      }
+
+      .check-option input {
+        appearance: none;
+        width: 20px;
+        height: 20px;
+        min-height: 20px;
+        padding: 0;
+        margin: 0;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(255, 255, 255, 0.05);
+        display: inline-grid;
+        place-items: center;
+        flex: 0 0 20px;
+        transition: background 140ms ease, border-color 140ms ease;
+      }
+
+      .check-option input::after {
+        content: "";
+        width: 10px;
+        height: 6px;
+        border-left: 2px solid transparent;
+        border-bottom: 2px solid transparent;
+        transform: rotate(-45deg) translate(1px, -1px);
+      }
+
+      .check-option input:checked {
+        background: var(--accent);
+        border-color: rgba(242, 139, 75, 0.5);
+      }
+
+      .check-option input:checked::after {
+        border-left-color: #ffffff;
+        border-bottom-color: #ffffff;
+      }
+
+      .check-option span {
+        line-height: 1.4;
+      }
+
       .notice-soft {
         margin-top: 16px;
         padding: 16px;

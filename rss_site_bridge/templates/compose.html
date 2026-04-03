@@ -79,6 +79,23 @@
         </select>
       </div>
 
+      {% if smtp_enabled %}
+      <div class="field">
+        <label>Refresh notifications</label>
+        <div class="field-hint">Choose which refresh outcomes should send email for this feed.</div>
+        <div class="check-stack">
+        <label class="check-option">
+          <input name="notify_on_success" type="checkbox" value="1" {% if form.get('notify_on_success') %}checked{% endif %}>
+          <span>Success notifications</span>
+        </label>
+        <label class="check-option">
+          <input name="notify_on_failure" type="checkbox" value="1" {% if form.get('notify_on_failure', '1') %}checked{% endif %}>
+          <span>Failure notifications</span>
+        </label>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="form-actions">
         <button class="btn btn-secondary" type="submit" data-loading-label="Running preview" data-preview-url="/preview" data-preview-stream-url="/preview/stream" data-preview-target="compose-preview">Preview</button>
         <button class="btn btn-primary" type="submit" formaction="/profiles" formmethod="post">Save feed</button>
