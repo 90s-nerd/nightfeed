@@ -29,9 +29,11 @@ from rss_site_bridge.app import (
     extract_feed_entries,
     fetch_html_browser,
     get_app_settings,
+    get_next_refresh_at,
     get_profile_by_token,
     get_profile_by_id,
     humanize_datetime,
+    humanize_next_refresh,
     init_db,
     list_feed_items,
     list_notifications,
@@ -1061,6 +1063,41 @@ class AppTestCase(unittest.TestCase):
             self.assertEqual("idle", profile.last_status)
             self.assertFalse(should_refresh(profile))
 
+    def test_next_refresh_uses_refresh_anchor_and_interval(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+            anchor = "2026-02-28T04:44:13+00:00"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    "UPDATE profiles SET refresh_anchor_at = ? WHERE id = ?",
+                    (anchor, profile.id),
+                )
+                conn.commit()
+
+            updated = get_profile_by_id(db_path, profile.id)
+
+            self.assertIsNotNone(updated)
+            self.assertEqual(
+                datetime(2026, 2, 28, 5, 44, 13, tzinfo=timezone.utc),
+                get_next_refresh_at(updated),
+            )
+            self.assertIn("Feb 28, 2026 05:44 AM UTC", humanize_next_refresh(updated, "UTC"))
+
     def test_profile_with_zero_refresh_interval_never_auto_refreshes(self):
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "rss.db"
@@ -1081,6 +1118,8 @@ class AppTestCase(unittest.TestCase):
             )
 
             self.assertFalse(should_refresh(profile))
+            self.assertIsNone(get_next_refresh_at(profile))
+            self.assertEqual("Manual only", humanize_next_refresh(profile))
 
     def test_set_profile_active_disables_and_reenables_with_idle_status(self):
         with TemporaryDirectory() as tmpdir:
@@ -1105,11 +1144,14 @@ class AppTestCase(unittest.TestCase):
             self.assertFalse(disabled.active)
             self.assertEqual("disabled", disabled.last_status)
             self.assertFalse(should_refresh(disabled))
+            self.assertIsNone(get_next_refresh_at(disabled))
+            self.assertEqual("Disabled", humanize_next_refresh(disabled))
 
             enabled = set_profile_active(db_path, profile.id, active=True)
             self.assertTrue(enabled.active)
             self.assertEqual("idle", enabled.last_status)
             self.assertFalse(should_refresh(enabled))
+            self.assertIsNotNone(get_next_refresh_at(enabled))
 
     def test_build_clone_title_increments_existing_copy_suffix(self):
         with TemporaryDirectory() as tmpdir:
@@ -2130,6 +2172,7 @@ class AppTestCase(unittest.TestCase):
             payload = response.get_json()
             self.assertEqual(1, payload["item_count"])
             self.assertIn("UTC", payload["last_refreshed_at"])
+            self.assertIn("UTC", payload["next_refresh_at"])
             self.assertEqual("ok", payload["status"])
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")

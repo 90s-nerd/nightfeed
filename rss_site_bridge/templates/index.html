@@ -6,7 +6,7 @@
 <header class="topbar">
   <div class="page-title">
     <h1>My Feeds (<span data-feed-count>{{ profiles|length }}</span>)</h1>
-    <p>Dashboard view only shows each feed, its last refresh time, and stored item count.</p>
+    <p>Dashboard view shows each feed, refresh timing, and stored item count.</p>
   </div>
   <div class="topbar-actions">
     <a class="btn btn-primary" href="/compose">New Feed</a>
@@ -58,6 +58,10 @@
       <div class="meta-row" style="margin-top:12px;">
         <span class="meta">Last refreshed</span>
         <span data-last-refreshed>{{ profile.last_refreshed_at | human_datetime }}</span>
+      </div>
+      <div class="meta-row" style="margin-top:8px;">
+        <span class="meta">Next refresh</span>
+        <span data-next-refresh>{{ profile | next_refresh_datetime }}</span>
       </div>
     </a>
     {% endfor %}
@@ -217,11 +221,15 @@
         }
         const itemCount = card.querySelector("[data-item-count]");
         const lastRefreshed = card.querySelector("[data-last-refreshed]");
+        const nextRefresh = card.querySelector("[data-next-refresh]");
         if (itemCount) {
           itemCount.textContent = `${payload.item_count} items`;
         }
         if (lastRefreshed) {
           lastRefreshed.textContent = payload.last_refreshed_at;
+        }
+        if (nextRefresh) {
+          nextRefresh.textContent = payload.next_refresh_at;
         }
         applyStatus(card, payload.status);
       } catch (error) {
@@ -260,8 +268,12 @@
         }
         applyStatus(card, payload.status);
         const lastRefreshed = card.querySelector("[data-last-refreshed]");
+        const nextRefresh = card.querySelector("[data-next-refresh]");
         if (lastRefreshed) {
           lastRefreshed.textContent = payload.last_refreshed_at;
+        }
+        if (nextRefresh) {
+          nextRefresh.textContent = payload.next_refresh_at;
         }
       } catch (error) {
         window.alert(error.message || "Unable to update feed state.");
