@@ -421,6 +421,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         settings = getattr(g, "app_settings", AppSettings())
         return humanize_datetime(value, settings.timezone_name)
 
+    @app.template_filter("next_refresh_datetime")
+    def next_refresh_datetime_filter(profile: StoredProfile) -> str:
+        settings = getattr(g, "app_settings", AppSettings())
+        return humanize_next_refresh(profile, settings.timezone_name)
+
     def render_compose_page(
         *,
         form: dict[str, str],
@@ -833,6 +838,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 {
                     "item_count": profile.item_count,
                     "last_refreshed_at": humanize_datetime(profile.last_refreshed_at, settings.timezone_name),
+                    "next_refresh_at": humanize_next_refresh(profile, settings.timezone_name),
                     "status": profile.last_status,
                     "active": profile.active,
                     "unread_notifications": count_unread_notifications(Path(app.config["DATABASE_PATH"])),
@@ -917,6 +923,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "active": toggled.active,
                     "status": toggled.last_status,
                     "last_refreshed_at": humanize_datetime(toggled.last_refreshed_at, settings.timezone_name),
+                    "next_refresh_at": humanize_next_refresh(toggled, settings.timezone_name),
                     "unread_notifications": count_unread_notifications(Path(app.config["DATABASE_PATH"])),
                 }
             )
@@ -2570,18 +2577,24 @@ def refresh_due_profiles(db_path: Path) -> None:
 
 
 def should_refresh(profile: StoredProfile) -> bool:
+    due_at = get_next_refresh_at(profile)
+    if due_at is None:
+        return False
+    return datetime.now(timezone.utc) >= due_at
+
+
+def get_next_refresh_at(profile: StoredProfile) -> datetime | None:
     if not profile.active:
-        return False
+        return None
     if profile.refresh_interval_minutes == 0:
-        return False
+        return None
     base_candidates = [value for value in (profile.last_refreshed_at, profile.refresh_anchor_at) if value]
     if not base_candidates and profile.created_at:
         base_candidates = [profile.created_at]
     if not base_candidates:
-        return False
+        return None
     due_base = max(datetime.fromisoformat(value) for value in base_candidates)
-    due_at = due_base + timedelta(minutes=profile.refresh_interval_minutes)
-    return datetime.now(timezone.utc) >= due_at
+    return due_base + timedelta(minutes=profile.refresh_interval_minutes)
 
 
 def refresh_profile(db_path: Path, profile_id: int) -> None:
@@ -3319,6 +3332,17 @@ def humanize_datetime(value: str | datetime, timezone_name: str = "UTC") -> str:
 
     tz = load_timezone(timezone_name)
     return dt.astimezone(tz).strftime("%b %d, %Y %I:%M %p %Z")
+
+
+def humanize_next_refresh(profile: StoredProfile, timezone_name: str = "UTC") -> str:
+    if not profile.active:
+        return "Disabled"
+    if profile.refresh_interval_minutes == 0:
+        return "Manual only"
+    next_refresh_at = get_next_refresh_at(profile)
+    if next_refresh_at is None:
+        return "Unknown"
+    return humanize_datetime(next_refresh_at, timezone_name)
 
 
 def highlight_xml(xml_payload: str) -> str:
