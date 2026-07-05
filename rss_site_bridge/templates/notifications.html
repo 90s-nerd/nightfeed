@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Notifications - Nightfeed{% endblock %}
+
+{% block page_header %}
+<header class="topbar">
+  <div class="page-title">
+    <h1>Notifications</h1>
+    <p>{{ unread_count }} unread refresh {{ 'notification' if unread_count == 1 else 'notifications' }}.</p>
+  </div>
+  <div class="topbar-actions">
+    <a class="btn btn-secondary" href="/notifications?status=unread">Unread</a>
+    <a class="btn btn-secondary" href="/notifications?status=all">All</a>
+    <form class="inline-form" action="/notifications/read-all" method="post">
+      <button class="btn btn-primary" type="submit">Mark all read</button>
+    </form>
+    <form class="inline-form" action="/notifications/delete-read" method="post">
+      <input type="hidden" name="status" value="{{ status_filter }}">
+      <button class="btn btn-danger" type="submit">Delete read</button>
+    </form>
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<section class="surface section">
+  {% if notifications %}
+  <div class="list-stack">
+    {% for notification in notifications %}
+    <article class="item-card">
+      <div class="meta-row">
+        <div>
+          <h3>{{ notification.title }}</h3>
+          <p class="meta">
+            {{ notification.created_at | human_datetime }}
+            {% if notification.profile_id %}
+            - <a class="link-text" href="/profiles/{{ notification.profile_id }}">{{ notification.profile_title }}</a>
+            {% endif %}
+          </p>
+        </div>
+        <span class="status-badge {{ 'error' if notification.severity == 'error' else 'ok' }}">
+          {{ failure_notification_labels.get(notification.category, notification.category) if notification.category != 'success' else 'Success' }}
+        </span>
+      </div>
+
+      <p style="margin:12px 0 0; color:var(--muted); line-height:1.6;">{{ notification.message }}</p>
+      {% if notification.source_url %}
+      <p class="meta" style="margin-top:8px;">{{ notification.source_url }}</p>
+      {% endif %}
+
+      <div class="button-row" style="margin-top:14px;">
+        {% if not notification.read_at %}
+        <form class="inline-form" action="/notifications/{{ notification.id }}/read" method="post">
+          <input type="hidden" name="status" value="{{ status_filter }}">
+          <button class="btn btn-secondary" type="submit">Mark read</button>
+        </form>
+        {% endif %}
+        <form class="inline-form" action="/notifications/{{ notification.id }}/delete" method="post">
+          <input type="hidden" name="status" value="{{ status_filter }}">
+          <button class="btn btn-danger" type="submit">Delete</button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    {% if status_filter == 'unread' %}
+    No unread notifications.
+    {% else %}
+    No notifications yet.
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

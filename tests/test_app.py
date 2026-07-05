@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import smtplib
@@ -19,7 +20,10 @@ from rss_site_bridge.app import (
     FeedRequest,
     AppSettings,
     build_clone_title,
+    classify_refresh_error,
+    count_unread_notifications,
     create_app,
+    create_notification,
     create_profile,
     delete_profile,
     extract_feed_entries,
@@ -30,9 +34,11 @@ from rss_site_bridge.app import (
     humanize_datetime,
     init_db,
     list_feed_items,
+    list_notifications,
     list_profiles,
     normalize_source_url,
     normalize_topic_link,
+    parse_timezone_name,
     refresh_due_profiles,
     refresh_profile,
     send_test_email,
@@ -538,7 +544,7 @@ class AppTestCase(unittest.TestCase):
                     notify_on_success=True,
                 ),
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     """
                     UPDATE app_settings
@@ -588,7 +594,7 @@ class AppTestCase(unittest.TestCase):
                     fetch_mode="http",
                 ),
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     """
                     UPDATE app_settings
@@ -672,6 +678,170 @@ class AppTestCase(unittest.TestCase):
 
             self.assertTrue(updated.notify_on_success)
             self.assertFalse(updated.notify_on_failure)
+            self.assertEqual((), updated.notify_failure_categories)
+
+    def test_profile_notification_categories_round_trip(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                    notify_failure_categories=("selector", "browser"),
+                ),
+            )
+
+            self.assertTrue(profile.notify_on_failure)
+            self.assertEqual(("selector", "browser"), profile.notify_failure_categories)
+
+    def test_init_db_migrates_existing_failure_notification_boolean(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE profiles (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        feed_token TEXT NOT NULL UNIQUE,
+                        feed_title TEXT NOT NULL,
+                        source_url TEXT NOT NULL,
+                        item_selector TEXT NOT NULL,
+                        title_selector TEXT NOT NULL,
+                        link_selector TEXT NOT NULL,
+                        summary_selector TEXT NOT NULL,
+                        filter_rules TEXT NOT NULL DEFAULT '',
+                        exclude_filter_rules TEXT NOT NULL DEFAULT '',
+                        max_items INTEGER NOT NULL,
+                        refresh_interval_minutes INTEGER NOT NULL,
+                        fetch_mode TEXT NOT NULL,
+                        notify_on_success INTEGER NOT NULL DEFAULT 0,
+                        notify_on_failure INTEGER NOT NULL DEFAULT 1,
+                        active INTEGER NOT NULL DEFAULT 1,
+                        last_status TEXT NOT NULL DEFAULT 'idle',
+                        last_error TEXT NOT NULL DEFAULT '',
+                        last_refreshed_at TEXT NOT NULL DEFAULT '',
+                        refresh_anchor_at TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO profiles (
+                        feed_token, feed_title, source_url, item_selector, title_selector, link_selector,
+                        summary_selector, max_items, refresh_interval_minutes, fetch_mode, notify_on_failure,
+                        created_at, updated_at
+                    ) VALUES
+                    ('on-token', 'On Feed', 'https://example.com/on', '.topic', 'a', 'a', '', 10, 60, 'http', 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'),
+                    ('off-token', 'Off Feed', 'https://example.com/off', '.topic', 'a', 'a', '', 10, 60, 'http', 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            init_db(db_path)
+            profiles = {profile.feed_title: profile for profile in list_profiles(db_path)}
+
+            self.assertIn("selector", profiles["On Feed"].notify_failure_categories)
+            self.assertEqual((), profiles["Off Feed"].notify_failure_categories)
+
+    def test_refresh_profile_creates_success_notification(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+            entries = [
+                FeedEntry(
+                    title="Topic A",
+                    link="https://example.com/forum/topic-a",
+                    summary="",
+                    published_at=datetime.now(timezone.utc),
+                )
+            ]
+
+            with patch("rss_site_bridge.app.extract_feed_entries", return_value=entries):
+                refresh_profile(db_path, profile.id)
+
+            notifications = list_notifications(db_path, unread_only=False)
+            self.assertEqual(1, len(notifications))
+            self.assertEqual("success", notifications[0].category)
+            self.assertEqual("info", notifications[0].severity)
+            self.assertEqual(1, count_unread_notifications(db_path))
+
+    def test_failed_refresh_email_is_gated_by_category(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            init_db(db_path)
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                    notify_failure_categories=("browser",),
+                ),
+            )
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    UPDATE app_settings
+                    SET smtp_enabled = 1, smtp_host = 'smtp.example.com', smtp_port = 587, smtp_username = 'alerts@example.com',
+                        smtp_password = 'secret', smtp_use_tls = 1, smtp_to_email = 'user@example.com',
+                        smtp_from_email = 'Nightfeed <noreply@example.com>'
+                    WHERE id = 1
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with patch(
+                "rss_site_bridge.app.extract_feed_entries",
+                side_effect=ValueError("Matched nodes did not contain usable titles and links."),
+            ), patch("rss_site_bridge.app.send_refresh_notification_email") as mocked_email:
+                with self.assertRaises(RuntimeError):
+                    refresh_profile(db_path, profile.id)
+
+            notifications = list_notifications(db_path, unread_only=False)
+            self.assertEqual("extraction", notifications[0].category)
+            mocked_email.assert_not_called()
+
+    def test_classify_refresh_error_uses_practical_categories(self):
+        self.assertEqual("selector", classify_refresh_error(ValueError("No topic nodes matched the item selector.")))
+        self.assertEqual("extraction", classify_refresh_error(ValueError("Matched nodes did not contain usable titles and links.")))
+        self.assertEqual("link_blocked", classify_refresh_error(ValueError("Off-site topic links are blocked by default.")))
 
     def test_refresh_profile_skips_success_notification_when_feed_disables_it(self):
         with TemporaryDirectory() as tmpdir:
@@ -693,7 +863,7 @@ class AppTestCase(unittest.TestCase):
                     notify_on_failure=True,
                 ),
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     """
                     UPDATE app_settings
@@ -768,7 +938,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
             stale_anchor = (datetime.now(timezone.utc) - timedelta(minutes=61)).isoformat()
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     "UPDATE profiles SET refresh_anchor_at = ? WHERE id = ?",
                     (stale_anchor, profile.id),
@@ -860,6 +1030,14 @@ class AppTestCase(unittest.TestCase):
         rendered = humanize_datetime("2026-02-28T04:44:13+00:00", "America/Chicago")
         self.assertIn("Feb 27, 2026", rendered)
         self.assertIn("CST", rendered)
+
+    def test_utc_timezone_is_supported_without_zoneinfo_data(self):
+        self.assertEqual("UTC", parse_timezone_name("UTC"))
+        self.assertEqual("UTC", parse_timezone_name(""))
+
+        rendered = humanize_datetime("2026-02-28T04:44:13+00:00", "UTC")
+        self.assertIn("Feb 28, 2026", rendered)
+        self.assertIn("UTC", rendered)
 
     def test_new_profile_is_idle_and_not_due_immediately(self):
         with TemporaryDirectory() as tmpdir:
@@ -1767,7 +1945,7 @@ class AppTestCase(unittest.TestCase):
                     "DATABASE_PATH": db_path,
                 }
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     """
                     UPDATE app_settings
@@ -1953,6 +2131,42 @@ class AppTestCase(unittest.TestCase):
             self.assertEqual(1, payload["item_count"])
             self.assertIn("UTC", payload["last_refreshed_at"])
             self.assertEqual("ok", payload["status"])
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_notifications_route_supports_read_and_delete_actions(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+            notification = create_notification(
+                db_path,
+                profile_id=None,
+                event_type="refresh",
+                severity="error",
+                category="extraction",
+                title="Refresh failed",
+                message="Matched nodes did not contain usable titles and links.",
+                source_url="https://example.com/forum",
+            )
+
+            client = app.test_client()
+            response = client.get("/notifications")
+            self.assertEqual(200, response.status_code)
+            self.assertIn(b"Refresh failed", response.data)
+            self.assertIn(b"Selector or extraction problems", response.data)
+
+            read_response = client.post(f"/notifications/{notification.id}/read", data={"status": "all"})
+            self.assertEqual(302, read_response.status_code)
+            self.assertEqual(0, count_unread_notifications(db_path))
+
+            delete_response = client.post(f"/notifications/{notification.id}/delete", data={"status": "all"})
+            self.assertEqual(302, delete_response.status_code)
+            self.assertEqual([], list_notifications(db_path, unread_only=False))
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_toggle_active_route_returns_dashboard_state_json(self):
