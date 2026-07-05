@@ -15,6 +15,8 @@ The default mode is the safest path for noisy sites because it never opens a bro
 
 ## Run
 
+macOS/Linux:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -22,13 +24,41 @@ pip install .
 flask --app rss_site_bridge.app:create_app run --debug
 ```
 
+Windows PowerShell:
+
+Install Python 3.9 or newer first. During installation, enable **Add python.exe to PATH**, then restart PowerShell and verify it with `python --version`.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\python.exe -m flask --app rss_site_bridge.app:create_app run --debug
+```
+
+These commands use the virtual environment's Python directly, so they do not require activating the environment. If `python` is not found but the Windows Python launcher is installed, use `py -m venv .venv` instead. You can also replace `python` with the full path to your installed `python.exe`.
+
+If `.venv` already exists, start from the install command:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\python.exe -m flask --app rss_site_bridge.app:create_app run --debug
+```
+
 Open `http://127.0.0.1:5000`.
 
 Optional browser mode:
 
+macOS/Linux:
+
 ```bash
 pip install ".[browser]"
 playwright install chromium
+```
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install ".[browser]"
+.\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
 ## Docker
@@ -124,11 +154,21 @@ Reverse proxy note:
 
 If your local `pip` or setuptools environment is too old to build directly from `pyproject.toml`, use the compatibility fallback:
 
+macOS/Linux:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install "setuptools>=68" "wheel>=0.43"
 pip install .
+```
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install "setuptools>=68" "wheel>=0.43"
+.\.venv\Scripts\python.exe -m pip install .
 ```
 
 The repo also includes a minimal `setup.py` fallback for older local packaging tools.

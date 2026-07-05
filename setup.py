@@ -13,6 +13,7 @@ setup(
         "beautifulsoup4>=4.12.3",
         "Flask>=3.1.0",
         "gunicorn>=23.0.0",
+        "tzdata>=2025.2",
     ],
     extras_require={
         "browser": ["playwright>=1.53.0"],

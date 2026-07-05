@@ -82,16 +82,23 @@
       {% if smtp_enabled %}
       <div class="field">
         <label>Refresh notifications</label>
-        <div class="field-hint">Choose which refresh outcomes should send email for this feed.</div>
+        <div class="field-hint">Failure notifications can be limited by category. All refreshes still appear in the app.</div>
         <div class="check-stack">
+        <input type="hidden" name="notify_failure_categories_present" value="1">
         <label class="check-option">
           <input name="notify_on_success" type="checkbox" value="1" {% if form.get('notify_on_success') %}checked{% endif %}>
           <span>Success notifications</span>
         </label>
+        {% set selected_failure_categories = form.get('notify_failure_categories', '') %}
+        {% for category in failure_notification_categories %}
         <label class="check-option">
-          <input name="notify_on_failure" type="checkbox" value="1" {% if form.get('notify_on_failure', '1') %}checked{% endif %}>
-          <span>Failure notifications</span>
+          <input name="notify_failure_categories" type="checkbox" value="{{ category }}" {% if category in selected_failure_categories %}checked{% endif %}>
+          <span class="check-copy">
+            <strong>{{ failure_notification_labels[category] }}</strong>
+            <span>{{ failure_notification_samples[category] }}</span>
+          </span>
         </label>
+        {% endfor %}
         </div>
       </div>
       {% endif %}

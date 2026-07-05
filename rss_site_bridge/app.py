@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from email.message import EmailMessage
 from email.utils import format_datetime
 from email.utils import formataddr, parseaddr
@@ -54,6 +54,39 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_USER_AGENT = "rss-site-bridge/0.2 (+https://localhost)"
 SCHEDULER_INTERVAL_SECONDS = 30
 REQUEST_ID_HEADER = "X-Request-ID"
+FAILURE_NOTIFICATION_CATEGORIES = (
+    "fetch",
+    "http_status",
+    "selector",
+    "extraction",
+    "filter_empty",
+    "link_blocked",
+    "browser",
+    "smtp",
+    "app",
+)
+FAILURE_NOTIFICATION_LABELS = {
+    "fetch": "Website/fetch problems",
+    "http_status": "HTTP status problems",
+    "selector": "Selector match problems",
+    "extraction": "Selector or extraction problems",
+    "filter_empty": "Filter-empty results",
+    "link_blocked": "Blocked/off-site links",
+    "browser": "Browser mode problems",
+    "smtp": "SMTP delivery problems",
+    "app": "Unexpected app errors",
+}
+FAILURE_NOTIFICATION_SAMPLES = {
+    "fetch": "Example: connection refused, timeout, non-HTML response, or page too large.",
+    "http_status": "Example: upstream returns 403 Forbidden, 404 Not Found, or 500 Server Error.",
+    "selector": "Example: no page elements matched the item selector.",
+    "extraction": "Example: matched elements did not contain usable titles or href links.",
+    "filter_empty": "Example: extraction worked, but include/exclude filters removed every item.",
+    "link_blocked": "Example: a topic URL points off-site or resolves to an unsupported scheme.",
+    "browser": "Example: browser mode cannot launch Chromium or cannot receive a document response.",
+    "smtp": "Example: email delivery fails because SMTP authentication or transport fails.",
+    "app": "Example: an unexpected Nightfeed error that does not fit another category.",
+}
 _scheduler_lock = Lock()
 _scheduler_started = False
 _logging_lock = Lock()
@@ -73,8 +106,20 @@ class FeedRequest:
     fetch_mode: str
     notify_on_success: bool = False
     notify_on_failure: bool = True
+    notify_failure_categories: tuple[str, ...] = FAILURE_NOTIFICATION_CATEGORIES
     filter_rules: str = ""
     exclude_filter_rules: str = ""
+
+    def __post_init__(self) -> None:
+        selected = tuple(
+            category
+            for category in self.notify_failure_categories
+            if category in FAILURE_NOTIFICATION_CATEGORIES
+        )
+        if not self.notify_on_failure:
+            selected = ()
+        self.notify_failure_categories = selected
+        self.notify_on_failure = bool(selected)
 
 
 @dataclass
@@ -108,6 +153,7 @@ class StoredProfile:
     fetch_mode: str
     notify_on_success: bool
     notify_on_failure: bool
+    notify_failure_categories: tuple[str, ...]
     active: bool
     last_status: str
     last_error: str
@@ -132,6 +178,7 @@ class StoredProfile:
             fetch_mode=self.fetch_mode,
             notify_on_success=self.notify_on_success,
             notify_on_failure=self.notify_on_failure,
+            notify_failure_categories=self.notify_failure_categories,
         )
 
 
@@ -147,6 +194,23 @@ class AppSettings:
     smtp_use_tls: bool = True
     smtp_to_email: str = ""
     smtp_from_email: str = ""
+
+
+@dataclass
+class Notification:
+    id: int
+    profile_id: int | None
+    profile_title: str
+    event_type: str
+    severity: str
+    category: str
+    title: str
+    message: str
+    source_url: str
+    created_at: str
+    read_at: str
+    emailed_at: str
+    metadata_json: str
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -303,6 +367,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         g.request_started_at = time.perf_counter()
         g.request_id = request.headers.get(REQUEST_ID_HEADER, "").strip() or secrets.token_hex(8)
         g.app_settings = get_app_settings(Path(app.config["DATABASE_PATH"]))
+        g.unread_notification_count = count_unread_notifications(Path(app.config["DATABASE_PATH"]))
         log_event(
             logging.INFO,
             "request_started",
@@ -369,6 +434,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             preview=preview,
             error=error,
             smtp_enabled=getattr(g, "app_settings", AppSettings()).smtp_enabled,
+            failure_notification_labels=FAILURE_NOTIFICATION_LABELS,
+            failure_notification_samples=FAILURE_NOTIFICATION_SAMPLES,
+            failure_notification_categories=FAILURE_NOTIFICATION_CATEGORIES,
         )
 
     def serialize_preview(entries: list[FeedEntry]) -> list[dict[str, str]]:
@@ -497,12 +565,49 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             preview_error=preview_error,
             purged=purged,
             smtp_enabled=settings.smtp_enabled,
+            failure_notification_labels=FAILURE_NOTIFICATION_LABELS,
+            failure_notification_samples=FAILURE_NOTIFICATION_SAMPLES,
+            failure_notification_categories=FAILURE_NOTIFICATION_CATEGORIES,
         )
 
     @app.get("/")
     def index() -> str:
         profiles = list_profiles(Path(app.config["DATABASE_PATH"]))
         return render_template("index.html", profiles=profiles)
+
+    @app.get("/notifications")
+    def notifications_route() -> str:
+        status_filter = request.args.get("status", "unread").strip().lower()
+        if status_filter not in {"unread", "all"}:
+            status_filter = "unread"
+        db_path = Path(app.config["DATABASE_PATH"])
+        return render_template(
+            "notifications.html",
+            notifications=list_notifications(db_path, unread_only=status_filter == "unread"),
+            status_filter=status_filter,
+            unread_count=count_unread_notifications(db_path),
+            failure_notification_labels=FAILURE_NOTIFICATION_LABELS,
+        )
+
+    @app.post("/notifications/<int:notification_id>/read")
+    def mark_notification_read_route(notification_id: int) -> Response:
+        mark_notification_read(Path(app.config["DATABASE_PATH"]), notification_id)
+        return redirect(url_for("notifications_route", status=request.form.get("status", "unread")))
+
+    @app.post("/notifications/read-all")
+    def mark_all_notifications_read_route() -> Response:
+        mark_all_notifications_read(Path(app.config["DATABASE_PATH"]))
+        return redirect(url_for("notifications_route", status="all"))
+
+    @app.post("/notifications/<int:notification_id>/delete")
+    def delete_notification_route(notification_id: int) -> Response:
+        delete_notification(Path(app.config["DATABASE_PATH"]), notification_id)
+        return redirect(url_for("notifications_route", status=request.form.get("status", "unread")))
+
+    @app.post("/notifications/delete-read")
+    def delete_read_notifications_route() -> Response:
+        delete_read_notifications(Path(app.config["DATABASE_PATH"]))
+        return redirect(url_for("notifications_route", status=request.form.get("status", "all")))
 
     @app.get("/compose")
     def compose_route() -> str:
@@ -694,6 +799,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 fetch_mode=profile.fetch_mode,
                 notify_on_success="1" if profile.notify_on_success else "",
                 notify_on_failure="1" if profile.notify_on_failure else "",
+                notify_failure_categories=",".join(profile.notify_failure_categories),
             )
         )
 
@@ -729,6 +835,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "last_refreshed_at": humanize_datetime(profile.last_refreshed_at, settings.timezone_name),
                     "status": profile.last_status,
                     "active": profile.active,
+                    "unread_notifications": count_unread_notifications(Path(app.config["DATABASE_PATH"])),
                 }
             )
         return redirect(url_for("profile_detail", profile_id=profile_id))
@@ -810,6 +917,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "active": toggled.active,
                     "status": toggled.last_status,
                     "last_refreshed_at": humanize_datetime(toggled.last_refreshed_at, settings.timezone_name),
+                    "unread_notifications": count_unread_notifications(Path(app.config["DATABASE_PATH"])),
                 }
             )
         return redirect(url_for("profile_detail", profile_id=profile_id))
@@ -1013,6 +1121,7 @@ def load_form() -> dict[str, str]:
         "fetch_mode": "http",
         "notify_on_success": "",
         "notify_on_failure": "1",
+        "notify_failure_categories": ",".join(FAILURE_NOTIFICATION_CATEGORIES),
     }
 
 
@@ -1050,6 +1159,7 @@ def parse_request_values(values: Any, existing_profile: StoredProfile | None = N
         if "notify_on_failure" in values
         else (existing_profile.notify_on_failure if existing_profile is not None else True)
     )
+    notify_failure_categories = parse_notification_categories_from_values(values, existing_profile, notify_on_failure)
 
     return FeedRequest(
         feed_title=require_text(values.get("feed_title", ""), "Feed title"),
@@ -1064,8 +1174,45 @@ def parse_request_values(values: Any, existing_profile: StoredProfile | None = N
         refresh_interval_minutes=parse_refresh_interval(values.get("refresh_interval_minutes", "60")),
         fetch_mode=fetch_mode,
         notify_on_success=notify_on_success,
-        notify_on_failure=notify_on_failure,
+        notify_on_failure=bool(notify_failure_categories),
+        notify_failure_categories=notify_failure_categories,
     )
+
+
+def parse_notification_categories_from_values(
+    values: Any,
+    existing_profile: StoredProfile | None,
+    notify_on_failure: bool,
+) -> tuple[str, ...]:
+    raw_categories: list[str]
+    if hasattr(values, "getlist"):
+        raw_categories = [str(value) for value in values.getlist("notify_failure_categories")]
+    else:
+        raw_value = values.get("notify_failure_categories", None) if hasattr(values, "get") else None
+        if raw_value is None:
+            raw_categories = []
+        elif isinstance(raw_value, (list, tuple)):
+            raw_categories = [str(value) for value in raw_value]
+        else:
+            raw_categories = [part.strip() for part in str(raw_value).split(",")]
+
+    selected = normalize_failure_categories(raw_categories)
+    if selected:
+        return selected
+    if raw_categories or "notify_failure_categories" in values or "notify_failure_categories_present" in values:
+        return ()
+    if existing_profile is not None:
+        return existing_profile.notify_failure_categories
+    return FAILURE_NOTIFICATION_CATEGORIES if notify_on_failure else ()
+
+
+def normalize_failure_categories(values: Iterable[str]) -> tuple[str, ...]:
+    selected: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if normalized in FAILURE_NOTIFICATION_CATEGORIES and normalized not in selected:
+            selected.append(normalized)
+    return tuple(selected)
 
 
 def normalize_source_url(source_url: str) -> str:
@@ -1875,6 +2022,7 @@ def init_db(db_path: Path) -> None:
                 fetch_mode TEXT NOT NULL,
                 notify_on_success INTEGER NOT NULL DEFAULT 0,
                 notify_on_failure INTEGER NOT NULL DEFAULT 1,
+                notify_failure_categories TEXT NOT NULL DEFAULT '',
                 active INTEGER NOT NULL DEFAULT 1,
                 last_status TEXT NOT NULL DEFAULT 'idle',
                 last_error TEXT NOT NULL DEFAULT '',
@@ -1882,6 +2030,25 @@ def init_db(db_path: Path) -> None:
                 refresh_anchor_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                source_url TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                read_at TEXT,
+                emailed_at TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE SET NULL
             )
             """
         )
@@ -1952,7 +2119,19 @@ def init_db(db_path: Path) -> None:
         ensure_column(conn, "profiles", "exclude_filter_rules", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "profiles", "notify_on_success", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "profiles", "notify_on_failure", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column(conn, "profiles", "notify_failure_categories", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "profiles", "refresh_anchor_at", "TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            """
+            UPDATE profiles
+            SET notify_failure_categories = CASE
+                WHEN notify_on_failure = 1 THEN ?
+                ELSE '[]'
+            END
+            WHERE notify_failure_categories = ''
+            """,
+            (json.dumps(list(FAILURE_NOTIFICATION_CATEGORIES)),),
+        )
         conn.commit()
 
 
@@ -2167,9 +2346,9 @@ def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
             INSERT INTO profiles (
                 feed_token, feed_title, source_url, item_selector, title_selector, link_selector,
                 summary_selector, filter_rules, exclude_filter_rules, max_items, refresh_interval_minutes, fetch_mode,
-                notify_on_success, notify_on_failure, active,
+                notify_on_success, notify_on_failure, notify_failure_categories, active,
                 last_status, last_error, last_refreshed_at, refresh_anchor_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'idle', '', '', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'idle', '', '', ?, ?, ?)
             """,
             (
                 token,
@@ -2185,7 +2364,8 @@ def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
                 config.refresh_interval_minutes,
                 config.fetch_mode,
                 int(config.notify_on_success),
-                int(config.notify_on_failure),
+                int(bool(config.notify_failure_categories)),
+                encode_failure_categories(config.notify_failure_categories),
                 now,
                 now,
                 now,
@@ -2210,7 +2390,7 @@ def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> Store
             UPDATE profiles
             SET feed_title = ?, source_url = ?, item_selector = ?, title_selector = ?, link_selector = ?,
                 summary_selector = ?, filter_rules = ?, exclude_filter_rules = ?, max_items = ?, refresh_interval_minutes = ?, fetch_mode = ?,
-                notify_on_success = ?, notify_on_failure = ?,
+                notify_on_success = ?, notify_on_failure = ?, notify_failure_categories = ?,
                 last_status = 'idle', last_error = '', updated_at = ?
             WHERE id = ?
             """,
@@ -2227,7 +2407,8 @@ def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> Store
                 config.refresh_interval_minutes,
                 config.fetch_mode,
                 int(config.notify_on_success),
-                int(config.notify_on_failure),
+                int(bool(config.notify_failure_categories)),
+                encode_failure_categories(config.notify_failure_categories),
                 now,
                 profile_id,
             ),
@@ -2246,6 +2427,7 @@ def delete_profile(db_path: Path, profile_id: int) -> None:
 
     with closing(connect_db(db_path)) as conn:
         conn.execute("DELETE FROM feed_items WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM notifications WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
         conn.commit()
 
@@ -2522,6 +2704,131 @@ def list_feed_items(db_path: Path, profile_id: int, limit: int) -> list[FeedEntr
     ]
 
 
+def create_notification(
+    db_path: Path,
+    *,
+    profile_id: int | None,
+    event_type: str,
+    severity: str,
+    category: str,
+    title: str,
+    message: str,
+    source_url: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> Notification:
+    created_at = utcnow_text()
+    with closing(connect_db(db_path)) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO notifications (
+                profile_id, event_type, severity, category, title, message, source_url,
+                created_at, read_at, emailed_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+            """,
+            (
+                profile_id,
+                event_type,
+                severity,
+                category,
+                title,
+                message,
+                source_url,
+                created_at,
+                json.dumps(metadata or {}, sort_keys=True),
+            ),
+        )
+        conn.commit()
+        notification_id = int(cursor.lastrowid)
+    notification = get_notification(db_path, notification_id)
+    if notification is None:
+        raise RuntimeError("Failed to load the saved notification.")
+    return notification
+
+
+def get_notification(db_path: Path, notification_id: int) -> Notification | None:
+    with closing(connect_db(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT n.*, COALESCE(p.feed_title, '') AS profile_title
+            FROM notifications n
+            LEFT JOIN profiles p ON p.id = n.profile_id
+            WHERE n.id = ?
+            """,
+            (notification_id,),
+        ).fetchone()
+    return notification_from_row(row) if row is not None else None
+
+
+def list_notifications(db_path: Path, *, unread_only: bool = False, limit: int = 100) -> list[Notification]:
+    query = """
+        SELECT n.*, COALESCE(p.feed_title, '') AS profile_title
+        FROM notifications n
+        LEFT JOIN profiles p ON p.id = n.profile_id
+    """
+    params: list[Any] = []
+    if unread_only:
+        query += " WHERE n.read_at IS NULL"
+    query += " ORDER BY n.created_at DESC, n.id DESC LIMIT ?"
+    params.append(limit)
+    with closing(connect_db(db_path)) as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [notification_from_row(row) for row in rows]
+
+
+def count_unread_notifications(db_path: Path) -> int:
+    with closing(connect_db(db_path)) as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM notifications WHERE read_at IS NULL").fetchone()
+    return int(row["count"]) if row is not None else 0
+
+
+def mark_notification_read(db_path: Path, notification_id: int) -> None:
+    with closing(connect_db(db_path)) as conn:
+        conn.execute("UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE id = ?", (utcnow_text(), notification_id))
+        conn.commit()
+
+
+def mark_all_notifications_read(db_path: Path) -> None:
+    with closing(connect_db(db_path)) as conn:
+        conn.execute("UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE read_at IS NULL", (utcnow_text(),))
+        conn.commit()
+
+
+def delete_notification(db_path: Path, notification_id: int) -> None:
+    with closing(connect_db(db_path)) as conn:
+        conn.execute("DELETE FROM notifications WHERE id = ?", (notification_id,))
+        conn.commit()
+
+
+def delete_read_notifications(db_path: Path) -> None:
+    with closing(connect_db(db_path)) as conn:
+        conn.execute("DELETE FROM notifications WHERE read_at IS NOT NULL")
+        conn.commit()
+
+
+def mark_notification_emailed(db_path: Path, notification_id: int) -> None:
+    with closing(connect_db(db_path)) as conn:
+        conn.execute("UPDATE notifications SET emailed_at = COALESCE(emailed_at, ?) WHERE id = ?", (utcnow_text(), notification_id))
+        conn.commit()
+
+
+def notification_from_row(row: sqlite3.Row) -> Notification:
+    return Notification(
+        id=row["id"],
+        profile_id=row["profile_id"],
+        profile_title=row["profile_title"],
+        event_type=row["event_type"],
+        severity=row["severity"],
+        category=row["category"],
+        title=row["title"],
+        message=row["message"],
+        source_url=row["source_url"],
+        created_at=row["created_at"],
+        read_at=row["read_at"] or "",
+        emailed_at=row["emailed_at"] or "",
+        metadata_json=row["metadata_json"],
+    )
+
+
 def profile_from_row(row: sqlite3.Row) -> StoredProfile:
     return StoredProfile(
         id=row["id"],
@@ -2539,6 +2846,7 @@ def profile_from_row(row: sqlite3.Row) -> StoredProfile:
         fetch_mode=row["fetch_mode"],
         notify_on_success=bool(row["notify_on_success"]),
         notify_on_failure=bool(row["notify_on_failure"]),
+        notify_failure_categories=decode_failure_categories(row["notify_failure_categories"], bool(row["notify_on_failure"])),
         active=bool(row["active"]),
         last_status=row["last_status"],
         last_error=row["last_error"],
@@ -2548,6 +2856,22 @@ def profile_from_row(row: sqlite3.Row) -> StoredProfile:
         updated_at=row["updated_at"],
         item_count=row["item_count"],
     )
+
+
+def encode_failure_categories(categories: Iterable[str]) -> str:
+    return json.dumps(list(normalize_failure_categories(categories)))
+
+
+def decode_failure_categories(raw_value: str, notify_on_failure: bool = True) -> tuple[str, ...]:
+    if not raw_value:
+        return FAILURE_NOTIFICATION_CATEGORIES if notify_on_failure else ()
+    try:
+        decoded = json.loads(raw_value)
+    except json.JSONDecodeError:
+        decoded = raw_value.split(",")
+    if not isinstance(decoded, list):
+        return FAILURE_NOTIFICATION_CATEGORIES if notify_on_failure else ()
+    return normalize_failure_categories(str(value) for value in decoded)
 
 
 def utcnow_text() -> str:
@@ -2613,12 +2937,21 @@ def format_xml(xml_payload: str) -> str:
     return minidom.parseString(xml_payload.encode("utf-8")).toprettyxml(indent="  ")
 
 
-def parse_timezone_name(value: str) -> str:
+def load_timezone(value: str) -> tzinfo:
     timezone_name = value.strip() or "UTC"
+    if timezone_name.upper() == "UTC":
+        return timezone.utc
     try:
-        ZoneInfo(timezone_name)
+        return ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError as exc:
         raise ValueError("Timezone must be a valid IANA name such as America/Chicago.") from exc
+
+
+def parse_timezone_name(value: str) -> str:
+    timezone_name = value.strip() or "UTC"
+    load_timezone(timezone_name)
+    if timezone_name.upper() == "UTC":
+        return "UTC"
     return timezone_name
 
 
@@ -2661,6 +2994,101 @@ def smtp_configured(settings: AppSettings) -> bool:
     return settings.smtp_enabled and bool(settings.smtp_host and settings.smtp_port and settings.smtp_to_email and settings.smtp_from_email)
 
 
+def classify_refresh_error(exc: BaseException) -> str:
+    message = str(exc).casefold()
+    if "upstream http error" in message:
+        return "http_status"
+    if "upstream connection error" in message or "expected html" in message or "response limit" in message:
+        return "fetch"
+    if "no topic nodes matched" in message:
+        return "selector"
+    if "matched nodes did not contain usable titles and links" in message:
+        return "extraction"
+    if "off-site topic links" in message or "topic links must resolve" in message or "blocked redirect" in message:
+        return "link_blocked"
+    if "browser mode" in message or "playwright" in message:
+        return "browser"
+    if "smtp" in message:
+        return "smtp"
+    return "app"
+
+
+def build_refresh_success_notification(db_path: Path, profile: StoredProfile, *, source_url: str, entry_count: int) -> Notification:
+    return create_notification(
+        db_path,
+        profile_id=profile.id,
+        event_type="refresh",
+        severity="info",
+        category="success",
+        title=f"Refresh succeeded: {profile.feed_title}",
+        message=f"Nightfeed saved {entry_count} entr{'y' if entry_count == 1 else 'ies'} for this feed.",
+        source_url=source_url,
+        metadata={"entry_count": entry_count},
+    )
+
+
+def build_refresh_failure_notification(
+    db_path: Path,
+    profile: StoredProfile,
+    *,
+    source_url: str,
+    error: BaseException,
+) -> Notification:
+    category = classify_refresh_error(error)
+    return create_notification(
+        db_path,
+        profile_id=profile.id,
+        event_type="refresh",
+        severity="error",
+        category=category,
+        title=f"Refresh failed: {profile.feed_title}",
+        message=str(error),
+        source_url=source_url,
+        metadata={"failure_category": category},
+    )
+
+
+def maybe_send_notification_email(
+    db_path: Path,
+    profile: StoredProfile,
+    notification: Notification,
+) -> None:
+    if notification.severity == "info" and not profile.notify_on_success:
+        return
+    if notification.severity == "error" and notification.category not in profile.notify_failure_categories:
+        return
+    settings = get_app_settings(db_path)
+    if not smtp_configured(settings):
+        return
+    try:
+        send_refresh_notification_email(
+            settings,
+            profile,
+            notification=notification,
+        )
+        mark_notification_emailed(db_path, notification.id)
+        log_event(
+            logging.INFO,
+            "refresh_notification_sent",
+            profile_id=profile.id,
+            severity=notification.severity,
+            category=notification.category,
+            smtp_host=settings.smtp_host,
+            to_email=settings.smtp_to_email,
+        )
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "refresh_notification_failed",
+            profile_id=profile.id,
+            severity=notification.severity,
+            category=notification.category,
+            smtp_host=settings.smtp_host,
+            to_email=settings.smtp_to_email,
+            error=str(exc),
+        )
+
+
 def maybe_send_refresh_notification(
     db_path: Path,
     profile: StoredProfile,
@@ -2671,77 +3099,46 @@ def maybe_send_refresh_notification(
     entry_count: int = 0,
     error_message: str = "",
 ) -> None:
-    if status == "ok" and not profile.notify_on_success:
-        return
-    if status == "error" and not profile.notify_on_failure:
-        return
-    settings = get_app_settings(db_path)
-    if not smtp_configured(settings):
-        return
-    try:
-        send_refresh_notification_email(
-            settings,
-            profile,
-            status=status,
-            source_url=source_url,
-            refreshed_at=refreshed_at,
-            entry_count=entry_count,
-            error_message=error_message,
-        )
-        log_event(
-            logging.INFO,
-            "refresh_notification_sent",
-            profile_id=profile.id,
-            status=status,
-            smtp_host=settings.smtp_host,
-            to_email=settings.smtp_to_email,
-        )
-    except Exception as exc:
-        log_event(
-            logging.WARNING,
-            "refresh_notification_failed",
-            profile_id=profile.id,
-            status=status,
-            smtp_host=settings.smtp_host,
-            to_email=settings.smtp_to_email,
-            error=str(exc),
-        )
+    notification = create_notification(
+        db_path,
+        profile_id=profile.id,
+        event_type="refresh",
+        severity="info" if status == "ok" else "error",
+        category="success" if status == "ok" else classify_refresh_error(RuntimeError(error_message)),
+        title=f"Refresh {'succeeded' if status == 'ok' else 'failed'}: {profile.feed_title}",
+        message=(
+            f"Nightfeed saved {entry_count} entr{'y' if entry_count == 1 else 'ies'} for this feed."
+            if status == "ok"
+            else error_message
+        ),
+        source_url=source_url,
+        metadata={"entry_count": entry_count, "refreshed_at": refreshed_at},
+    )
+    maybe_send_notification_email(db_path, profile, notification)
 
 
 def send_refresh_notification_email(
     settings: AppSettings,
     profile: StoredProfile,
     *,
-    status: str,
-    source_url: str,
-    refreshed_at: str,
-    entry_count: int,
-    error_message: str,
+    notification: Notification,
 ) -> None:
     message = EmailMessage()
-    message["Subject"] = f"Nightfeed refresh {'succeeded' if status == 'ok' else 'failed'}: {profile.feed_title}"
+    message["Subject"] = f"Nightfeed {notification.title}"
     message["From"] = settings.smtp_from_email
     message["To"] = settings.smtp_to_email
     message.set_content(
         render_refresh_notification_text(
             settings,
             profile,
-            status=status,
-            source_url=source_url,
-            refreshed_at=refreshed_at,
-            entry_count=entry_count,
-            error_message=error_message,
+            notification=notification,
         )
     )
     message.add_alternative(
         render_refresh_notification_html(
             settings,
             profile,
-            status=status,
-            source_url=source_url,
-            refreshed_at=refreshed_at,
-            entry_count=entry_count,
-            error_message=error_message,
+            notification=notification,
         ),
         subtype="html",
     )
@@ -2820,35 +3217,32 @@ def render_refresh_notification_html(
     settings: AppSettings,
     profile: StoredProfile,
     *,
-    status: str,
-    source_url: str,
-    refreshed_at: str,
-    entry_count: int,
-    error_message: str,
+    notification: Notification,
 ) -> str:
-    accent = "#16a34a" if status == "ok" else "#dc2626"
-    badge_background = "#dcfce7" if status == "ok" else "#fee2e2"
-    badge_text = "#166534" if status == "ok" else "#991b1b"
-    headline = "Refresh completed successfully" if status == "ok" else "Refresh failed"
+    is_success = notification.severity == "info"
+    accent = "#16a34a" if is_success else "#dc2626"
+    badge_background = "#dcfce7" if is_success else "#fee2e2"
+    badge_text = "#166534" if is_success else "#991b1b"
+    headline = "Refresh completed successfully" if is_success else "Refresh failed"
     summary = (
-        f"Nightfeed saved {entry_count} entr{'y' if entry_count == 1 else 'ies'} for this refresh."
-        if status == "ok"
+        notification.message
+        if is_success
         else "Nightfeed could not refresh this feed. The latest error details are included below."
     )
     feed_url = build_feed_url("https://nightfeed.local", profile.feed_token, settings.public_base_url) if settings.public_base_url else ""
     detail_rows = [
         ("Feed", profile.feed_title),
-        ("Status", "Success" if status == "ok" else "Error"),
-        ("Refresh time", humanize_datetime(refreshed_at, settings.timezone_name)),
+        ("Status", "Success" if is_success else "Error"),
+        ("Refresh time", humanize_datetime(notification.created_at, settings.timezone_name)),
         ("Fetch mode", profile.fetch_mode.upper()),
-        ("Source URL", source_url),
-        ("Entries returned", str(entry_count if status == "ok" else 0)),
+        ("Source URL", notification.source_url),
+        ("Category", FAILURE_NOTIFICATION_LABELS.get(notification.category, notification.category)),
         ("Stored item count", str(profile.item_count)),
     ]
     if feed_url:
         detail_rows.append(("Feed URL", feed_url))
-    if error_message:
-        detail_rows.append(("Error", error_message))
+    if not is_success and notification.message:
+        detail_rows.append(("Error", notification.message))
     rendered_rows = "".join(
         f"<tr><td style=\"padding:12px 0; color:#64748b; font-size:13px; vertical-align:top;\">{escape(label)}</td>"
         f"<td style=\"padding:12px 0; color:#0f172a; font-size:14px; font-weight:600; vertical-align:top;\">{escape(value)}</td></tr>"
@@ -2873,7 +3267,7 @@ def render_refresh_notification_html(
         "</div><div style=\"padding:28px 32px 32px;\">"
         f"<div style=\"display:inline-block; padding:8px 12px; border-radius:999px; background:{badge_background}; "
         f"color:{badge_text}; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;\">"
-        f"{'Success' if status == 'ok' else 'Error'}</div>"
+        f"{'Success' if is_success else 'Error'}</div>"
         f"<p style=\"margin:20px 0 24px; color:#334155; font-size:15px; line-height:1.7;\">{escape(profile.feed_title)} "
         f"was refreshed in {escape(settings.timezone_name)}.</p>"
         f"<table style=\"width:100%; border-collapse:collapse;\">{rendered_rows}</table>"
@@ -2888,27 +3282,24 @@ def render_refresh_notification_text(
     settings: AppSettings,
     profile: StoredProfile,
     *,
-    status: str,
-    source_url: str,
-    refreshed_at: str,
-    entry_count: int,
-    error_message: str,
+    notification: Notification,
 ) -> str:
+    is_success = notification.severity == "info"
     lines = [
-        f"Nightfeed refresh {'succeeded' if status == 'ok' else 'failed'}",
+        notification.title,
         "",
         f"Feed: {profile.feed_title}",
-        f"Status: {'Success' if status == 'ok' else 'Error'}",
-        f"Refresh time: {humanize_datetime(refreshed_at, settings.timezone_name)}",
+        f"Status: {'Success' if is_success else 'Error'}",
+        f"Refresh time: {humanize_datetime(notification.created_at, settings.timezone_name)}",
         f"Fetch mode: {profile.fetch_mode.upper()}",
-        f"Source URL: {source_url}",
-        f"Entries returned: {entry_count if status == 'ok' else 0}",
+        f"Source URL: {notification.source_url}",
+        f"Category: {FAILURE_NOTIFICATION_LABELS.get(notification.category, notification.category)}",
         f"Stored item count: {profile.item_count}",
     ]
     if settings.public_base_url:
         lines.append(f"Feed URL: {build_feed_url('https://nightfeed.local', profile.feed_token, settings.public_base_url)}")
-    if error_message:
-        lines.extend(["", f"Error: {error_message}"])
+    if not is_success and notification.message:
+        lines.extend(["", f"Error: {notification.message}"])
     return "\n".join(lines)
 
 
@@ -2926,7 +3317,7 @@ def humanize_datetime(value: str | datetime, timezone_name: str = "UTC") -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
 
-    tz = ZoneInfo(parse_timezone_name(timezone_name))
+    tz = load_timezone(timezone_name)
     return dt.astimezone(tz).strftime("%b %d, %Y %I:%M %p %Z")
 
 
