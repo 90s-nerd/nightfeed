@@ -2419,6 +2419,11 @@ class AppTestCase(unittest.TestCase):
             self.assertIn(b"flushScrollQueue", response.data)
             self.assertIn(b'data-browser-viewport-mode="desktop"', response.data)
             self.assertIn(b'data-browser-viewport-mode="mobile"', response.data)
+            self.assertIn(b'data-mobile-nav-toggle', response.data)
+            self.assertIn(b'aria-controls="sidebar-menu"', response.data)
+            self.assertIn(b'data-mobile-nav-backdrop', response.data)
+            self.assertIn(b'setMobileNavOpen', response.data)
+            self.assertIn(b'@media (max-width: 390px)', response.data)
             self.assertIn("frame-src 'none'", response.headers["Content-Security-Policy"])
 
             base = f"/profiles/{profile.id}/items/{item_id}/safe/{safe_session.id}"

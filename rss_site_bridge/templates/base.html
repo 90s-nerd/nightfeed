@@ -64,6 +64,43 @@
         gap: 18px;
       }
 
+      .sidebar-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .sidebar-menu {
+        min-height: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .mobile-nav-toggle {
+        display: none;
+        width: 42px;
+        height: 42px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.04);
+        cursor: pointer;
+      }
+
+      .mobile-nav-toggle span {
+        display: block;
+        width: 18px;
+        height: 2px;
+        margin: 4px auto;
+        border-radius: 999px;
+        background: currentColor;
+        transition: transform 160ms ease, opacity 160ms ease;
+      }
+
       .brand {
         display: flex;
         align-items: center;
@@ -160,7 +197,10 @@
         margin: 0;
         font-size: 1.9rem;
         letter-spacing: -0.04em;
+        overflow-wrap: anywhere;
       }
+
+      .page-title { min-width: 0; }
 
       .page-title p {
         margin: 4px 0 0;
@@ -174,6 +214,11 @@
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
+      }
+
+      .topbar-actions form,
+      .button-row form {
+        margin: 0;
       }
 
       .btn {
@@ -1004,17 +1049,82 @@
       }
 
       @media (max-width: 980px) {
-        .app-shell {
-          grid-template-columns: 1fr;
-        }
+        .app-shell { display: block; }
 
         .sidebar {
+          position: sticky;
+          z-index: 50;
+          top: 0;
+          min-height: 64px;
+          padding: 10px 16px;
           border-right: none;
           border-bottom: 1px solid var(--line);
+          background: rgba(13, 18, 26, 0.96);
+          backdrop-filter: blur(18px);
+        }
+
+        .brand-mark {
+          width: 40px;
+          height: 40px;
+          border-radius: 13px;
+        }
+
+        .brand-copy span { display: none; }
+
+        .mobile-nav-toggle {
+          display: block;
+          flex: 0 0 auto;
+        }
+
+        .sidebar-menu {
+          position: fixed;
+          z-index: 51;
+          top: 64px;
+          left: 12px;
+          right: 12px;
+          min-height: auto;
+          max-height: calc(100vh - 80px);
+          padding: 10px;
+          overflow: auto;
+          border: 1px solid var(--line-strong);
+          border-radius: 16px;
+          background: #151c28;
+          box-shadow: 0 22px 60px rgba(0, 0, 0, 0.5);
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+          transform: translateY(-10px) scale(0.98);
+          transform-origin: top center;
+          transition: opacity 160ms ease, transform 160ms ease, visibility 160ms ease;
+        }
+
+        .sidebar.nav-open .sidebar-menu {
+          opacity: 1;
+          visibility: visible;
+          pointer-events: auto;
+          transform: translateY(0) scale(1);
+        }
+
+        .sidebar.nav-open .mobile-nav-toggle span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+        .sidebar.nav-open .mobile-nav-toggle span:nth-child(2) { opacity: 0; }
+        .sidebar.nav-open .mobile-nav-toggle span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+        .sidebar-footer {
+          margin-top: 0;
+          padding-top: 8px;
+          border-top: 1px solid var(--line);
+        }
+
+        .mobile-nav-backdrop {
+          position: fixed;
+          z-index: 49;
+          inset: 64px 0 0;
+          background: rgba(0, 0, 0, 0.5);
+          backdrop-filter: blur(2px);
         }
 
         .stat-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
         }
 
         .compose-grid {
@@ -1024,27 +1134,95 @@
 
       @media (max-width: 720px) {
         .main {
-          padding: 16px;
+          padding: 16px 14px 28px;
         }
 
         .topbar,
         .section-head,
-        .meta-row,
         .item-footer,
         .copy-row {
           flex-direction: column;
           align-items: stretch;
         }
 
+        .topbar {
+          gap: 12px;
+          margin-bottom: 14px;
+        }
+
+        .page-title h1 { font-size: 1.55rem; }
+        .page-title p { font-size: 0.86rem; }
+
+        .topbar-actions,
+        .form-actions {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          width: 100%;
+          gap: 8px;
+        }
+
         .topbar-actions .btn,
-        .button-row .btn,
-        .button-row form,
-        .form-actions .btn {
+        .topbar-actions form,
+        .topbar-actions form .btn,
+        .form-actions .btn,
+        .form-actions form,
+        .form-actions form .btn {
           width: 100%;
         }
 
-        .button-row form .btn {
-          width: 100%;
+        .topbar-actions > :last-child:nth-child(odd),
+        .form-actions > :last-child:nth-child(odd) {
+          grid-column: 1 / -1;
+        }
+
+        .section {
+          padding: 15px;
+        }
+
+        .surface { border-radius: 17px; }
+        .section-head { margin-bottom: 14px; }
+
+        .feed-grid { grid-template-columns: minmax(0, 1fr); }
+
+        .feed-card,
+        .item-card,
+        .preview-card {
+          padding: 15px;
+          border-radius: 15px;
+        }
+
+        .stat-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .stat-card,
+        .metric-card {
+          min-width: 0;
+          padding: 12px;
+        }
+
+        .metric-value { font-size: 1.1rem; }
+
+        .detail-metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .meta-row {
+          gap: 8px;
+        }
+
+        .item-actions {
+          flex-wrap: wrap;
+          gap: 10px 16px;
+        }
+
+        .field input,
+        .field select,
+        .field textarea {
+          min-height: 46px;
+          font-size: 16px;
         }
 
         .safe-browser-toolbar,
@@ -1052,16 +1230,43 @@
           flex-direction: column;
         }
 
+        .safe-browser-toolbar {
+          gap: 8px;
+          padding: 10px;
+        }
+
+        .safe-browser-address {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        .safe-browser-address input {
+          min-height: 44px;
+          font-size: 16px;
+        }
+
+        .safe-browser-address .btn {
+          min-width: 64px;
+        }
+
         .safe-browser-download-menu {
           align-self: auto;
         }
 
         .safe-browser-toolbar-actions {
+          padding-top: 2px;
           justify-content: flex-end;
         }
 
         .safe-browser-status span:first-child {
           flex: 1 0 100%;
+        }
+
+        .safe-browser-status {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px 12px;
+          padding: 9px 12px;
         }
 
         .safe-browser-toast {
@@ -1078,34 +1283,66 @@
           align-items: stretch;
           flex-direction: column;
         }
+
+        .safe-browser-download-save {
+          min-height: 38px;
+          display: inline-flex;
+          align-items: center;
+        }
+
+        .safe-browser-hint { padding-inline: 12px; }
+      }
+
+      @media (max-width: 390px) {
+        .main { padding-inline: 10px; }
+        .sidebar { padding-inline: 12px; }
+        .topbar-actions,
+        .form-actions { grid-template-columns: minmax(0, 1fr); }
+        .stat-grid { grid-template-columns: minmax(0, 1fr); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.01ms !important;
+          transition-duration: 0.01ms !important;
+        }
       }
     </style>
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true"></div>
-          <div class="brand-copy">
-            <strong>Nightfeed</strong>
-            <span>Site pages into stable RSS.</span>
+      <aside class="sidebar" data-mobile-nav>
+        <div class="sidebar-header">
+          <a class="brand" href="/" aria-label="Nightfeed home">
+            <div class="brand-mark" aria-hidden="true"></div>
+            <div class="brand-copy">
+              <strong>Nightfeed</strong>
+              <span>Site pages into stable RSS.</span>
+            </div>
+          </a>
+          <button class="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar-menu" data-mobile-nav-toggle>
+            <span></span><span></span><span></span>
+          </button>
+        </div>
+
+        <div class="sidebar-menu" id="sidebar-menu" data-mobile-nav-panel>
+          <nav class="nav-list" aria-label="Primary navigation">
+            <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">My Feeds</a>
+            <a class="nav-link {% if request.path.startswith('/notifications') %}active{% endif %}" href="/notifications">
+              Notifications
+              {% if g.unread_notification_count %}
+              <span class="pill" data-unread-notifications>{{ g.unread_notification_count }}</span>
+              {% endif %}
+            </a>
+          </nav>
+
+          <div class="sidebar-footer">
+            <a class="nav-link {% if request.path == '/settings' %}active{% endif %}" href="/settings">Settings</a>
           </div>
         </div>
-
-        <nav class="nav-list">
-          <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">My Feeds</a>
-          <a class="nav-link {% if request.path.startswith('/notifications') %}active{% endif %}" href="/notifications">
-            Notifications
-            {% if g.unread_notification_count %}
-            <span class="pill" data-unread-notifications>{{ g.unread_notification_count }}</span>
-            {% endif %}
-          </a>
-        </nav>
-
-        <div class="sidebar-footer">
-          <a class="nav-link {% if request.path == '/settings' %}active{% endif %}" href="/settings">Settings</a>
-        </div>
       </aside>
+      <div class="mobile-nav-backdrop" data-mobile-nav-backdrop hidden></div>
 
       <main class="main">
         {% block page_header %}{% endblock %}
@@ -1113,6 +1350,32 @@
       </main>
     </div>
     <script>
+      const mobileNav = document.querySelector("[data-mobile-nav]");
+      const mobileNavToggle = document.querySelector("[data-mobile-nav-toggle]");
+      const mobileNavBackdrop = document.querySelector("[data-mobile-nav-backdrop]");
+
+      const setMobileNavOpen = (open) => {
+        if (!mobileNav || !mobileNavToggle || !mobileNavBackdrop) return;
+        mobileNav.classList.toggle("nav-open", open);
+        mobileNavToggle.setAttribute("aria-expanded", String(open));
+        mobileNavToggle.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+        mobileNavBackdrop.hidden = !open;
+      };
+
+      mobileNavToggle?.addEventListener("click", () => {
+        setMobileNavOpen(!mobileNav.classList.contains("nav-open"));
+      });
+      mobileNavBackdrop?.addEventListener("click", () => setMobileNavOpen(false));
+      mobileNav?.querySelectorAll(".nav-link").forEach((link) => {
+        link.addEventListener("click", () => setMobileNavOpen(false));
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") setMobileNavOpen(false);
+      });
+      window.matchMedia("(min-width: 981px)").addEventListener("change", (event) => {
+        if (event.matches) setMobileNavOpen(false);
+      });
+
       const previewDebugParams = new URLSearchParams(window.location.search);
       if (previewDebugParams.get("preview_debug") === "1") {
         window.localStorage.setItem("nightfeed.previewDebug", "1");

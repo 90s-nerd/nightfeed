@@ -81,6 +81,7 @@
   .settings-summary-item strong {
     font-size: 0.96rem;
     line-height: 1.4;
+    overflow-wrap: anywhere;
   }
 
   .settings-sections {
@@ -310,9 +311,37 @@
   }
 
   @media (max-width: 760px) {
+    .settings-shell { gap: 14px; }
+
     .settings-frame {
-      padding: 22px 18px;
-      gap: 24px;
+      padding: 16px;
+      gap: 20px;
+    }
+
+    .settings-top { gap: 18px; }
+
+    .settings-headline {
+      gap: 9px;
+    }
+
+    .settings-headline h2 {
+      font-size: 1.4rem;
+      line-height: 1.15;
+    }
+
+    .settings-headline p,
+    .settings-meta p {
+      line-height: 1.5;
+    }
+
+    .settings-summary {
+      padding: 14px;
+      border-radius: 15px;
+    }
+
+    .settings-section {
+      gap: 14px;
+      padding: 20px 0;
     }
 
     .settings-fields-two {
@@ -321,6 +350,9 @@
 
     .settings-toggle-row {
       grid-template-columns: 1fr;
+      gap: 12px;
+      padding: 14px;
+      border-radius: 15px;
       justify-items: start;
     }
 
@@ -329,10 +361,23 @@
       gap: 14px;
     }
 
-    .settings-actions .btn {
+    .settings-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      width: 100%;
+      gap: 8px;
+    }
+
+    .settings-actions .btn,
+    .settings-actions form,
+    .settings-actions form .btn {
       width: 100%;
       min-width: 0;
     }
+  }
+
+  @media (max-width: 390px) {
+    .settings-actions { grid-template-columns: 1fr; }
   }
 </style>
 
