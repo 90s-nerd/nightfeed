@@ -35,6 +35,7 @@ from rss_site_bridge.app import (
     humanize_datetime,
     humanize_next_refresh,
     init_db,
+    is_safe_browser_url,
     list_feed_items,
     list_notifications,
     list_profiles,
@@ -59,6 +60,13 @@ class AppTestCase(unittest.TestCase):
     def test_rejects_offsite_topic_links(self):
         with self.assertRaises(ValueError):
             normalize_topic_link("https://example.com/forum", "https://evil.test/topic")
+
+    def test_safe_browser_url_rejects_local_and_private_targets(self):
+        self.assertTrue(is_safe_browser_url("https://example.com/topic"))
+        self.assertFalse(is_safe_browser_url("http://localhost/admin"))
+        self.assertFalse(is_safe_browser_url("http://127.0.0.1/admin"))
+        self.assertFalse(is_safe_browser_url("http://192.168.1.1/"))
+        self.assertFalse(is_safe_browser_url("file:///etc/passwd"))
 
     def test_rss_contains_channel_title(self):
         config = FeedRequest(
@@ -2332,6 +2340,100 @@ class AppTestCase(unittest.TestCase):
 
             self.assertEqual(302, response.status_code)
             self.assertIsNone(get_profile_by_id(db_path, profile.id))
+
+    @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
+    def test_safe_browser_routes_render_control_and_serve_downloads(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "rss.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "START_SCHEDULER": False,
+                    "DATABASE_PATH": db_path,
+                }
+            )
+            profile = create_profile(
+                db_path,
+                FeedRequest(
+                    feed_title="Forum Feed",
+                    source_url="https://example.com/forum",
+                    item_selector=".topic",
+                    title_selector="a",
+                    link_selector="a",
+                    summary_selector="",
+                    max_items=10,
+                    refresh_interval_minutes=60,
+                    fetch_mode="http",
+                ),
+            )
+            discovered_at = datetime.now(timezone.utc).isoformat()
+            with closing(sqlite3.connect(db_path)) as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO feed_items (profile_id, title, link, summary, discovered_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (profile.id, "Topic A", "https://example.com/forum/topic-a", "", discovered_at),
+                )
+                item_id = cursor.lastrowid
+                conn.commit()
+
+            download_path = Path(tmpdir) / "example.torrent"
+            download_path.write_bytes(b"torrent-data")
+
+            class FakeSafeSession:
+                id = "safe-session"
+
+                def execute(self, action, **_payload):
+                    if action == "screenshot":
+                        return b"png-data"
+                    if action == "download":
+                        return {"path": download_path, "name": "example.torrent"}
+                    return {
+                        "url": "https://example.com/forum/topic-a",
+                        "title": "Topic A",
+                        "blocked_requests": 3,
+                        "popup_attempts": 2,
+                        "downloads": [],
+                    }
+
+                def stop(self):
+                    return None
+
+            safe_session = FakeSafeSession()
+            client = app.test_client()
+            detail = client.get(f"/profiles/{profile.id}")
+            with patch("rss_site_bridge.app.create_safe_browser_session", return_value=safe_session):
+                response = client.get(f"/profiles/{profile.id}/items/{item_id}/safe")
+
+            self.assertIn(b'class="danger-link"', detail.data)
+            self.assertEqual(200, response.status_code)
+            self.assertIn(b"Interactive safe browser viewport", response.data)
+            self.assertIn(b"Downloads", response.data)
+            self.assertIn(b"data-browser-download-badge", response.data)
+            self.assertIn(b"data-browser-download-popover", response.data)
+            self.assertIn(b"File downloaded. Check Downloads.", response.data)
+            self.assertIn(b"safe-browser-download-extension", response.data)
+            self.assertIn(b"name.title = fullName", response.data)
+            self.assertIn(b"pendingScrollDelta += event.deltaY", response.data)
+            self.assertIn(b"flushScrollQueue", response.data)
+            self.assertIn(b'data-browser-viewport-mode="desktop"', response.data)
+            self.assertIn(b'data-browser-viewport-mode="mobile"', response.data)
+            self.assertIn("frame-src 'none'", response.headers["Content-Security-Policy"])
+
+            base = f"/profiles/{profile.id}/items/{item_id}/safe/{safe_session.id}"
+            with patch("rss_site_bridge.app.get_safe_browser_session", return_value=safe_session):
+                screenshot = client.get(f"{base}/screenshot")
+                command = client.post(f"{base}/command", json={"action": "click", "x": 20, "y": 30})
+                viewport = client.post(f"{base}/command", json={"action": "viewport", "mode": "mobile"})
+                download = client.get(f"{base}/downloads/file-id")
+
+            self.assertEqual(b"png-data", screenshot.data)
+            self.assertEqual(3, command.get_json()["blocked_requests"])
+            self.assertEqual(200, viewport.status_code)
+            self.assertEqual(b"torrent-data", download.data)
+            self.assertEqual("attachment; filename=example.torrent", download.headers["Content-Disposition"])
+            download.close()
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
     def test_delete_route_returns_json_for_ajax_request(self):

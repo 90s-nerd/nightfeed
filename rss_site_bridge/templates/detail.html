@@ -104,7 +104,10 @@
           {% endif %}
           <div class="item-footer" style="margin-top:12px;">
             <span>{{ item.published_at | human_datetime }}</span>
-            <a class="link-text" href="{{ item.link }}" target="_blank" rel="noreferrer">Open topic</a>
+            <div class="item-actions">
+              <a class="link-text" href="{{ item.link }}" target="_blank" rel="noreferrer">Open topic</a>
+              <a class="danger-link" href="/profiles/{{ profile.id }}/items/{{ item.id }}/safe">Open safely</a>
+            </div>
           </div>
         </article>
         {% endfor %}

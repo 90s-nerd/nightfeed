@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+
+{% block title %}Safe browser · {{ item.title }} · Nightfeed{% endblock %}
+
+{% block page_header %}
+<header class="topbar">
+  <div class="page-title">
+    <h1>Safe browser</h1>
+    <p>{{ item.title }}</p>
+  </div>
+  <div class="topbar-actions">
+    <a class="btn btn-secondary" href="{{ item.link }}" target="_blank" rel="noreferrer">Open original</a>
+    {% if safe_session %}
+    <form class="inline-form" action="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/close" method="post">
+      <button class="btn btn-primary" type="submit">Close session</button>
+    </form>
+    {% else %}
+    <a class="btn btn-primary" href="/profiles/{{ profile.id }}">Back to feed</a>
+    {% endif %}
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+{% if error %}
+<section class="surface section">
+  <div class="notice">
+    <strong>Safe browser could not start</strong>
+    <p>{{ error }}</p>
+  </div>
+  <p class="meta" style="margin-top:16px;">Install the browser extra and Chromium, then try again:</p>
+  <pre class="safe-browser-install">pip install ".[browser]"
+playwright install chromium</pre>
+</section>
+{% else %}
+<section class="surface safe-browser-shell"
+  data-safe-browser
+  data-screenshot-url="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/screenshot"
+  data-state-url="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/state"
+  data-command-url="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/command"
+  data-download-base="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/downloads/">
+  <div class="safe-browser-toast" role="status" aria-live="polite" data-browser-download-toast hidden>
+    File downloaded. Check Downloads.
+  </div>
+  <div class="safe-browser-toolbar">
+    <div class="safe-browser-nav">
+      <button class="btn btn-secondary" type="button" data-browser-action="back" aria-label="Back">←</button>
+      <button class="btn btn-secondary" type="button" data-browser-action="forward" aria-label="Forward">→</button>
+      <button class="btn btn-secondary" type="button" data-browser-action="reload" aria-label="Reload">↻</button>
+    </div>
+    <form class="safe-browser-address" data-browser-address-form>
+      <input type="url" value="{{ item.link }}" aria-label="Browser address" data-browser-address autocomplete="off">
+      <button class="btn btn-primary" type="submit">Go</button>
+    </form>
+    <div class="safe-browser-toolbar-actions">
+      <div class="safe-browser-device-toggle" aria-label="Remote viewport">
+        <button class="safe-browser-device-option is-active" type="button" title="Desktop viewport" aria-label="Desktop viewport" aria-pressed="true" data-browser-viewport-mode="desktop">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H4zM9 20h6m-3-4v4" /></svg>
+        </button>
+        <button class="safe-browser-device-option" type="button" title="Mobile viewport" aria-label="Mobile viewport" aria-pressed="false" data-browser-viewport-mode="mobile">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M11 18.5h2" /></svg>
+        </button>
+      </div>
+      <div class="safe-browser-download-menu" data-browser-download-menu>
+      <button class="btn btn-secondary safe-browser-download-toggle" type="button" aria-label="Downloads" aria-expanded="false" data-browser-download-toggle>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v3h14v-3" />
+        </svg>
+        <span class="safe-browser-download-badge" data-browser-download-badge hidden>0</span>
+      </button>
+      <div class="safe-browser-download-popover" data-browser-download-popover hidden>
+        <div class="safe-browser-download-head">
+          <strong>Downloads</strong>
+          <span data-browser-download-summary>No files yet</span>
+        </div>
+        <div class="safe-browser-download-list" data-browser-downloads>
+          <div class="empty-state">Downloaded files will appear here.</div>
+        </div>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="safe-browser-status">
+    <span data-browser-title>Loading page…</span>
+    <span><strong data-browser-blocked>0</strong> noisy requests blocked</span>
+    <span><strong data-browser-popups>0</strong> popups stopped</span>
+  </div>
+
+  <div class="safe-browser-viewport" data-browser-viewport>
+    <img
+      src="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/screenshot"
+      alt="Interactive safe browser viewport"
+      tabindex="0"
+      draggable="false"
+      data-browser-screen>
+    <div class="safe-browser-loading" data-browser-loading hidden>Updating…</div>
+  </div>
+  <p class="safe-browser-hint">Click inside the page, then type normally. Scroll over the viewport to move through the remote page.</p>
+</section>
+
+<script>
+  (() => {
+    const browser = document.querySelector("[data-safe-browser]");
+    if (!browser) return;
+
+    const screen = browser.querySelector("[data-browser-screen]");
+    const loading = browser.querySelector("[data-browser-loading]");
+    const address = browser.querySelector("[data-browser-address]");
+    const title = browser.querySelector("[data-browser-title]");
+    const blocked = browser.querySelector("[data-browser-blocked]");
+    const popups = browser.querySelector("[data-browser-popups]");
+    const downloadMenu = browser.querySelector("[data-browser-download-menu]");
+    const downloadToggle = browser.querySelector("[data-browser-download-toggle]");
+    const downloadBadge = browser.querySelector("[data-browser-download-badge]");
+    const downloadPopover = browser.querySelector("[data-browser-download-popover]");
+    const downloadSummary = browser.querySelector("[data-browser-download-summary]");
+    const downloadToast = browser.querySelector("[data-browser-download-toast]");
+    const downloads = browser.querySelector("[data-browser-downloads]");
+    const viewportButtons = [...browser.querySelectorAll("[data-browser-viewport-mode]")];
+    let busy = false;
+    let downloadCount = 0;
+    let downloadToastTimer = null;
+    let pendingScrollDelta = 0;
+    let scrollFlushTimer = null;
+    let viewportWidth = 1280;
+    let viewportHeight = 800;
+
+    const setDownloadPopover = (open) => {
+      downloadPopover.hidden = !open;
+      downloadToggle.setAttribute("aria-expanded", String(open));
+    };
+
+    const showDownloadToast = () => {
+      window.clearTimeout(downloadToastTimer);
+      downloadToast.hidden = false;
+      requestAnimationFrame(() => downloadToast.classList.add("is-visible"));
+      downloadToastTimer = window.setTimeout(() => {
+        downloadToast.classList.remove("is-visible");
+        window.setTimeout(() => { downloadToast.hidden = true; }, 180);
+      }, 3200);
+    };
+
+    const formatBytes = (bytes) => {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    };
+
+    const renderState = (state) => {
+      if (!state || state.error) return;
+      address.value = state.url || address.value;
+      title.textContent = state.title || state.url || "Safe browser";
+      blocked.textContent = state.blocked_requests || 0;
+      popups.textContent = state.popup_attempts || 0;
+      viewportWidth = Number(state.viewport_width) || viewportWidth;
+      viewportHeight = Number(state.viewport_height) || viewportHeight;
+      screen.style.aspectRatio = `${viewportWidth} / ${viewportHeight}`;
+      viewportButtons.forEach((button) => {
+        const active = button.dataset.browserViewportMode === state.viewport_mode;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      const files = state.downloads || [];
+      const hasNewDownload = files.length > downloadCount;
+      downloadBadge.textContent = String(files.length);
+      downloadBadge.hidden = files.length === 0;
+      downloadSummary.textContent = files.length === 0 ? "No files yet" : files.length === 1 ? "1 file ready" : `${files.length} files ready`;
+      downloadToggle.setAttribute("aria-label", files.length ? `Downloads, ${files.length} files ready` : "Downloads");
+      if (hasNewDownload) {
+        downloadBadge.classList.remove("is-updated");
+        requestAnimationFrame(() => downloadBadge.classList.add("is-updated"));
+        setDownloadPopover(true);
+        showDownloadToast();
+      }
+      downloadCount = files.length;
+      if (!files.length) {
+        downloads.innerHTML = '<div class="empty-state">Downloaded files will appear here.</div>';
+        return;
+      }
+      downloads.replaceChildren(...files.map((file) => {
+        const card = document.createElement("article");
+        card.className = "safe-browser-download";
+        const details = document.createElement("div");
+        const name = document.createElement("strong");
+        name.className = "safe-browser-download-name";
+        const fullName = String(file.name);
+        name.title = fullName;
+        const extensionAt = fullName.lastIndexOf(".");
+        const hasExtension = extensionAt > 0 && fullName.length - extensionAt <= 20;
+        const stem = document.createElement("span");
+        stem.className = "safe-browser-download-stem";
+        stem.textContent = hasExtension ? fullName.slice(0, extensionAt) : fullName;
+        name.append(stem);
+        if (hasExtension) {
+          const extension = document.createElement("span");
+          extension.className = "safe-browser-download-extension";
+          extension.textContent = fullName.slice(extensionAt);
+          name.append(extension);
+        }
+        const size = document.createElement("p");
+        size.className = "meta";
+        size.textContent = formatBytes(file.size);
+        details.append(name, size);
+        const link = document.createElement("a");
+        link.className = "safe-browser-download-save";
+        link.href = `${browser.dataset.downloadBase}${encodeURIComponent(file.id)}`;
+        link.textContent = "Save";
+        card.append(details, link);
+        return card;
+      }));
+    };
+
+    downloadToggle.addEventListener("click", () => {
+      setDownloadPopover(downloadPopover.hidden);
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!downloadMenu.contains(event.target)) setDownloadPopover(false);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setDownloadPopover(false);
+    });
+
+    const refreshScreen = () => {
+      screen.src = `${browser.dataset.screenshotUrl}?t=${Date.now()}`;
+    };
+
+    const command = async (action, payload = {}) => {
+      if (busy) return;
+      busy = true;
+      loading.hidden = false;
+      try {
+        const response = await fetch(browser.dataset.commandUrl, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action, ...payload}),
+        });
+        const state = await response.json();
+        if (!response.ok) throw new Error(state.error || "Browser command failed.");
+        renderState(state);
+        refreshScreen();
+      } catch (error) {
+        title.textContent = error.message;
+      } finally {
+        busy = false;
+        loading.hidden = true;
+      }
+    };
+
+    const scheduleScrollFlush = (delay = 24) => {
+      if (scrollFlushTimer !== null) return;
+      scrollFlushTimer = window.setTimeout(flushScrollQueue, delay);
+    };
+
+    const flushScrollQueue = async () => {
+      scrollFlushTimer = null;
+      if (busy) {
+        scheduleScrollFlush(24);
+        return;
+      }
+      if (Math.abs(pendingScrollDelta) < 0.5) return;
+
+      const delta = pendingScrollDelta;
+      pendingScrollDelta = 0;
+      busy = true;
+      try {
+        const response = await fetch(browser.dataset.commandUrl, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action: "scroll", delta}),
+        });
+        const state = await response.json();
+        if (!response.ok) throw new Error(state.error || "Browser scroll failed.");
+        renderState(state);
+        refreshScreen();
+      } catch (error) {
+        title.textContent = error.message;
+      } finally {
+        busy = false;
+        if (Math.abs(pendingScrollDelta) >= 0.5) scheduleScrollFlush(0);
+      }
+    };
+
+    browser.querySelectorAll("[data-browser-action]").forEach((button) => {
+      button.addEventListener("click", () => command(button.dataset.browserAction));
+    });
+
+    viewportButtons.forEach((button) => {
+      button.addEventListener("click", () => command("viewport", {mode: button.dataset.browserViewportMode}));
+    });
+
+    browser.querySelector("[data-browser-address-form]").addEventListener("submit", (event) => {
+      event.preventDefault();
+      command("navigate", {url: address.value});
+    });
+
+    screen.addEventListener("click", (event) => {
+      const rect = screen.getBoundingClientRect();
+      const x = (event.clientX - rect.left) * (viewportWidth / rect.width);
+      const y = (event.clientY - rect.top) * (viewportHeight / rect.height);
+      screen.focus();
+      command("click", {x, y});
+    });
+
+    screen.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      pendingScrollDelta += event.deltaY;
+      scheduleScrollFlush();
+    }, {passive: false});
+
+    const namedKeys = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
+    screen.addEventListener("keydown", (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        const modifiers = [];
+        if (event.ctrlKey) modifiers.push("Control");
+        if (event.metaKey) modifiers.push("Meta");
+        if (event.altKey) modifiers.push("Alt");
+        if (event.shiftKey) modifiers.push("Shift");
+        modifiers.push(event.key.length === 1 ? event.key.toUpperCase() : event.key);
+        event.preventDefault();
+        command("key", {key: modifiers.join("+")});
+      } else if (namedKeys.has(event.key)) {
+        event.preventDefault();
+        command("key", {key: event.key});
+      } else if (event.key === " ") {
+        event.preventDefault();
+        command("key", {key: "Space"});
+      } else if (event.key.length === 1) {
+        event.preventDefault();
+        command("text", {text: event.key});
+      }
+    });
+
+    const poll = async () => {
+      if (busy) return;
+      try {
+        const response = await fetch(browser.dataset.stateUrl, {cache: "no-store"});
+        if (!response.ok) return;
+        renderState(await response.json());
+        refreshScreen();
+      } catch (_) {}
+    };
+    poll();
+    window.setInterval(poll, 2000);
+  })();
+</script>
+{% endif %}
+{% endblock %}

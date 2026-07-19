@@ -9,6 +9,8 @@
 - Refreshes sources on demand and on a background timer.
 - Uses HTTP-only fetching by default.
 - Offers an optional hardened browser mode for JavaScript-rendered pages.
+- Opens stored topics in an optional interactive, isolated browser with popup and ad-request controls.
+- Captures user-triggered browser downloads and serves them from a temporary Nightfeed download tray.
 - Rejects off-site topic links when building the feed.
 
 The default mode is the safest path for noisy sites because it never opens a browser. If a site renders the topic list with JavaScript, browser mode uses Playwright in a locked-down context that blocks popups, third-party requests, downloads, and off-site navigations.
@@ -53,6 +55,12 @@ macOS/Linux:
 pip install ".[browser]"
 playwright install chromium
 ```
+
+The same optional Playwright installation powers **Open safely** on stored topics. Safe browser sessions run for up to ten minutes after the user stops interacting. New windows are suppressed, common advertising hosts and non-public network targets are blocked, and files initiated by the user appear in the session's Downloads tray. Session cookies and downloaded temporary files are removed when the session ends.
+
+### Safe-browser streaming roadmap
+
+The current safe browser sends input to Playwright and refreshes a remote screenshot. Wheel events are queued and combined to reduce choppy scrolling, but the experience is still limited by HTTP and screenshot round trips. A future upgrade can replace screenshot polling with a persistent WebSocket carrying Chrome DevTools Protocol screencast frames, or use WebRTC/noVNC for a continuously streamed viewport. Input events should travel over the same persistent channel for browser-like scrolling, typing, and animation.
 
 Windows PowerShell:
 

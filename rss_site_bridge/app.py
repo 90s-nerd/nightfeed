@@ -9,13 +9,14 @@ from email.utils import formataddr, parseaddr
 from fnmatch import fnmatchcase
 from html import escape
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, build_opener
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -26,12 +27,13 @@ import sqlite3
 import ssl
 import sys
 import time
+from tempfile import TemporaryDirectory
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
-    from flask import Flask, Response, g, has_request_context, jsonify, redirect, render_template, request, stream_with_context, url_for
+    from flask import Flask, Response, g, has_request_context, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
 except ModuleNotFoundError:
     Flask = Any  # type: ignore[assignment]
     Response = Any  # type: ignore[assignment]
@@ -41,6 +43,7 @@ except ModuleNotFoundError:
     redirect = None
     render_template = None
     request = None
+    send_file = None
     stream_with_context = None
     url_for = None
 
@@ -91,6 +94,23 @@ _scheduler_lock = Lock()
 _scheduler_started = False
 _logging_lock = Lock()
 _logging_configured = False
+SAFE_BROWSER_VIEWPORT = {"width": 1280, "height": 800}
+SAFE_BROWSER_MOBILE_VIEWPORT = {"width": 390, "height": 844}
+SAFE_BROWSER_SESSION_TTL_SECONDS = 10 * 60
+SAFE_BROWSER_BLOCKED_HOST_PARTS = (
+    "doubleclick.",
+    "googlesyndication.",
+    "googleadservices.",
+    "trafficjunky.",
+    "exoclick.",
+    "popads.",
+    "popcash.",
+    "propellerads.",
+    "adsterra.",
+    "onclicka.",
+)
+_safe_browser_sessions: dict[str, "SafeBrowserSession"] = {}
+_safe_browser_sessions_lock = Lock()
 
 
 @dataclass
@@ -128,6 +148,7 @@ class FeedEntry:
     link: str
     summary: str
     published_at: datetime
+    id: int | None = None
 
 
 @dataclass
@@ -211,6 +232,249 @@ class Notification:
     read_at: str
     emailed_at: str
     metadata_json: str
+
+
+class SafeBrowserSession:
+    def __init__(self, source_url: str, profile_id: int, item_id: int):
+        self.id = secrets.token_urlsafe(24)
+        self.source_url = source_url
+        self.profile_id = profile_id
+        self.item_id = item_id
+        self.created_at = time.monotonic()
+        self.last_activity = self.created_at
+        self.commands: Queue[tuple[str, dict[str, Any], Queue[Any]]] = Queue()
+        self.ready = Event()
+        self.error = ""
+        self.closed = False
+        self.thread = Thread(target=self._run, daemon=True, name=f"safe-browser-{self.id[:8]}")
+
+    def start(self) -> None:
+        self.thread.start()
+        if not self.ready.wait(timeout=25):
+            self.closed = True
+            raise RuntimeError("The safe browser did not start in time.")
+        if self.error:
+            raise RuntimeError(self.error)
+
+    def execute(self, action: str, **payload: Any) -> Any:
+        if self.closed:
+            raise RuntimeError(self.error or "This safe browser session has ended.")
+        response: Queue[Any] = Queue(maxsize=1)
+        self.last_activity = time.monotonic()
+        self.commands.put((action, payload, response))
+        try:
+            result = response.get(timeout=25)
+        except Empty as exc:
+            raise RuntimeError("The safe browser did not respond in time.") from exc
+        if isinstance(result, BaseException):
+            raise RuntimeError(str(result)) from result
+        return result
+
+    def stop(self) -> None:
+        if self.closed:
+            return
+        response: Queue[Any] = Queue(maxsize=1)
+        self.commands.put(("stop", {}, response))
+        try:
+            response.get(timeout=5)
+        except Empty:
+            pass
+
+    def _run(self) -> None:
+        try:
+            from playwright.sync_api import Error as PlaywrightError
+            from playwright.sync_api import sync_playwright
+        except ModuleNotFoundError:
+            self.error = "Safe browsing requires Playwright and Chromium. Install the optional browser dependency first."
+            self.closed = True
+            self.ready.set()
+            return
+
+        popup_attempts = 0
+        blocked_requests = 0
+        last_user_interaction = 0.0
+        viewport_mode = "desktop"
+        downloads: dict[str, dict[str, Any]] = {}
+
+        try:
+            with TemporaryDirectory(prefix="nightfeed-safe-") as download_dir, sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context(
+                    accept_downloads=True,
+                    java_script_enabled=True,
+                    service_workers="block",
+                    viewport=SAFE_BROWSER_VIEWPORT,
+                )
+                context.add_init_script(
+                    """
+                    (() => {
+                      document.addEventListener('click', (event) => {
+                        const anchor = event.target && event.target.closest ? event.target.closest('a[target="_blank"]') : null;
+                        if (anchor && anchor.href) {
+                          event.preventDefault();
+                          window.location.assign(anchor.href);
+                        }
+                      }, true);
+                    })();
+                    """
+                )
+                page = context.new_page()
+                page.set_default_navigation_timeout(15000)
+                page.set_default_timeout(15000)
+
+                def handle_route(route):
+                    nonlocal blocked_requests
+                    parsed = urlparse(route.request.url)
+                    hostname = (parsed.hostname or "").lower()
+                    if parsed.scheme not in {"http", "https", "data", "blob", "about"}:
+                        blocked_requests += 1
+                        route.abort()
+                        return
+                    if route.request.resource_type in {"websocket"} or any(
+                        part in hostname for part in SAFE_BROWSER_BLOCKED_HOST_PARTS
+                    ):
+                        blocked_requests += 1
+                        route.abort()
+                        return
+                    if parsed.scheme in {"http", "https"} and not is_safe_browser_url(route.request.url):
+                        blocked_requests += 1
+                        route.abort()
+                        return
+                    route.continue_()
+
+                def handle_popup(popup):
+                    nonlocal popup_attempts
+                    popup_attempts += 1
+                    popup.close()
+
+                def handle_download(download):
+                    if time.monotonic() - last_user_interaction > 8:
+                        download.cancel()
+                        return
+                    suggested = Path(download.suggested_filename or "download").name
+                    download_id = secrets.token_urlsafe(16)
+                    suffix = Path(suggested).suffix[:16]
+                    destination = Path(download_dir) / f"{download_id}{suffix}"
+                    try:
+                        download.save_as(destination)
+                        downloads[download_id] = {
+                            "id": download_id,
+                            "name": suggested,
+                            "path": destination,
+                            "size": destination.stat().st_size,
+                        }
+                    except PlaywrightError:
+                        return
+
+                page.route("**/*", handle_route)
+                page.on("popup", handle_popup)
+                page.on("download", handle_download)
+                response = page.goto(self.source_url, wait_until="domcontentloaded")
+                if response is not None and not response.ok:
+                    raise RuntimeError(f"Upstream HTTP error: {response.status} {response.status_text}")
+                page.wait_for_timeout(400)
+                self.ready.set()
+
+                def state() -> dict[str, Any]:
+                    viewport = page.viewport_size or SAFE_BROWSER_VIEWPORT
+                    return {
+                        "url": page.url,
+                        "title": page.title(),
+                        "can_go_back": True,
+                        "popup_attempts": popup_attempts,
+                        "blocked_requests": blocked_requests,
+                        "viewport_mode": viewport_mode,
+                        "viewport_width": viewport["width"],
+                        "viewport_height": viewport["height"],
+                        "downloads": [
+                            {"id": item["id"], "name": item["name"], "size": item["size"]}
+                            for item in downloads.values()
+                        ],
+                    }
+
+                while True:
+                    if time.monotonic() - self.last_activity > SAFE_BROWSER_SESSION_TTL_SECONDS:
+                        break
+                    try:
+                        action, payload, command_response = self.commands.get(timeout=1)
+                    except Empty:
+                        continue
+                    try:
+                        if action == "stop":
+                            command_response.put(True)
+                            break
+                        if action == "screenshot":
+                            result = page.screenshot(type="png")
+                        elif action == "state":
+                            result = state()
+                        elif action == "click":
+                            last_user_interaction = time.monotonic()
+                            page.mouse.click(float(payload["x"]), float(payload["y"]))
+                            page.wait_for_timeout(350)
+                            result = state()
+                        elif action == "scroll":
+                            page.mouse.wheel(0, float(payload.get("delta", 0)))
+                            result = state()
+                        elif action == "key":
+                            last_user_interaction = time.monotonic()
+                            key = str(payload.get("key", ""))[:40]
+                            if not key:
+                                raise ValueError("A key is required.")
+                            page.keyboard.press(key)
+                            page.wait_for_timeout(100)
+                            result = state()
+                        elif action == "text":
+                            last_user_interaction = time.monotonic()
+                            page.keyboard.insert_text(str(payload.get("text", ""))[:2000])
+                            page.wait_for_timeout(100)
+                            result = state()
+                        elif action == "back":
+                            page.go_back(wait_until="domcontentloaded")
+                            result = state()
+                        elif action == "forward":
+                            page.go_forward(wait_until="domcontentloaded")
+                            result = state()
+                        elif action == "reload":
+                            page.reload(wait_until="domcontentloaded")
+                            result = state()
+                        elif action == "navigate":
+                            last_user_interaction = time.monotonic()
+                            target = str(payload.get("url", "")).strip()
+                            if not is_safe_browser_url(target):
+                                raise ValueError("Only public http or https URLs can be opened.")
+                            page.goto(target, wait_until="domcontentloaded")
+                            result = state()
+                        elif action == "viewport":
+                            requested_mode = str(payload.get("mode", ""))
+                            if requested_mode not in {"desktop", "mobile"}:
+                                raise ValueError("Viewport mode must be desktop or mobile.")
+                            viewport_mode = requested_mode
+                            page.set_viewport_size(
+                                SAFE_BROWSER_MOBILE_VIEWPORT
+                                if viewport_mode == "mobile"
+                                else SAFE_BROWSER_VIEWPORT
+                            )
+                            result = state()
+                        elif action == "download":
+                            download = downloads.get(str(payload.get("download_id", "")))
+                            if download is None:
+                                raise ValueError("Download not found.")
+                            result = download
+                        else:
+                            raise ValueError("Unsupported browser action.")
+                        command_response.put(result)
+                    except BaseException as exc:
+                        command_response.put(exc)
+                context.close()
+                browser.close()
+        except BaseException as exc:
+            self.error = str(exc)
+            self.ready.set()
+        finally:
+            self.closed = True
+            self.ready.set()
+            with _safe_browser_sessions_lock:
+                _safe_browser_sessions.pop(self.id, None)
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -317,6 +581,47 @@ def source_host(source_url: str) -> str:
     return urlparse(source_url).netloc
 
 
+def is_safe_browser_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return True
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def create_safe_browser_session(source_url: str, profile_id: int, item_id: int) -> SafeBrowserSession:
+    if not is_safe_browser_url(source_url):
+        raise RuntimeError("Only public http or https topic URLs can be opened safely.")
+    session = SafeBrowserSession(source_url, profile_id, item_id)
+    session.start()
+    with _safe_browser_sessions_lock:
+        _safe_browser_sessions[session.id] = session
+    return session
+
+
+def get_safe_browser_session(session_id: str, profile_id: int, item_id: int) -> SafeBrowserSession | None:
+    with _safe_browser_sessions_lock:
+        session = _safe_browser_sessions.get(session_id)
+    if session is None or session.closed:
+        return None
+    if session.profile_id != profile_id or session.item_id != item_id:
+        return None
+    return session
+
+
 def token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
 
@@ -329,6 +634,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         or url_for is None
         or g is None
         or jsonify is None
+        or send_file is None
     ):
         raise RuntimeError("Flask is required to run the web application.")
 
@@ -955,6 +1261,117 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             preview_error=preview_error,
             purged=request.args.get("purged") == "1",
         )
+
+    @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe")
+    def safe_topic_route(profile_id: int, item_id: int) -> Response:
+        db_path = Path(app.config["DATABASE_PATH"])
+        profile = get_profile_by_id(db_path, profile_id)
+        item = get_feed_item(db_path, profile_id, item_id)
+        if profile is None or item is None:
+            return Response("Topic not found.", status=404, mimetype="text/plain; charset=utf-8")
+
+        error = ""
+        safe_session = None
+        try:
+            safe_session = create_safe_browser_session(item.link, profile_id, item_id)
+        except RuntimeError as exc:
+            error = str(exc)
+            log_event(
+                logging.WARNING,
+                "safe_browser_start_failed",
+                profile_id=profile_id,
+                item_id=item_id,
+                source_host=source_host(item.link),
+                error=error,
+            )
+
+        response = Response(
+            render_template(
+                "safe_browser.html",
+                profile=profile,
+                item=item,
+                safe_session=safe_session,
+                error=error,
+            ),
+            status=503 if error else 200,
+            mimetype="text/html",
+        )
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'none'; "
+            "object-src 'none'; base-uri 'none'; form-action 'self'"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    def require_safe_session(profile_id: int, item_id: int, session_id: str) -> SafeBrowserSession | None:
+        return get_safe_browser_session(session_id, profile_id, item_id)
+
+    @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/screenshot")
+    def safe_browser_screenshot_route(profile_id: int, item_id: int, session_id: str) -> Response:
+        safe_session = require_safe_session(profile_id, item_id, session_id)
+        if safe_session is None:
+            return Response("Safe browser session expired.", status=410, mimetype="text/plain; charset=utf-8")
+        try:
+            screenshot = safe_session.execute("screenshot")
+        except RuntimeError as exc:
+            return Response(str(exc), status=410, mimetype="text/plain; charset=utf-8")
+        return Response(screenshot, mimetype="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/state")
+    def safe_browser_state_route(profile_id: int, item_id: int, session_id: str) -> Response:
+        safe_session = require_safe_session(profile_id, item_id, session_id)
+        if safe_session is None:
+            return jsonify({"error": "Safe browser session expired."}), 410
+        try:
+            return jsonify(safe_session.execute("state"))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 410
+
+    @app.post("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/command")
+    def safe_browser_command_route(profile_id: int, item_id: int, session_id: str) -> Response:
+        safe_session = require_safe_session(profile_id, item_id, session_id)
+        if safe_session is None:
+            return jsonify({"error": "Safe browser session expired."}), 410
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Browser command must be a JSON object."}), 400
+        action = str(payload.pop("action", ""))
+        if action not in {"click", "scroll", "key", "text", "back", "forward", "reload", "navigate", "viewport"}:
+            return jsonify({"error": "Unsupported browser action."}), 400
+        try:
+            return jsonify(safe_session.execute(action, **payload))
+        except (RuntimeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/downloads/<download_id>")
+    def safe_browser_download_route(
+        profile_id: int,
+        item_id: int,
+        session_id: str,
+        download_id: str,
+    ) -> Response:
+        safe_session = require_safe_session(profile_id, item_id, session_id)
+        if safe_session is None:
+            return Response("Safe browser session expired.", status=410, mimetype="text/plain; charset=utf-8")
+        try:
+            download = safe_session.execute("download", download_id=download_id)
+        except RuntimeError as exc:
+            return Response(str(exc), status=404, mimetype="text/plain; charset=utf-8")
+        return send_file(
+            download["path"],
+            as_attachment=True,
+            download_name=download["name"],
+            max_age=0,
+        )
+
+    @app.post("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/close")
+    def safe_browser_close_route(profile_id: int, item_id: int, session_id: str) -> Response:
+        safe_session = require_safe_session(profile_id, item_id, session_id)
+        if safe_session is not None:
+            safe_session.stop()
+        return redirect(url_for("profile_detail", profile_id=profile_id))
 
     @app.post("/profiles/<int:profile_id>/preview")
     def profile_preview_route(profile_id: int) -> Response:
@@ -2698,7 +3115,7 @@ def list_feed_items(db_path: Path, profile_id: int, limit: int) -> list[FeedEntr
     with closing(connect_db(db_path)) as conn:
         rows = conn.execute(
             """
-            SELECT title, link, summary, discovered_at
+            SELECT id, title, link, summary, discovered_at
             FROM feed_items
             WHERE profile_id = ?
             ORDER BY discovered_at DESC, id ASC
@@ -2712,9 +3129,31 @@ def list_feed_items(db_path: Path, profile_id: int, limit: int) -> list[FeedEntr
             link=row["link"],
             summary=row["summary"],
             published_at=datetime.fromisoformat(row["discovered_at"]),
+            id=row["id"],
         )
         for row in rows
     ]
+
+
+def get_feed_item(db_path: Path, profile_id: int, item_id: int) -> FeedEntry | None:
+    with closing(connect_db(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT id, title, link, summary, discovered_at
+            FROM feed_items
+            WHERE profile_id = ? AND id = ?
+            """,
+            (profile_id, item_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return FeedEntry(
+        title=row["title"],
+        link=row["link"],
+        summary=row["summary"],
+        published_at=datetime.fromisoformat(row["discovered_at"]),
+        id=row["id"],
+    )
 
 
 def create_notification(

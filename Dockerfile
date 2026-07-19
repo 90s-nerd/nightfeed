@@ -14,7 +14,8 @@ COPY rss_site_bridge ./rss_site_bridge
 COPY wsgi.py ./
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir ".[browser]" \
+    && python -m playwright install --with-deps chromium
 
 EXPOSE 5000
 

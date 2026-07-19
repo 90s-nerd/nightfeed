@@ -683,8 +683,324 @@
         color: #ffbc8f;
       }
 
+      .item-actions {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .link-text:hover,
+      .danger-link:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+
+      .danger-link {
+        color: #ff7773;
+      }
+
       .inline-form {
         margin: 0;
+      }
+
+      .safe-browser-shell {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .safe-browser-toast {
+        position: fixed;
+        z-index: 100;
+        bottom: 20px;
+        right: 16px;
+        max-width: min(320px, calc(100% - 32px));
+        padding: 11px 14px;
+        border: 1px solid rgba(63, 196, 138, 0.32);
+        border-radius: 12px;
+        color: #d9ffed;
+        background: rgba(24, 79, 58, 0.96);
+        box-shadow: 0 16px 36px rgba(0, 0, 0, 0.32);
+        opacity: 0;
+        transform: translateY(-6px);
+        transition: opacity 180ms ease, transform 180ms ease;
+      }
+
+      .safe-browser-toast.is-visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .safe-browser-toolbar {
+        display: flex;
+        gap: 10px;
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(10, 15, 22, 0.72);
+      }
+
+      .safe-browser-nav,
+      .safe-browser-address {
+        display: flex;
+        gap: 8px;
+      }
+
+      .safe-browser-address {
+        flex: 1;
+      }
+
+      .safe-browser-toolbar-actions,
+      .safe-browser-device-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .safe-browser-toolbar-actions {
+        flex: 0 0 auto;
+      }
+
+      .safe-browser-device-toggle {
+        gap: 2px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.025);
+      }
+
+      .safe-browser-device-option {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 32px;
+        padding: 0;
+        border: 0;
+        border-radius: 9px;
+        color: var(--muted);
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .safe-browser-device-option:hover,
+      .safe-browser-device-option.is-active {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .safe-browser-device-option.is-active {
+        box-shadow: inset 0 0 0 1px var(--line-strong);
+      }
+
+      .safe-browser-device-option svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .safe-browser-download-menu {
+        position: relative;
+        flex: 0 0 auto;
+      }
+
+      .safe-browser-download-toggle {
+        position: relative;
+        width: 42px;
+        padding: 0;
+      }
+
+      .safe-browser-download-toggle svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .safe-browser-download-badge {
+        position: absolute;
+        top: -7px;
+        right: -7px;
+        min-width: 20px;
+        height: 20px;
+        padding: 0 5px;
+        border: 2px solid #101722;
+        border-radius: 999px;
+        color: #fff;
+        background: var(--danger);
+        font-size: 0.68rem;
+        font-weight: 700;
+        line-height: 16px;
+      }
+
+      .safe-browser-download-badge.is-updated {
+        animation: download-badge-pulse 700ms ease-out;
+      }
+
+      @keyframes download-badge-pulse {
+        0% { transform: scale(0.65); }
+        45% { transform: scale(1.28); }
+        100% { transform: scale(1); }
+      }
+
+      .safe-browser-download-popover {
+        position: absolute;
+        z-index: 20;
+        top: calc(100% + 10px);
+        right: 0;
+        width: min(360px, calc(100vw - 44px));
+        max-height: 420px;
+        overflow: auto;
+        border: 1px solid var(--line-strong);
+        border-radius: 16px;
+        background: #171f2c;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.46);
+      }
+
+      .safe-browser-download-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .safe-browser-download-head span {
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .safe-browser-download-list {
+        display: grid;
+        gap: 8px;
+        padding: 10px;
+      }
+
+      .safe-browser-address input {
+        min-width: 0;
+        flex: 1;
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 12px;
+        border: 1px solid var(--line-strong);
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.045);
+      }
+
+      .safe-browser-status {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 10px 18px;
+        padding: 9px 14px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .safe-browser-status span:first-child {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+      }
+
+      .safe-browser-viewport {
+        position: relative;
+        width: 100%;
+        overflow: hidden;
+        background: #fff;
+      }
+
+      .safe-browser-viewport img {
+        display: block;
+        width: 100%;
+        height: auto;
+        aspect-ratio: 1280 / 800;
+        cursor: default;
+        outline: none;
+        user-select: none;
+      }
+
+      .safe-browser-viewport img:focus {
+        box-shadow: inset 0 0 0 3px var(--accent);
+      }
+
+      .safe-browser-loading {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        padding: 7px 10px;
+        border-radius: 10px;
+        color: #fff;
+        background: rgba(10, 15, 22, 0.8);
+        font-size: 0.8rem;
+      }
+
+      .safe-browser-hint {
+        margin: 0;
+        padding: 10px 14px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        border-top: 1px solid var(--line);
+      }
+
+      .safe-browser-download {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        min-width: 0;
+        padding: 10px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .safe-browser-download p {
+        margin: 3px 0 0;
+      }
+
+      .safe-browser-download div {
+        min-width: 0;
+      }
+
+      .safe-browser-download-name {
+        display: flex;
+        min-width: 0;
+        max-width: 100%;
+        white-space: nowrap;
+      }
+
+      .safe-browser-download-stem {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .safe-browser-download-extension {
+        flex: 0 0 auto;
+      }
+
+      .safe-browser-download-save {
+        flex: 0 0 auto;
+        color: #ffc59f;
+        font-weight: 600;
+      }
+
+      .safe-browser-install {
+        overflow-x: auto;
+        padding: 14px;
+        border-radius: 12px;
+        background: #0a0f16;
+        border: 1px solid var(--line);
       }
 
       @media (max-width: 980px) {
@@ -729,6 +1045,38 @@
 
         .button-row form .btn {
           width: 100%;
+        }
+
+        .safe-browser-toolbar,
+        .safe-browser-address {
+          flex-direction: column;
+        }
+
+        .safe-browser-download-menu {
+          align-self: auto;
+        }
+
+        .safe-browser-toolbar-actions {
+          justify-content: flex-end;
+        }
+
+        .safe-browser-status span:first-child {
+          flex: 1 0 100%;
+        }
+
+        .safe-browser-toast {
+          right: 12px;
+          bottom: 12px;
+          max-width: calc(100vw - 24px);
+        }
+
+        .safe-browser-nav .btn {
+          flex: 1;
+        }
+
+        .safe-browser-download {
+          align-items: stretch;
+          flex-direction: column;
         }
       }
     </style>
