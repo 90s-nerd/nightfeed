@@ -122,9 +122,22 @@ playwright install chromium</pre>
     let downloadCount = 0;
     let downloadToastTimer = null;
     let pendingScrollDelta = 0;
+    let pendingOuterScrollDelta = 0;
+    let pendingScrollX = 0;
+    let pendingScrollY = 0;
     let scrollFlushTimer = null;
     let viewportWidth = 1280;
     let viewportHeight = 800;
+    let remoteScrollY = 0;
+    let remoteScrollMaxY = Number.POSITIVE_INFINITY;
+    let remoteScrollTargetX = Number.NaN;
+    let remoteScrollTargetY = Number.NaN;
+    let touchPointerId = null;
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchLastY = 0;
+    let touchMoved = false;
+    let suppressNextClick = false;
 
     const setDownloadPopover = (open) => {
       downloadPopover.hidden = !open;
@@ -155,6 +168,10 @@ playwright install chromium</pre>
       popups.textContent = state.popup_attempts || 0;
       viewportWidth = Number(state.viewport_width) || viewportWidth;
       viewportHeight = Number(state.viewport_height) || viewportHeight;
+      remoteScrollY = Number(state.scroll_y) || 0;
+      remoteScrollMaxY = Number(state.scroll_max_y) || 0;
+      remoteScrollTargetX = Number(state.scroll_target_x);
+      remoteScrollTargetY = Number(state.scroll_target_y);
       screen.style.aspectRatio = `${viewportWidth} / ${viewportHeight}`;
       viewportButtons.forEach((button) => {
         const active = button.dataset.browserViewportMode === state.viewport_mode;
@@ -254,6 +271,28 @@ playwright install chromium</pre>
       scrollFlushTimer = window.setTimeout(flushScrollQueue, delay);
     };
 
+    const isRemoteBoundary = (delta, x, y) => {
+      const sameTarget = Number.isFinite(remoteScrollTargetX)
+        && Math.abs(remoteScrollTargetX - x) < 24
+        && Math.abs(remoteScrollTargetY - y) < 24;
+      if (!sameTarget) return false;
+      const atTop = remoteScrollY <= 1;
+      const atBottom = remoteScrollY >= remoteScrollMaxY - 1;
+      return (delta < 0 && atTop) || (delta > 0 && atBottom);
+    };
+
+    const queueScrollDelta = (remoteDelta, outerDelta, x, y) => {
+      if (isRemoteBoundary(remoteDelta, x, y)) {
+        window.scrollBy({top: outerDelta, left: 0, behavior: "auto"});
+        return;
+      }
+      pendingScrollDelta += remoteDelta;
+      pendingOuterScrollDelta += outerDelta;
+      pendingScrollX = x;
+      pendingScrollY = y;
+      scheduleScrollFlush();
+    };
+
     const flushScrollQueue = async () => {
       scrollFlushTimer = null;
       if (busy) {
@@ -262,17 +301,36 @@ playwright install chromium</pre>
       }
       if (Math.abs(pendingScrollDelta) < 0.5) return;
 
+      if (isRemoteBoundary(pendingScrollDelta, pendingScrollX, pendingScrollY)) {
+        const outerDelta = pendingOuterScrollDelta;
+        pendingScrollDelta = 0;
+        pendingOuterScrollDelta = 0;
+        window.scrollBy({top: outerDelta, left: 0, behavior: "auto"});
+        return;
+      }
+
       const delta = pendingScrollDelta;
+      const outerDelta = pendingOuterScrollDelta;
+      const x = pendingScrollX;
+      const y = pendingScrollY;
       pendingScrollDelta = 0;
+      pendingOuterScrollDelta = 0;
       busy = true;
       try {
         const response = await fetch(browser.dataset.commandUrl, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({action: "scroll", delta}),
+          body: JSON.stringify({action: "scroll", delta, x, y}),
         });
         const state = await response.json();
         if (!response.ok) throw new Error(state.error || "Browser scroll failed.");
+        const appliedDelta = Number(state.scroll_applied_delta) || 0;
+        const reachedBoundary = (delta < 0 && Number(state.scroll_y) <= 1)
+          || (delta > 0 && Number(state.scroll_y) >= Number(state.scroll_max_y) - 1);
+        if (reachedBoundary && Math.abs(appliedDelta) < Math.abs(delta)) {
+          const unusedRatio = Math.max(0, 1 - Math.abs(appliedDelta / delta));
+          window.scrollBy({top: outerDelta * unusedRatio, left: 0, behavior: "auto"});
+        }
         renderState(state);
         refreshScreen();
       } catch (error) {
@@ -297,6 +355,11 @@ playwright install chromium</pre>
     });
 
     screen.addEventListener("click", (event) => {
+      if (suppressNextClick) {
+        event.preventDefault();
+        suppressNextClick = false;
+        return;
+      }
       const rect = screen.getBoundingClientRect();
       const x = (event.clientX - rect.left) * (viewportWidth / rect.width);
       const y = (event.clientY - rect.top) * (viewportHeight / rect.height);
@@ -306,9 +369,58 @@ playwright install chromium</pre>
 
     screen.addEventListener("wheel", (event) => {
       event.preventDefault();
-      pendingScrollDelta += event.deltaY;
-      scheduleScrollFlush();
+      const rect = screen.getBoundingClientRect();
+      const x = (event.clientX - rect.left) * (viewportWidth / rect.width);
+      const y = (event.clientY - rect.top) * (viewportHeight / rect.height);
+      queueScrollDelta(event.deltaY, event.deltaY, x, y);
     }, {passive: false});
+
+    screen.addEventListener("pointerdown", (event) => {
+      if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+      touchPointerId = event.pointerId;
+      touchStartX = event.clientX;
+      touchStartY = event.clientY;
+      touchLastY = event.clientY;
+      touchMoved = false;
+      suppressNextClick = false;
+      screen.setPointerCapture?.(event.pointerId);
+      screen.focus({preventScroll: true});
+    });
+
+    screen.addEventListener("pointermove", (event) => {
+      if (event.pointerId !== touchPointerId) return;
+      event.preventDefault();
+      const distance = Math.hypot(event.clientX - touchStartX, event.clientY - touchStartY);
+      if (!touchMoved && distance < 6) return;
+      touchMoved = true;
+      suppressNextClick = true;
+      screen.classList.add("is-touch-scrolling");
+      const rect = screen.getBoundingClientRect();
+      const scale = viewportHeight / Math.max(rect.height, 1);
+      const touchDelta = touchLastY - event.clientY;
+      const x = (event.clientX - rect.left) * (viewportWidth / rect.width);
+      const y = (event.clientY - rect.top) * (viewportHeight / rect.height);
+      queueScrollDelta(touchDelta * scale, touchDelta, x, y);
+      touchLastY = event.clientY;
+    }, {passive: false});
+
+    const finishTouchScroll = (event) => {
+      if (event.pointerId !== touchPointerId) return;
+      if (screen.hasPointerCapture?.(event.pointerId)) {
+        screen.releasePointerCapture(event.pointerId);
+      }
+      touchPointerId = null;
+      screen.classList.remove("is-touch-scrolling");
+      if (event.type === "pointercancel") {
+        suppressNextClick = false;
+      } else if (touchMoved) {
+        scheduleScrollFlush(0);
+        window.setTimeout(() => { suppressNextClick = false; }, 500);
+      }
+    };
+
+    screen.addEventListener("pointerup", finishTouchScroll);
+    screen.addEventListener("pointercancel", finishTouchScroll);
 
     const namedKeys = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
     screen.addEventListener("keydown", (event) => {
@@ -342,7 +454,11 @@ playwright install chromium</pre>
         refreshScreen();
       } catch (_) {}
     };
-    poll();
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      command("viewport", {mode: "mobile"});
+    } else {
+      poll();
+    }
     window.setInterval(poll, 2000);
   })();
 </script>

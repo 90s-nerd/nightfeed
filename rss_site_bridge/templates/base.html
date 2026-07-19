@@ -973,6 +973,12 @@
         cursor: default;
         outline: none;
         user-select: none;
+        touch-action: none;
+        -webkit-user-drag: none;
+      }
+
+      .safe-browser-viewport img.is-touch-scrolling {
+        cursor: grabbing;
       }
 
       .safe-browser-viewport img:focus {

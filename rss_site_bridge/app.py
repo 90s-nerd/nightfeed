@@ -375,8 +375,40 @@ class SafeBrowserSession:
                 page.wait_for_timeout(400)
                 self.ready.set()
 
+                scroll_target_x = SAFE_BROWSER_VIEWPORT["width"] / 2
+                scroll_target_y = SAFE_BROWSER_VIEWPORT["height"] / 2
+
+                def scroll_state() -> dict[str, float]:
+                    return page.evaluate(
+                        """
+                        ({x, y}) => {
+                          const root = document.scrollingElement || document.documentElement;
+                          let target = document.elementFromPoint(x, y);
+                          while (target && target !== document.body && target !== root) {
+                            const style = getComputedStyle(target);
+                            const overflowY = style.overflowY;
+                            const scrollable = target.scrollHeight > target.clientHeight + 1
+                              && (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay');
+                            if (scrollable) break;
+                            target = target.parentElement;
+                          }
+                          if (!target || target === document.body || target === document.documentElement) {
+                            target = root;
+                          }
+                          return {
+                            x: Number(target.scrollLeft) || 0,
+                            y: Number(target.scrollTop) || 0,
+                            max_x: Math.max(0, target.scrollWidth - target.clientWidth),
+                            max_y: Math.max(0, target.scrollHeight - target.clientHeight),
+                          };
+                        }
+                        """,
+                        {"x": scroll_target_x, "y": scroll_target_y},
+                    )
+
                 def state() -> dict[str, Any]:
                     viewport = page.viewport_size or SAFE_BROWSER_VIEWPORT
+                    scroll = scroll_state()
                     return {
                         "url": page.url,
                         "title": page.title(),
@@ -386,6 +418,12 @@ class SafeBrowserSession:
                         "viewport_mode": viewport_mode,
                         "viewport_width": viewport["width"],
                         "viewport_height": viewport["height"],
+                        "scroll_x": scroll["x"],
+                        "scroll_y": scroll["y"],
+                        "scroll_max_x": scroll["max_x"],
+                        "scroll_max_y": scroll["max_y"],
+                        "scroll_target_x": scroll_target_x,
+                        "scroll_target_y": scroll_target_y,
                         "downloads": [
                             {"id": item["id"], "name": item["name"], "size": item["size"]}
                             for item in downloads.values()
@@ -413,8 +451,19 @@ class SafeBrowserSession:
                             page.wait_for_timeout(350)
                             result = state()
                         elif action == "scroll":
-                            page.mouse.wheel(0, float(payload.get("delta", 0)))
+                            viewport = page.viewport_size or SAFE_BROWSER_VIEWPORT
+                            scroll_target_x = min(max(float(payload.get("x", scroll_target_x)), 0), viewport["width"] - 1)
+                            scroll_target_y = min(
+                                max(float(payload.get("y", scroll_target_y)), 0),
+                                viewport["height"] - 1,
+                            )
+                            page.mouse.move(scroll_target_x, scroll_target_y)
+                            requested_delta = float(payload.get("delta", 0))
+                            before_scroll = scroll_state()
+                            page.mouse.wheel(0, requested_delta)
                             result = state()
+                            result["scroll_requested_delta"] = requested_delta
+                            result["scroll_applied_delta"] = result["scroll_y"] - before_scroll["y"]
                         elif action == "key":
                             last_user_interaction = time.monotonic()
                             key = str(payload.get("key", ""))[:40]
