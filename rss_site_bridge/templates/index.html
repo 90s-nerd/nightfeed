@@ -208,6 +208,7 @@
       }
       const card = activeCard;
       const refreshUrl = activeRefreshUrl;
+      window.showRefreshToast("Fetching feed…", "progress");
       closeMenu();
       setCardRefreshing(card, true);
       try {
@@ -232,9 +233,10 @@
           nextRefresh.textContent = payload.next_refresh_at;
         }
         applyStatus(card, payload.status);
+        window.showRefreshToast(payload.message);
       } catch (error) {
         applyStatus(card, "error");
-        window.alert(error.message || "Refresh failed.");
+        window.showRefreshToast(error.message || "Refresh failed.", "error");
       } finally {
         setCardRefreshing(card, false);
       }
@@ -290,7 +292,7 @@
       const deleteUrl = activeDeleteUrl;
       const title = card.dataset.profileTitle || "this feed";
       closeMenu();
-      if (!window.confirm(`Delete "${title}" and all stored items?`)) {
+      if (!window.confirm(`Delete "${title}" and all stored items? This cannot be undone.`)) {
         return;
       }
       setCardRefreshing(card, true);

@@ -277,3 +277,39 @@ Feed requests also perform a due-check on access, so if a feed URL is opened aft
 - Feed items must stay on the same host as the source page.
 - Browser mode is optional and requires Playwright plus a local Chromium install.
 - Browser mode also requires a local environment where Playwright can launch Chromium.
+
+## Timeline and browsing
+
+The home page combines all stored feed items. Search titles, summaries and links, select feeds, and sort by newest, oldest, title or feed priority. Higher priority values sort first. Both the timeline and feed detail pages show 25 items per page with Previous/Next links. Max items still controls extraction per refresh and RSS output, not access to historical stored items. Dates reflect when Nightfeed discovered an item.
+
+## Calendar schedules and selector traversal
+
+An optional five-field cron expression overrides the refresh interval. Set a schedule timezone, for example `America/Chicago`. `0 */2 * * *` runs on every second hour; `0 9 * * mon-fri` runs at 9 AM on weekdays. Manual refreshes leave calendar times aligned. Clear the cron field to return to interval scheduling, or also set the interval to zero for manual-only refresh. Disabled feeds do not refresh. The scheduler checks every 30 seconds, so runs may start shortly after the scheduled minute. Cron calculation uses [croniter](https://github.com/pallets-eco/croniter).
+
+Title, link and summary selectors support CSS nth-child/nth-of-type selectors and traversal steps separated by `>>`. For example, `:scope >> parent` selects the item's parent, `.title >> parent >> a:nth-of-type(2)` selects the second anchor inside the title's parent, and repeated `parent` steps climb multiple levels. Preview these selectors before saving.
+
+Manual refresh on feed detail pages stays on the page, shows a spinner, updates stored content on success, and displays failures inline.
+
+## Downloader integrations
+
+Use **Settings → Manage downloaders** to configure optional destinations for files downloaded through Open Safely. Each profile has a name, downloader type, server URL, credentials, file-extension routing, category preferences, and an optional custom button label.
+
+The server URL must be reachable from Nightfeed. In Docker, `localhost` refers to the Nightfeed container; use a service name such as `http://downloader:8080`, a LAN address, or a configured host gateway. Files are uploaded directly, so shared download directories are unnecessary.
+
+Supported authentication depends on the selected downloader type: username/password, API key, or explicitly configured trusted-network access. Use **Test / refresh categories** after saving to verify the connection and load available categories. Keep HTTPS certificate verification enabled, or configure a trusted CA certificate path inside the Nightfeed server/container. Redirects are not followed; configure the final server URL.
+
+A blank button label defaults to `Send to {profile name}` and follows profile renames. You can override it. Destination dropdowns show profile names. Send actions appear only for extensions configured on an enabled profile and supported by its adapter.
+
+Categories and directories come from your downloader. An optional allowlist limits available categories; a default can be preselected. Category selection is required by default, with an optional Uncategorized choice. Existing downloads keep their category and state.
+
+In **Open Safely → Downloads**, choose a send action, review the destination/category/start settings, and choose **Send file**. Save file remains available. Sending runs asynchronously with a limit of four concurrent submissions. Status is retained across polling and reloads of the same browser session and appears in submission history.
+
+Files are validated against the selected adapter, limited to 10 MB, and copied into the job before browser-session cleanup. Job records retain metadata rather than file contents. Nightfeed checks remote identity before adding a file and does not automatically repeat an uncertain submission. Use **Check status** before explicitly retrying. Interrupted submissions are marked uncertain after restart. Retain the single-worker deployment; multiple workers are unsupported by the in-process scheduler and submission pool.
+
+### Credentials and access
+
+Saved credentials are encrypted in SQLite using a Fernet key stored next to the database as `rss_site_bridge.downloaders.key`. Persist the whole `/app/data` directory and back up the database and key together. Alternatively provide a stable `NIGHTFEED_DOWNLOADER_KEY`; generate one using `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Losing or changing the key requires restoring it or re-entering saved credentials.
+
+To manage credentials externally, configure an environment variable such as `DOWNLOADER_PASSWORD` on the Nightfeed server and enter its name in the profile. This takes precedence over the saved secret. A blank credential input preserves the saved secret; the clear checkbox removes it.
+
+Nightfeed has no user-account system: users with access can configure destinations and send files. Protect exposed deployments with an authenticated reverse proxy or a trusted private network. Downloader mutation endpoints require a signed page token and reject cross-origin requests. Reload pages older than 24 hours before making changes.

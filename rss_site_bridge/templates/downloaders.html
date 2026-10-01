@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Downloaders · Nightfeed{% endblock %}
+{% block page_header %}<header class="topbar"><div class="page-title"><h1>Downloaders</h1><p>Send downloaded files to your configured destinations.</p></div><a class="btn btn-secondary" href="/settings">Back to settings</a></header>{% endblock %}
+{% block content %}
+<div class="downloader-settings-grid">
+<section class="surface section">
+  <h2>{{ 'Edit downloader' if editing else 'Add downloader' }}</h2>
+  {% if error %}<p class="error-text" role="alert">{{ error }}</p>{% endif %}
+  {% set form = editing or {} %}
+  <form method="post" action="/settings/downloaders/save">
+    <input type="hidden" name="csrf_token" value="{{ downloader_csrf }}">
+    <input type="hidden" name="id" value="{{ form.get('id', '') }}">
+    <div class="field"><label for="downloader-name">Profile name</label><input id="downloader-name" name="name" value="{{ form.get('name', '') }}" maxlength="100" placeholder="Home downloader" required></div>
+    <div class="field"><label for="downloader-kind">Downloader type</label><select id="downloader-kind" name="kind">{% for value,label in downloader_types.items() %}<option value="{{ value }}" {% if form.get('kind') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="downloader-label">Button label (optional)</label><input id="downloader-label" name="button_label" value="{{ form.get('button_label', '') }}" maxlength="100" placeholder="Send to profile name"><div class="field-hint" data-label-default>Leave blank for “Send to {{ form.get('name') or 'profile name' }}”. Renaming the profile updates the default.</div></div>
+    <div class="field"><label for="downloader-url">Base URL</label><input id="downloader-url" name="base_url" type="url" value="{{ form.get('base_url', '') }}" placeholder="http://downloader:8080" required><div class="field-hint">Address reachable from the Nightfeed server. Include any reverse-proxy path; omit /api/v2.</div></div>
+    <div class="field"><label for="downloader-auth">Authentication</label><select id="downloader-auth" name="auth_mode">{% for value,label in [('password','Username and password'),('api_key','API key (if supported by the selected downloader)'),('none','No authentication (configured trusted network)')] %}<option value="{{ value }}" {% if form.get('auth_mode', 'password') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="downloader-user">Username</label><input id="downloader-user" name="username" value="{{ form.get('username', '') }}" autocomplete="off"></div>
+    <div class="field"><label for="downloader-secret">Password or API key</label><input id="downloader-secret" name="secret" type="password" autocomplete="new-password"><div class="field-hint">{{ 'A secret is saved. Leave blank to keep it.' if form.get('has_secret') else 'Stored encrypted; never displayed.' }}</div></div>
+    <div class="field"><label for="downloader-env">Secret environment variable (optional)</label><input id="downloader-env" name="secret_env" value="{{ form.get('secret_env', '') }}" placeholder="DOWNLOADER_PASSWORD"><div class="field-hint">Reads the variable on the Nightfeed server instead of the saved secret.</div></div>
+    <label class="check-option"><input type="checkbox" name="clear_secret" value="1">Clear saved secret</label>
+    <details class="feed-settings-advanced"><summary>Connection options</summary>
+      <label class="check-option"><input type="checkbox" name="verify_tls" value="1" {% if form.get('verify_tls', 1) %}checked{% endif %}>Verify HTTPS certificate</label>
+      <div class="field"><label for="downloader-ca">Custom CA certificate path (optional)</label><input id="downloader-ca" name="ca_path" value="{{ form.get('ca_path', '') }}"><div class="field-hint">Path on the Nightfeed server/container.</div></div>
+      <div class="field"><label for="downloader-timeout">Request timeout (seconds)</label><input id="downloader-timeout" name="timeout" type="number" min="3" max="60" value="{{ form.get('timeout', 15) }}" required></div>
+    </details>
+    <div class="field"><label for="downloader-extensions">File extensions</label><input id="downloader-extensions" name="extensions" value="{{ form.get('extensions', '') }}" required><div class="field-hint">Enter extensions supported by the selected downloader. Matching ignores capitalization.</div></div>
+    <div class="field"><label for="downloader-category">Default category (optional)</label><input id="downloader-category" name="default_category" value="{{ form.get('default_category', '') }}" list="downloader-categories"><datalist id="downloader-categories"></datalist><div class="field-hint">Use an existing downloader category. Save paths are managed by your downloader.</div></div>
+    <div class="field"><label for="downloader-allowed">Allowed categories (optional)</label><textarea id="downloader-allowed" name="allowed_categories">{{ form.get('allowed_categories', '') }}</textarea><div class="field-hint">One name per line. Leave blank to offer all categories.</div></div>
+    <div class="check-stack">
+      <label class="check-option"><input type="checkbox" name="require_category" value="1" {% if form.get('require_category', 1) %}checked{% endif %}>Require a category before sending</label>
+      <label class="check-option"><input type="checkbox" name="start_immediately" value="1" {% if form.get('start_immediately', 1) %}checked{% endif %}>Start downloads immediately by default</label>
+      <label class="check-option"><input type="checkbox" name="enabled" value="1" {% if form.get('enabled', 1) %}checked{% endif %}>Enable this downloader</label>
+    </div>
+    <div class="form-actions filter-actions"><button class="btn btn-primary" type="submit">Save downloader</button>{% if editing %}<a class="btn btn-secondary" href="/settings/downloaders">Cancel edit</a>{% endif %}</div>
+  </form>
+</section>
+<div class="list-stack">
+<section class="surface section"><h2>Configured destinations</h2><div class="list-stack" style="margin-top:16px">
+{% for downloader in downloaders %}
+<article class="item-card"><h3>{{ downloader.name }}</h3><p class="meta">{{ 'Enabled' if downloader.enabled else 'Disabled' }} · {{ downloader.base_url }}</p><p>Button: {{ downloader.button_label or ('Send to ' + downloader.name) }}</p>
+<div class="button-row"><a class="btn btn-secondary" href="?edit={{ downloader.id }}">Edit</a><button class="btn btn-secondary" type="button" data-test-downloader="{{ downloader.id }}">Test / refresh categories</button><form method="post" action="/settings/downloaders/{{ downloader.id }}/delete" data-confirm="Delete this downloader profile? Its routing and saved credentials will be removed. Existing downloads are unaffected."><input type="hidden" name="csrf_token" value="{{ downloader_csrf }}"><button class="btn btn-danger">Delete</button></form></div><p class="meta" role="status" data-test-result="{{ downloader.id }}"></p>
+</article>{% else %}<div class="empty-state">No downloaders configured. Add a downloader and configure file extensions to enable send actions.</div>{% endfor %}
+</div></section>
+<section class="surface section"><h2>Recent submissions</h2><div class="list-stack" style="margin-top:16px">{% for item in history %}<article class="item-card"><h3>{{ item.file_name }}</h3><p class="meta">{{ item.destination }} · {{ item.category or 'Uncategorized' }} · {{ item.created_at | human_datetime }}</p><p>{{ item.message }}</p>{% if item.status == 'unknown' %}<button class="btn btn-secondary" type="button" data-check-job="{{ item.id }}">Check status</button>{% endif %}</article>{% else %}<p class="meta">No submissions yet.</p>{% endfor %}</div></section>
+</div></div>
+{% endblock %}
+{% block scripts %}<script>
+document.querySelector('form[action="/settings/downloaders/save"]').addEventListener('submit', event => {
+  if (event.currentTarget.querySelector('[name="clear_secret"]').checked && !window.confirm('Clear the saved downloader secret? You will need to re-enter it or configure an environment variable to authenticate.')) event.preventDefault();
+});
+const token = document.querySelector('meta[name="downloader-csrf"]').content;
+document.getElementById('downloader-name').addEventListener('input', event => {
+  document.querySelector('[data-label-default]').textContent = `Leave blank for “Send to ${event.target.value || 'profile name'}”. Renaming the profile updates the default.`;
+});
+document.querySelectorAll('[data-test-downloader]').forEach(button => button.addEventListener('click', async () => {
+  const output = document.querySelector(`[data-test-result="${button.dataset.testDownloader}"]`);
+  button.disabled = true; output.textContent = 'Connecting…';
+  try {
+    const response = await fetch(`/settings/downloaders/${button.dataset.testDownloader}/test`, {method:'POST', headers:{'X-CSRF-Token':token}});
+    const result = await response.json(); if (!response.ok) throw new Error(result.error);
+    output.textContent = `Connected: ${result.version}, API ${result.api_version}. Categories: ${result.categories.map(c => c.name).join(', ') || 'none'}.`;
+    if (document.querySelector('input[name="id"]').value === button.dataset.testDownloader) {
+      document.getElementById('downloader-categories').replaceChildren(...result.categories.map(c => {const option=document.createElement('option');option.value=c.name;return option;}));
+    }
+  } catch(error) {output.textContent=error.message;} finally {button.disabled=false;}
+}));
+document.querySelectorAll('[data-check-job]').forEach(button => button.addEventListener('click', async () => {
+  button.disabled=true;
+  try {const response=await fetch(`/api/downloader-jobs/${button.dataset.checkJob}/check`,{method:'POST',headers:{'X-CSRF-Token':token}});const result=await response.json();if(!response.ok)throw new Error(result.error);button.parentElement.querySelector('p:last-of-type').textContent=result.message;if(result.status!=='unknown')button.remove();}
+  catch(error){window.showRefreshToast(error.message,'error');} finally {button.disabled=false;}
+}));
+</script>{% endblock %}

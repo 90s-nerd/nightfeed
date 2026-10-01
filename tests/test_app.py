@@ -2378,8 +2378,8 @@ class AppTestCase(unittest.TestCase):
                 item_id = cursor.lastrowid
                 conn.commit()
 
-            download_path = Path(tmpdir) / "example.torrent"
-            download_path.write_bytes(b"torrent-data")
+            download_path = Path(tmpdir) / "example.bin"
+            download_path.write_bytes(b"download-data")
 
             class FakeSafeSession:
                 id = "safe-session"
@@ -2388,7 +2388,7 @@ class AppTestCase(unittest.TestCase):
                     if action == "screenshot":
                         return b"png-data"
                     if action == "download":
-                        return {"path": download_path, "name": "example.torrent"}
+                        return {"path": download_path, "name": "example.bin"}
                     return {
                         "url": "https://example.com/forum/topic-a",
                         "title": "Topic A",
@@ -2408,6 +2408,7 @@ class AppTestCase(unittest.TestCase):
 
             self.assertIn(b'class="danger-link"', detail.data)
             self.assertEqual(200, response.status_code)
+            self.assertIn("img-src 'self' data: blob:", response.headers["Content-Security-Policy"])
             self.assertIn(b"Interactive safe browser viewport", response.data)
             self.assertIn(b"Downloads", response.data)
             self.assertIn(b"data-browser-download-badge", response.data)
@@ -2449,8 +2450,8 @@ class AppTestCase(unittest.TestCase):
             self.assertEqual(b"png-data", screenshot.data)
             self.assertEqual(3, command.get_json()["blocked_requests"])
             self.assertEqual(200, viewport.status_code)
-            self.assertEqual(b"torrent-data", download.data)
-            self.assertEqual("attachment; filename=example.torrent", download.headers["Content-Disposition"])
+            self.assertEqual(b"download-data", download.data)
+            self.assertEqual("attachment; filename=example.bin", download.headers["Content-Disposition"])
             download.close()
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")

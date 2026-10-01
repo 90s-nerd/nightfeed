@@ -27,3 +27,10 @@ data/*.sqlite3
 # Editor files
 .idea/
 .vscode/
+
+# Local verification dependencies
+.test-deps/
+
+# Local UI verification fixtures and downloader encryption keys
+.test-preview/
+*.downloaders.key

@@ -14,6 +14,8 @@ setup(
         "Flask>=3.1.0",
         "gunicorn>=23.0.0",
         "tzdata>=2025.2",
+        "croniter>=6.0.0",
+        "cryptography>=43.0.0",
     ],
     extras_require={
         "browser": ["playwright>=1.53.0"],
