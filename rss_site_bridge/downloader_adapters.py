@@ -195,4 +195,3 @@ def file_identity(data):
         return sha256(raw_info).hexdigest(), hashes
     except (IndexError, TypeError, AttributeError, OverflowError):
         raise ValueError('File does not contain valid download metadata.') from None
-
