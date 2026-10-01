@@ -1,10 +1,11 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <meta name="downloader-csrf" content="{{ downloader_csrf }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Nightfeed{% endblock %}</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%23f8a366'/%3E%3Cstop offset='62%25' stop-color='%23ec7d3d'/%3E%3Cstop offset='100%25' stop-color='%23c75b21'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='4' width='56' height='56' rx='18' fill='url(%23g)'/%3E%3Crect x='16' y='17' width='24' height='5' rx='2.5' fill='white'/%3E%3Crect x='16' y='27' width='24' height='5' rx='2.5' fill='white' opacity='.92'/%3E%3Crect x='16' y='37' width='24' height='5' rx='2.5' fill='white' opacity='.84'/%3E%3Crect x='43' y='16' width='5' height='24' rx='2.5' fill='white'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='nightfeed-mark.svg') }}">
     <style>
       :root {
         --bg: #0d121a;
@@ -56,6 +57,11 @@
       }
 
       .sidebar {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100dvh;
+        overflow-y: auto;
         background: rgba(15, 20, 29, 0.92);
         border-right: 1px solid var(--line);
         padding: 18px 14px;
@@ -73,7 +79,7 @@
 
       .sidebar-menu {
         min-height: 0;
-        flex: 1;
+        flex: 0 0 auto;
         display: flex;
         flex-direction: column;
         gap: 18px;
@@ -108,42 +114,18 @@
       }
 
       .brand-mark {
-        position: relative;
-        width: 38px;
-        height: 38px;
-        border-radius: 14px;
-        background: linear-gradient(160deg, #f8a366 0%, #ec7d3d 62%, #c75b21 100%);
-        box-shadow: 0 10px 24px rgba(242, 139, 75, 0.22);
-        overflow: hidden;
+        display: block;
+        width: 44px;
+        height: 44px;
+        flex-shrink: 0;
       }
 
-      .brand-mark::before,
-      .brand-mark::after {
-        content: "";
-        position: absolute;
-        background: rgba(255, 255, 255, 0.95);
-        border-radius: 999px;
-      }
-
-      .brand-mark::before {
-        width: 18px;
-        height: 4px;
-        left: 9px;
-        top: 10px;
-        box-shadow: 0 7px 0 rgba(255, 255, 255, 0.9), 0 14px 0 rgba(255, 255, 255, 0.82);
-      }
-
-      .brand-mark::after {
-        width: 4px;
-        height: 18px;
-        right: 9px;
-        top: 9px;
-      }
+      .brand-copy { min-width: 0; }
 
       .brand-copy strong {
         display: block;
-        font-size: 1rem;
-        letter-spacing: -0.03em;
+        font-size: 1.08rem;
+        letter-spacing: -0.035em;
       }
 
       .brand-copy span {
@@ -176,9 +158,9 @@
         border-color: var(--line);
       }
 
-      .sidebar-footer {
-        margin-top: auto;
-      }
+      .sidebar-header-actions { display: flex; align-items: center; gap: 8px; }
+      .mobile-settings-link { display: none; }
+
 
       .main {
         min-width: 0;
@@ -528,6 +510,168 @@
         margin-top: 2px;
         color: var(--muted);
         font-size: 0.8rem;
+      }
+
+      .refresh-toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 2000;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        max-width: min(440px, calc(100vw - 32px));
+        padding: 14px 16px;
+        border: 1px solid var(--line-strong);
+        border-radius: 14px;
+        background: #18202d;
+        color: var(--text);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      }
+
+      .refresh-toast[hidden] { display: none; }
+      .refresh-toast[data-kind="error"] { border-color: #ef7777; }
+      .refresh-toast button {
+        flex-shrink: 0;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 4px;
+        font-size: 1.25rem;
+      }
+      .refresh-toast-message { overflow-wrap: anywhere; }
+      .refresh-pending { position: relative; color: transparent !important; }
+      .refresh-pending::after {
+        content: "";
+        position: absolute;
+        left: calc(50% - 8px);
+        top: calc(50% - 8px);
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.4);
+        border-top-color: white;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @media (max-width: 640px) {
+        .refresh-toast { right: 16px; bottom: 16px; left: 16px; max-width: none; }
+      }
+
+      .feed-settings-panel {
+        position: sticky;
+        top: 20px;
+        max-height: var(--settings-available-height, calc(100dvh - 140px));
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .feed-settings-panel > .section-head { flex-shrink: 0; }
+      .feed-settings-scroll {
+        overflow-y: auto;
+        min-height: 0;
+        scrollbar-gutter: stable;
+        padding-right: 8px;
+      }
+      .feed-settings-actions {
+        flex-shrink: 0;
+        padding: 0 0 16px;
+        margin: 0 0 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .feed-settings-advanced, .feed-preview {
+        margin: 16px 0;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+      .feed-settings-advanced > summary, .feed-preview > summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 4px 0 12px;
+      }
+      .feed-preview-content { padding-top: 8px; }
+      .feed-preview .list-stack { max-height: 50dvh; overflow-y: auto; }
+      @media (max-width: 1100px) {
+        .feed-settings-panel { position: static; max-height: none; }
+        .feed-settings-scroll { overflow-y: visible; padding-right: 0; }
+        .feed-settings-panel .feed-settings-actions {
+          position: fixed;
+          z-index: 40;
+          left: 12px;
+          right: 12px;
+          bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          width: auto;
+          margin: 0;
+          padding: 12px;
+          border: 1px solid var(--line-strong);
+          border-radius: 16px;
+          background: #151c28;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+        .feed-settings-actions .btn { min-height: 44px; width: 100%; }
+        body:has(.feed-settings-panel) .main {
+          padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
+        }
+        body:has(.feed-settings-panel) .refresh-toast {
+          bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+        }
+      }
+
+      .downloader-settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+      .downloader-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 20px; border: 1px solid var(--line-strong); border-radius: 18px; background: #151c28; color: var(--text); }
+      .downloader-dialog::backdrop { background: rgba(0,0,0,0.65); }
+      .downloader-dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 76px); }
+      .downloader-dialog .section-head, .downloader-dialog-actions { flex-shrink: 0; }
+      .downloader-dialog-body { overflow-y: auto; min-height: 0; }
+      .downloader-dialog input, .downloader-dialog select { font-size: 16px; }
+      .downloader-dialog .downloader-dialog-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; padding-top: 16px; border-top: 1px solid var(--line); margin-top: 12px; }
+      .downloader-dialog .btn, .safe-download-actions .btn { min-height: 44px; }
+      .safe-download-actions { display: grid; grid-template-columns: minmax(80px, 0.7fr) minmax(0, 1.3fr); align-items: stretch; gap: 8px; width: 100%; }
+      .safe-download-actions .btn { width: 100%; min-width: 0; padding: 10px 12px; white-space: normal; overflow-wrap: break-word; word-break: normal; text-align: center; }
+      .safe-download-actions .btn:only-child { grid-column: 1 / -1; }
+      .safe-download-actions .btn:last-child:nth-child(3) { grid-column: 1 / -1; }
+      @media (max-width: 980px) { .downloader-settings-grid { grid-template-columns: minmax(0, 1fr); } }
+      @media (max-width: 640px) {
+        .downloader-dialog { margin: auto 0 0; width: 100%; max-width: 100%; max-height: calc(100dvh - 12px); border-radius: 18px 18px 0 0; padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+        .downloader-dialog form { max-height: calc(100dvh - 60px - env(safe-area-inset-bottom, 0px)); }
+        .safe-browser-download:has(.safe-download-actions) { flex-direction: column; align-items: stretch; }
+
+      }
+
+      .feed-filter-group {
+        min-width: 0;
+        margin: 0;
+        padding: 12px 14px 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+
+      .feed-filter-group legend {
+        padding: 0 6px;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .feed-filter-options {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 24px;
+      }
+
+      .feed-filter-options .check-option {
+        align-items: center;
+      }
+
+      .filter-actions,
+      .pagination-actions {
+        margin-top: 20px;
+        align-items: center;
+      }
+
+      .pagination-actions:empty {
+        display: none;
       }
 
       .check-stack {
@@ -985,6 +1129,13 @@
         box-shadow: inset 0 0 0 3px var(--accent);
       }
 
+      .safe-click-feedback {
+        position: absolute; width: 28px; height: 28px; margin: -14px;
+        border: 3px solid #ff8c42; border-radius: 50%; pointer-events: none;
+        background: rgba(255,140,66,.25); animation: safe-click .45s ease-out forwards;
+      }
+      @keyframes safe-click { to { transform: scale(2); opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { .safe-click-feedback { animation: none; } }
       .safe-browser-loading {
         position: absolute;
         right: 12px;
@@ -1006,9 +1157,9 @@
 
       .safe-browser-download {
         display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 14px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
         min-width: 0;
         padding: 10px;
         border-radius: 12px;
@@ -1019,7 +1170,8 @@
         margin: 3px 0 0;
       }
 
-      .safe-browser-download div {
+      .safe-browser-download > div {
+        width: 100%;
         min-width: 0;
       }
 
@@ -1062,6 +1214,8 @@
           z-index: 50;
           top: 0;
           min-height: 64px;
+          height: auto;
+          overflow: visible;
           padding: 10px 16px;
           border-right: none;
           border-bottom: 1px solid var(--line);
@@ -1077,6 +1231,20 @@
 
         .brand-copy span { display: none; }
 
+        .mobile-settings-link {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 44px;
+          padding: 0 12px;
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          color: var(--text);
+        }
+
+        .nav-link { min-height: 44px; }
+        .mobile-nav-toggle { min-width: 44px; min-height: 44px; }
+
         .mobile-nav-toggle {
           display: block;
           flex: 0 0 auto;
@@ -1089,7 +1257,7 @@
           left: 12px;
           right: 12px;
           min-height: auto;
-          max-height: calc(100vh - 80px);
+          max-height: calc(100dvh - 96px - env(safe-area-inset-bottom, 0px));
           padding: 10px;
           overflow: auto;
           border: 1px solid var(--line-strong);
@@ -1114,12 +1282,6 @@
         .sidebar.nav-open .mobile-nav-toggle span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
         .sidebar.nav-open .mobile-nav-toggle span:nth-child(2) { opacity: 0; }
         .sidebar.nav-open .mobile-nav-toggle span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
-
-        .sidebar-footer {
-          margin-top: 0;
-          padding-top: 8px;
-          border-top: 1px solid var(--line);
-        }
 
         .mobile-nav-backdrop {
           position: fixed;
@@ -1321,31 +1483,32 @@
       <aside class="sidebar" data-mobile-nav>
         <div class="sidebar-header">
           <a class="brand" href="/" aria-label="Nightfeed home">
-            <div class="brand-mark" aria-hidden="true"></div>
+            <img class="brand-mark" src="{{ url_for('static', filename='nightfeed-mark.svg') }}" width="44" height="44" alt="" aria-hidden="true">
             <div class="brand-copy">
               <strong>Nightfeed</strong>
-              <span>Site pages into stable RSS.</span>
+              <span>Your web. One feed.</span>
             </div>
           </a>
+          <div class="sidebar-header-actions">
+            <a class="mobile-settings-link" href="/settings" aria-label="App settings">Settings</a>
           <button class="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar-menu" data-mobile-nav-toggle>
             <span></span><span></span><span></span>
           </button>
+          </div>
         </div>
 
         <div class="sidebar-menu" id="sidebar-menu" data-mobile-nav-panel>
           <nav class="nav-list" aria-label="Primary navigation">
-            <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">My Feeds</a>
+            <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">Timeline</a>
+            <a class="nav-link {% if request.path == '/feeds' %}active{% endif %}" href="/feeds">My Feeds</a>
             <a class="nav-link {% if request.path.startswith('/notifications') %}active{% endif %}" href="/notifications">
               Notifications
               {% if g.unread_notification_count %}
               <span class="pill" data-unread-notifications>{{ g.unread_notification_count }}</span>
               {% endif %}
             </a>
+            <a class="nav-link {% if request.path.startswith('/settings') %}active{% endif %}" href="/settings">Settings</a>
           </nav>
-
-          <div class="sidebar-footer">
-            <a class="nav-link {% if request.path == '/settings' %}active{% endif %}" href="/settings">Settings</a>
-          </div>
         </div>
       </aside>
       <div class="mobile-nav-backdrop" data-mobile-nav-backdrop hidden></div>
@@ -1355,6 +1518,35 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    <div class="refresh-toast" data-refresh-toast hidden>
+      <span class="refresh-toast-message" role="status" aria-live="polite" aria-atomic="true"></span>
+      <button type="button" aria-label="Dismiss notification">×</button>
+    </div>
+    <script>
+      // Delegate so confirmation also applies to content replaced after refresh.
+      document.addEventListener('submit', event => {
+        const message = event.target.dataset.confirm;
+        if (message && !window.confirm(message)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    </script>
+    <script>
+      (() => {
+        const toast = document.querySelector('[data-refresh-toast]');
+        let timer;
+        const dismiss = () => { clearTimeout(timer); toast.hidden = true; };
+        toast.querySelector('button').addEventListener('click', dismiss);
+        window.showRefreshToast = (message, kind = 'success') => {
+          clearTimeout(timer);
+          toast.dataset.kind = kind;
+          toast.querySelector('[role="status"]').textContent = message;
+          toast.hidden = false;
+          if (kind === 'success') timer = setTimeout(dismiss, 6000);
+        };
+      })();
+    </script>
     <script>
       const mobileNav = document.querySelector("[data-mobile-nav]");
       const mobileNavToggle = document.querySelector("[data-mobile-nav-toggle]");
@@ -1412,7 +1604,7 @@
         submitter.disabled = true;
         submitter.innerHTML = '<span class="spinner" aria-hidden="true"></span>' + submitter.dataset.loadingLabel;
 
-        form.querySelectorAll("button").forEach((button) => {
+        Array.from(form.elements).filter((element) => element.tagName === "BUTTON").forEach((button) => {
           if (button !== submitter) {
             button.disabled = true;
           }
@@ -1464,7 +1656,7 @@
           submitter.textContent = originalLabel;
         }
 
-        form.querySelectorAll("button").forEach((button) => {
+        Array.from(form.elements).filter((element) => element.tagName === "BUTTON").forEach((button) => {
           button.disabled = false;
         });
 
@@ -1653,5 +1845,6 @@
         });
       });
     </script>
+    {% block scripts %}{% endblock %}
   </body>
 </html>

@@ -12,10 +12,11 @@
     <a class="btn btn-secondary" href="{{ item.link }}" target="_blank" rel="noreferrer">Open original</a>
     {% if safe_session %}
     <form class="inline-form" action="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/close" method="post">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
       <button class="btn btn-primary" type="submit">Close session</button>
     </form>
     {% else %}
-    <a class="btn btn-primary" href="/profiles/{{ profile.id }}">Back to feed</a>
+    <a class="btn btn-primary" href="{{ return_to }}">Go back</a>
     {% endif %}
   </div>
 </header>
@@ -99,6 +100,22 @@ playwright install chromium</pre>
   <p class="safe-browser-hint">Click inside the page, then type normally. Scroll over the viewport to move through the remote page.</p>
 </section>
 
+
+<dialog class="downloader-dialog" data-downloader-dialog aria-labelledby="send-title">
+  <form data-downloader-send-form>
+    <div class="section-head"><div><h2 id="send-title">Send to downloader</h2><p data-send-file></p></div><button class="btn btn-secondary" type="button" data-send-close aria-label="Close send dialog">Close</button></div>
+    <div class="downloader-dialog-body">
+      <div class="field"><label for="send-destination">Destination</label><select id="send-destination" data-send-destination></select></div>
+      <div class="field"><label for="send-category">Category</label><select id="send-category" data-send-category required></select><p class="meta" data-send-path></p></div>
+      <label class="check-option"><input type="checkbox" data-send-start>Start immediately</label>
+      <p class="meta">Category directories are managed by your downloader. Existing downloads keep their category.</p>
+      <p class="error-text" role="alert" data-send-error></p>
+      <p class="meta" role="status" data-send-progress></p>
+    </div>
+    <div class="form-actions downloader-dialog-actions"><button class="btn btn-secondary" type="button" data-send-cancel>Cancel</button><button class="btn btn-primary" type="submit" data-send-submit>Send file</button></div>
+  </form>
+</dialog>
+
 <script>
   (() => {
     const browser = document.querySelector("[data-safe-browser]");
@@ -118,8 +135,101 @@ playwright install chromium</pre>
     const downloadToast = browser.querySelector("[data-browser-download-toast]");
     const downloads = browser.querySelector("[data-browser-downloads]");
     const viewportButtons = [...browser.querySelectorAll("[data-browser-viewport-mode]")];
-    let busy = false;
-    let downloadCount = 0;
+    const sendDialog = document.querySelector('[data-downloader-dialog]');
+    const sendForm = sendDialog.querySelector('[data-downloader-send-form]');
+    const destinationSelect = sendDialog.querySelector('[data-send-destination]');
+    const categorySelect = sendDialog.querySelector('[data-send-category]');
+    const submitSend = sendDialog.querySelector('[data-send-submit]');
+    const sendError = sendDialog.querySelector('[data-send-error]');
+    const sendProgress = sendDialog.querySelector('[data-send-progress]');
+    const csrfToken = document.querySelector('meta[name="downloader-csrf"]').content;
+    const storageKey = 'nightfeed-submissions:' + browser.dataset.downloadBase;
+    let restored = [];
+    try {restored = JSON.parse(sessionStorage.getItem(storageKey) || '[]');} catch (_) {}
+    const submissionStates = new Map(Array.isArray(restored) ? restored : []);
+    let selectedFile = null, categoryOptions = [], categoryRequired = true, categoryRequest = 0;
+    const updateCategoryPath = () => {
+      const category = categoryOptions.find(c => c.name === categorySelect.value);
+      sendDialog.querySelector('[data-send-path]').textContent = category?.save_path ? `Destination path: ${category.save_path}` : 'Uses the downloader’s configured directory.';
+    };
+    const loadCategories = async () => {
+      const serial = ++categoryRequest;
+      submitSend.disabled = true; sendError.textContent = ''; sendProgress.textContent = 'Loading categories…';
+      categorySelect.disabled = true; categoryOptions = []; categorySelect.replaceChildren();
+      try {
+        const response = await fetch(`/api/downloaders/${destinationSelect.value}/categories`);
+        const result = await response.json(); if (!response.ok) throw new Error(result.error);
+        if (serial !== categoryRequest) return;
+        categoryOptions = result.categories; categoryRequired = result.require_category;
+        categorySelect.required = categoryRequired;
+        const placeholder = new Option(categoryRequired ? 'Choose a category' : 'Uncategorized', '');
+        placeholder.disabled = categoryRequired;
+        categorySelect.replaceChildren(placeholder, ...categoryOptions.map(c => new Option(c.name, c.name)));
+        categorySelect.disabled = false;
+        if (categoryOptions.some(c => c.name === result.default_category)) categorySelect.value = result.default_category;
+        updateCategoryPath();
+        sendDialog.querySelector('[data-send-start]').checked = result.start_immediately;
+        if (categoryRequired && !categoryOptions.length) throw new Error('No allowed categories are available. Configure a category in your downloader or update the profile.');
+        submitSend.disabled = false; sendProgress.textContent = '';
+      } catch(error) {if(serial === categoryRequest){sendError.textContent = error.message; sendProgress.textContent = '';}}
+    };
+    const openSend = file => {
+      if (['sending','unknown','added','already_present'].includes(submissionStates.get(file.id)?.status)) return;
+      selectedFile = file;
+      sendDialog.querySelector('[data-send-file]').textContent = file.name;
+      destinationSelect.replaceChildren(...file.downloaders.map(profile => new Option(profile.name, profile.id)));
+      sendDialog.showModal(); loadCategories();
+    };
+    destinationSelect.addEventListener('change', loadCategories);
+    categorySelect.addEventListener('change', updateCategoryPath);
+    sendDialog.querySelectorAll('[data-send-close], [data-send-cancel]').forEach(button => button.addEventListener('click', () => {categoryRequest++; sendDialog.close();}));
+    const recordSubmission = (fileId, result) => {
+      submissionStates.set(fileId, result);
+      try {sessionStorage.setItem(storageKey, JSON.stringify([...submissionStates]));} catch (_) {}
+      downloads.querySelectorAll('[data-download-submission]').forEach(node => {
+        if(node.dataset.downloadSubmission === fileId) node.textContent = result.message;
+      });
+    };
+    const pollSubmission = async (fileId, jobId) => {
+      try {
+        const response = await fetch(`/api/downloader-jobs/${jobId}`);
+        const result = await response.json(); if(!response.ok) throw new Error(result.error);
+        recordSubmission(fileId, result);
+        if(result.status === 'sending') setTimeout(() => pollSubmission(fileId, jobId), 1000);
+        else window.showRefreshToast(result.message, ['error','unknown'].includes(result.status) ? 'error' : 'success');
+      } catch(error) {
+        recordSubmission(fileId, {id:jobId,status:'unknown',message:'Could not read submission status. Check status before retrying.'});
+        window.showRefreshToast(error.message, 'error');
+      }
+    };
+    const checkSubmission = async (fileId, jobId) => {
+      try {
+        const response = await fetch(`/api/downloader-jobs/${jobId}/check`, {method:'POST', headers:{'X-CSRF-Token':csrfToken}});
+        const result = await response.json(); if(!response.ok) throw new Error(result.error);
+        recordSubmission(fileId, result); window.showRefreshToast(result.message, result.status === 'error' ? 'error' : 'success');
+      } catch(error) {window.showRefreshToast(error.message, 'error');}
+    };
+    sendForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      if(submitSend.disabled || !selectedFile) return;
+      const file = selectedFile;
+      submitSend.disabled = true; sendError.textContent = ''; sendProgress.textContent = 'Starting submission…';
+      try {
+        const response = await fetch(`${browser.dataset.downloadBase}${encodeURIComponent(file.id)}/send`, {method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken}, body:JSON.stringify({downloader_id:Number(destinationSelect.value),category:categorySelect.value,start_immediately:sendDialog.querySelector('[data-send-start]').checked})});
+        const result = await response.json(); if(!response.ok) throw new Error(result.error);
+        recordSubmission(file.id, result); sendDialog.close(); pollSubmission(file.id, result.id);
+      } catch(error) {sendError.textContent = error.message;}
+      finally {submitSend.disabled = false; sendProgress.textContent = '';}
+    });
+    for (const [fileId, result] of submissionStates) {
+      if (result.status === 'sending') pollSubmission(fileId, result.id);
+    }
+    let busy = false, polling = false, ended = false, lastInteraction = Date.now();
+    const inputQueue = [];
+    let frameTag = null;
+    let currentFrameUrl = null, framePending = false, frameAgain = false;
+    let downloadCount = 0, downloadSignature = '';
+    const downloadStatuses = new Map();
     let downloadToastTimer = null;
     let pendingScrollDelta = 0;
     let pendingOuterScrollDelta = 0;
@@ -179,11 +289,19 @@ playwright install chromium</pre>
         button.setAttribute("aria-pressed", String(active));
       });
       const files = state.downloads || [];
-      const hasNewDownload = files.length > downloadCount;
+      const hasNewDownload = files.some(f => (f.status || 'ready') === 'ready' && downloadStatuses.get(f.id) !== 'ready');
+      const changedDownload = files.find(f => downloadStatuses.get(f.id) !== (f.status || 'ready'));
+      if (changedDownload) {
+        const status = changedDownload.status || 'ready';
+        downloadToast.textContent = `${changedDownload.name}: ${status === 'ready' ? 'Ready. Open Downloads to save or send.' : status === 'failed' ? 'Download failed.' : 'Downloading…'}`;
+        showDownloadToast();
+      }
+      files.forEach(f => downloadStatuses.set(f.id, f.status || 'ready'));
+      const readyCount = files.filter(f => !f.status || f.status === 'ready').length;
       downloadBadge.textContent = String(files.length);
       downloadBadge.hidden = files.length === 0;
-      downloadSummary.textContent = files.length === 0 ? "No files yet" : files.length === 1 ? "1 file ready" : `${files.length} files ready`;
-      downloadToggle.setAttribute("aria-label", files.length ? `Downloads, ${files.length} files ready` : "Downloads");
+      downloadSummary.textContent = files.length === 0 ? "No files yet" : files.length === 1 ? (readyCount ? "1 file ready" : "Download in progress") : `${readyCount} ready · ${files.length} total`;
+      downloadToggle.setAttribute("aria-label", files.length ? `Downloads, ${readyCount} ready of ${files.length}` : "Downloads");
       if (hasNewDownload) {
         downloadBadge.classList.remove("is-updated");
         requestAnimationFrame(() => downloadBadge.classList.add("is-updated"));
@@ -195,6 +313,9 @@ playwright install chromium</pre>
         downloads.innerHTML = '<div class="empty-state">Downloaded files will appear here.</div>';
         return;
       }
+      const signature = JSON.stringify([files, [...submissionStates]]);
+      if (signature === downloadSignature) return;
+      downloadSignature = signature;
       downloads.replaceChildren(...files.map((file) => {
         const card = document.createElement("article");
         card.className = "safe-browser-download";
@@ -217,13 +338,27 @@ playwright install chromium</pre>
         }
         const size = document.createElement("p");
         size.className = "meta";
-        size.textContent = formatBytes(file.size);
+        size.textContent = ['downloading', 'finalizing'].includes(file.status) ? `Downloading… ${formatBytes(file.size)}${file.total ? ' / ' + formatBytes(file.total) : ''}` : file.status === 'failed' ? 'Download failed. Try the link again.' : formatBytes(file.size);
         details.append(name, size);
         const link = document.createElement("a");
-        link.className = "safe-browser-download-save";
+        link.className = "btn btn-secondary safe-browser-download-save";
         link.href = `${browser.dataset.downloadBase}${encodeURIComponent(file.id)}`;
-        link.textContent = "Save";
-        card.append(details, link);
+        link.textContent = "Save file";
+        const actions = document.createElement('div'); actions.className = 'safe-download-actions'; if (!file.status || file.status === 'ready') actions.append(link);
+        const submission = submissionStates.get(file.id);
+        const status = document.createElement('p'); status.className='meta'; status.setAttribute('role','status'); status.dataset.downloadSubmission=file.id;
+        status.textContent = submission?.message || ''; details.append(status);
+        if ((!file.status || file.status === 'ready') && file.downloaders?.length) {
+          const send = document.createElement('button'); send.type='button'; send.className='btn btn-primary';
+          send.textContent = file.downloaders.length === 1 ? file.downloaders[0].label : 'Send to downloader…';
+          send.disabled = ['sending','unknown','added','already_present'].includes(submission?.status);
+          send.addEventListener('click', () => openSend(file)); actions.append(send);
+          if (submission?.status === 'unknown') {
+            const check = document.createElement('button'); check.type='button'; check.className='btn btn-secondary'; check.textContent='Check status';
+            check.addEventListener('click', () => checkSubmission(file.id, submission.id)); actions.append(check);
+          }
+        }
+        card.append(details, actions);
         return card;
       }));
     };
@@ -240,30 +375,54 @@ playwright install chromium</pre>
       if (event.key === "Escape") setDownloadPopover(false);
     });
 
-    const refreshScreen = () => {
-      screen.src = `${browser.dataset.screenshotUrl}?t=${Date.now()}`;
+    const refreshScreen = async () => {
+      if (document.hidden || ended) return;
+      if (framePending) { frameAgain = true; return; }
+      framePending = true;
+      try {
+        const response = await fetch(browser.dataset.screenshotUrl, {cache: 'no-store', headers: frameTag ? {'If-None-Match': frameTag} : {}, signal: AbortSignal.timeout(15000)});
+        if (response.status === 304) return;
+        if (!response.ok) {if(response.status === 410) ended = true; throw new Error('Session ended or screen unavailable.');}
+        const nextTag = response.headers.get('ETag');
+        const url = URL.createObjectURL(await response.blob());
+        const image = new Image(); image.src = url;
+        try { await image.decode(); } catch (error) { URL.revokeObjectURL(url); throw error; }
+        const old = currentFrameUrl; frameTag = nextTag; currentFrameUrl = url; screen.src = url;
+        if (old) URL.revokeObjectURL(old);
+      } catch(error) { throw error; }
+      finally {
+        framePending = false;
+        if (frameAgain) { frameAgain = false; refreshScreen().catch(error => {loading.textContent = error.message; loading.hidden = false;}); }
+      }
     };
 
-    const command = async (action, payload = {}) => {
-      if (busy) return;
+    const drainInputs = async () => {
+      if (busy || polling || ended || !inputQueue.length) return;
       busy = true;
-      loading.hidden = false;
+      const {action, payload} = inputQueue.shift();
+      const timer = setTimeout(() => {loading.textContent = action === 'click' ? 'Opening…' : 'Updating…'; loading.hidden = false;}, 180);
       try {
         const response = await fetch(browser.dataset.commandUrl, {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
+          method: 'POST', signal: AbortSignal.timeout(30000), headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({action, ...payload}),
         });
         const state = await response.json();
-        if (!response.ok) throw new Error(state.error || "Browser command failed.");
+        if (!response.ok) { if(response.status === 410) ended = true; throw new Error(state.error || 'Browser command failed.'); }
         renderState(state);
-        refreshScreen();
-      } catch (error) {
-        title.textContent = error.message;
-      } finally {
-        busy = false;
-        loading.hidden = true;
+        refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
+      } catch(error) { loading.textContent = error.message; loading.hidden = false; }
+      finally {
+        clearTimeout(timer); busy = false;
+        if (inputQueue.length) drainInputs();
+        else if (Math.abs(pendingScrollDelta) >= .5) scheduleScrollFlush(0);
       }
+    };
+    const command = (action, payload = {}) => {
+      lastInteraction = Date.now();
+      const tail = inputQueue.at(-1);
+      if (action === 'text' && tail?.action === 'text') tail.payload.text += payload.text;
+      else inputQueue.push({action, payload});
+      drainInputs();
     };
 
     const scheduleScrollFlush = (delay = 24) => {
@@ -286,6 +445,7 @@ playwright install chromium</pre>
         window.scrollBy({top: outerDelta, left: 0, behavior: "auto"});
         return;
       }
+      lastInteraction = Date.now();
       pendingScrollDelta += remoteDelta;
       pendingOuterScrollDelta += outerDelta;
       pendingScrollX = x;
@@ -295,7 +455,7 @@ playwright install chromium</pre>
 
     const flushScrollQueue = async () => {
       scrollFlushTimer = null;
-      if (busy) {
+      if (busy || polling || inputQueue.length) {
         scheduleScrollFlush(24);
         return;
       }
@@ -319,6 +479,7 @@ playwright install chromium</pre>
       try {
         const response = await fetch(browser.dataset.commandUrl, {
           method: "POST",
+          signal: AbortSignal.timeout(30000),
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({action: "scroll", delta, x, y}),
         });
@@ -332,11 +493,12 @@ playwright install chromium</pre>
           window.scrollBy({top: outerDelta * unusedRatio, left: 0, behavior: "auto"});
         }
         renderState(state);
-        refreshScreen();
+        refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
       } catch (error) {
         title.textContent = error.message;
       } finally {
         busy = false;
+        drainInputs();
         if (Math.abs(pendingScrollDelta) >= 0.5) scheduleScrollFlush(0);
       }
     };
@@ -364,6 +526,9 @@ playwright install chromium</pre>
       const x = (event.clientX - rect.left) * (viewportWidth / rect.width);
       const y = (event.clientY - rect.top) * (viewportHeight / rect.height);
       screen.focus();
+      const ripple = document.createElement('span'); ripple.className = 'safe-click-feedback';
+      ripple.style.left = `${event.clientX - rect.left}px`; ripple.style.top = `${event.clientY - rect.top}px`;
+      screen.parentElement.append(ripple); setTimeout(() => ripple.remove(), 450);
       command("click", {x, y});
     });
 
@@ -446,20 +611,27 @@ playwright install chromium</pre>
     });
 
     const poll = async () => {
-      if (busy) return;
+      if (busy || polling || ended || document.hidden || inputQueue.length) return;
+      polling = true;
       try {
-        const response = await fetch(browser.dataset.stateUrl, {cache: "no-store"});
-        if (!response.ok) return;
+        const response = await fetch(browser.dataset.stateUrl, {cache: 'no-store', signal: AbortSignal.timeout(15000)});
+        if (!response.ok) { if(response.status === 410) ended = true; throw new Error('Session ended or connection unavailable.'); }
         renderState(await response.json());
-        refreshScreen();
-      } catch (_) {}
+        refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
+      } catch(error) { loading.textContent = error.message; loading.hidden = false; }
+      finally { polling = false; drainInputs(); }
     };
+    const pollLoop = async () => {
+      await poll();
+      if (!ended) setTimeout(pollLoop, document.hidden ? 5000 : Date.now() - lastInteraction < 3000 ? 500 : 2000);
+    };
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) {lastInteraction = Date.now(); poll();} });
     if (window.matchMedia("(max-width: 720px)").matches) {
       command("viewport", {mode: "mobile"});
     } else {
       poll();
     }
-    window.setInterval(poll, 2000);
+    pollLoop();
   })();
 </script>
 {% endif %}

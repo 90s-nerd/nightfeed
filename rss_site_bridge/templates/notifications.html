@@ -14,7 +14,7 @@
     <form class="inline-form" action="/notifications/read-all" method="post">
       <button class="btn btn-primary" type="submit">Mark all read</button>
     </form>
-    <form class="inline-form" action="/notifications/delete-read" method="post">
+    <form class="inline-form" action="/notifications/delete-read" method="post" data-confirm="Delete all read notifications? This cannot be undone.">
       <input type="hidden" name="status" value="{{ status_filter }}">
       <button class="btn btn-danger" type="submit">Delete read</button>
     </form>
@@ -55,7 +55,7 @@
           <button class="btn btn-secondary" type="submit">Mark read</button>
         </form>
         {% endif %}
-        <form class="inline-form" action="/notifications/{{ notification.id }}/delete" method="post">
+        <form class="inline-form" action="/notifications/{{ notification.id }}/delete" method="post" data-confirm="Delete this notification? This cannot be undone.">
           <input type="hidden" name="status" value="{{ status_filter }}">
           <button class="btn btn-danger" type="submit">Delete</button>
         </form>

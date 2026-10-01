@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .downloaders import register as register_downloaders, eligible_profiles, MAX_SUBMISSION_BYTES
+from croniter import croniter
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -129,6 +131,9 @@ class FeedRequest:
     notify_failure_categories: tuple[str, ...] = FAILURE_NOTIFICATION_CATEGORIES
     filter_rules: str = ""
     exclude_filter_rules: str = ""
+    cron_expression: str = ""
+    schedule_timezone: str = "UTC"
+    priority: int = 0
 
     def __post_init__(self) -> None:
         selected = tuple(
@@ -183,6 +188,9 @@ class StoredProfile:
     created_at: str
     updated_at: str
     item_count: int = 0
+    cron_expression: str = ""
+    schedule_timezone: str = "UTC"
+    priority: int = 0
 
     def to_feed_request(self) -> FeedRequest:
         return FeedRequest(
@@ -196,6 +204,9 @@ class StoredProfile:
             exclude_filter_rules=self.exclude_filter_rules,
             max_items=self.max_items,
             refresh_interval_minutes=self.refresh_interval_minutes,
+            cron_expression=self.cron_expression,
+            schedule_timezone=self.schedule_timezone,
+            priority=self.priority,
             fetch_mode=self.fetch_mode,
             notify_on_success=self.notify_on_success,
             notify_on_failure=self.notify_on_failure,
@@ -232,6 +243,18 @@ class Notification:
     read_at: str
     emailed_at: str
     metadata_json: str
+
+
+def bind_download_handles(downloads: dict[str, dict[str, Any]], pending: list[Any]) -> None:
+    """Match Playwright handles in start order, before transfer completion can reorder them."""
+    for item in list(downloads.values()):
+        if "handle" in item:
+            continue
+        handle = next((candidate for candidate in pending
+                       if Path(candidate.suggested_filename).name == item["name"]), None)
+        if handle is not None:
+            pending.remove(handle)
+            item["handle"] = handle
 
 
 class SafeBrowserSession:
@@ -347,28 +370,39 @@ class SafeBrowserSession:
                     popup_attempts += 1
                     popup.close()
 
-                def handle_download(download):
+                # Chromium writes files independently of the input worker. CDP events
+                # report progress without blocking on Playwright download.save_as().
+                download_events = browser.new_browser_cdp_session()
+                download_events.send("Browser.setDownloadBehavior", {
+                    "behavior": "allowAndName", "downloadPath": download_dir, "eventsEnabled": True,
+                })
+
+                pending_download_handles = []
+
+                def download_started(event):
+                    guid = event["guid"]
                     if time.monotonic() - last_user_interaction > 8:
-                        download.cancel()
+                        download_events.send("Browser.cancelDownload", {"guid": guid})
                         return
-                    suggested = Path(download.suggested_filename or "download").name
-                    download_id = secrets.token_urlsafe(16)
-                    suffix = Path(suggested).suffix[:16]
-                    destination = Path(download_dir) / f"{download_id}{suffix}"
-                    try:
-                        download.save_as(destination)
-                        downloads[download_id] = {
-                            "id": download_id,
-                            "name": suggested,
-                            "path": destination,
-                            "size": destination.stat().st_size,
-                        }
-                    except PlaywrightError:
+                    downloads[guid] = {
+                        "id": guid, "name": Path(event.get("suggestedFilename") or "download").name,
+                        "path": Path(download_dir) / guid, "size": 0, "total": 0,
+                        "status": "downloading",
+                    }
+
+                def download_progress(event):
+                    item = downloads.get(event["guid"])
+                    if item is None:
                         return
+                    item["size"] = int(event.get("receivedBytes", 0))
+                    item["total"] = int(event.get("totalBytes", 0))
+                    item["status"] = {"completed": "finalizing", "canceled": "failed"}.get(event["state"], "downloading")
 
                 page.route("**/*", handle_route)
                 page.on("popup", handle_popup)
-                page.on("download", handle_download)
+                page.on("download", lambda download: pending_download_handles.append(download))
+                download_events.on("Browser.downloadWillBegin", download_started)
+                download_events.on("Browser.downloadProgress", download_progress)
                 response = page.goto(self.source_url, wait_until="domcontentloaded")
                 if response is not None and not response.ok:
                     raise RuntimeError(f"Upstream HTTP error: {response.status} {response.status_text}")
@@ -408,10 +442,16 @@ class SafeBrowserSession:
 
                 def state() -> dict[str, Any]:
                     viewport = page.viewport_size or SAFE_BROWSER_VIEWPORT
-                    scroll = scroll_state()
+                    try:
+                        scroll = scroll_state()
+                        title = page.title()
+                    except PlaywrightError:
+                        # A click may start navigation before its new document exists.
+                        scroll = {"x": 0, "y": 0, "max_x": 0, "max_y": 0}
+                        title = "Opening page…"
                     return {
                         "url": page.url,
-                        "title": page.title(),
+                        "title": title,
                         "can_go_back": True,
                         "popup_attempts": popup_attempts,
                         "blocked_requests": blocked_requests,
@@ -425,30 +465,43 @@ class SafeBrowserSession:
                         "scroll_target_x": scroll_target_x,
                         "scroll_target_y": scroll_target_y,
                         "downloads": [
-                            {"id": item["id"], "name": item["name"], "size": item["size"]}
+                            {"id": item["id"], "name": item["name"], "size": item["size"], "total": item["total"], "status": item["status"]}
                             for item in downloads.values()
                         ],
                     }
 
                 while True:
+                    # Save only after Chromium reports completion, so slow transfers
+                    # never hold the input worker while waiting for network bytes.
+                    bind_download_handles(downloads, pending_download_handles)
+                    for item in list(downloads.values()):
+                        if item["status"] != "finalizing" or "handle" not in item:
+                            continue
+                        handle = item["handle"]
+                        try:
+                            handle.save_as(item["path"])
+                            item["size"] = item["path"].stat().st_size
+                            item["status"] = "ready"
+                        except PlaywrightError:
+                            item["status"] = "failed"
                     if time.monotonic() - self.last_activity > SAFE_BROWSER_SESSION_TTL_SECONDS:
                         break
                     try:
-                        action, payload, command_response = self.commands.get(timeout=1)
+                        action, payload, command_response = self.commands.get_nowait()
                     except Empty:
+                        page.wait_for_timeout(20)
                         continue
                     try:
                         if action == "stop":
                             command_response.put(True)
                             break
                         if action == "screenshot":
-                            result = page.screenshot(type="png")
+                            result = page.screenshot(type="jpeg", quality=75)
                         elif action == "state":
                             result = state()
                         elif action == "click":
                             last_user_interaction = time.monotonic()
                             page.mouse.click(float(payload["x"]), float(payload["y"]))
-                            page.wait_for_timeout(350)
                             result = state()
                         elif action == "scroll":
                             viewport = page.viewport_size or SAFE_BROWSER_VIEWPORT
@@ -470,12 +523,10 @@ class SafeBrowserSession:
                             if not key:
                                 raise ValueError("A key is required.")
                             page.keyboard.press(key)
-                            page.wait_for_timeout(100)
                             result = state()
                         elif action == "text":
                             last_user_interaction = time.monotonic()
                             page.keyboard.insert_text(str(payload.get("text", ""))[:2000])
-                            page.wait_for_timeout(100)
                             result = state()
                         elif action == "back":
                             page.go_back(wait_until="domcontentloaded")
@@ -504,10 +555,23 @@ class SafeBrowserSession:
                                 else SAFE_BROWSER_VIEWPORT
                             )
                             result = state()
+                        elif action == "download_copy":
+                            download = downloads.get(str(payload.get("download_id", "")))
+                            if download is None:
+                                raise ValueError("Download not found.")
+                            if download.get("status") != "ready":
+                                raise ValueError("Download is not ready yet.")
+                            if download["size"] > MAX_SUBMISSION_BYTES:
+                                raise ValueError("File exceeds the 10 MB submission limit.")
+                            with open(download["path"], "rb") as handle:
+                                copied = handle.read(MAX_SUBMISSION_BYTES + 1)
+                            result = {"name": download["name"], "data": copied}
                         elif action == "download":
                             download = downloads.get(str(payload.get("download_id", "")))
                             if download is None:
                                 raise ValueError("Download not found.")
+                            if download.get("status") != "ready":
+                                raise ValueError("Download is not ready yet.")
                             result = download
                         else:
                             raise ValueError("Unsupported browser action.")
@@ -707,6 +771,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         app.config.update(test_config)
 
     init_db(Path(app.config["DATABASE_PATH"]))
+    register_downloaders(app, get_safe_browser_session)
     if app.config.get("START_SCHEDULER") and not app.config.get("TESTING"):
         ensure_scheduler(app)
     log_event(
@@ -917,7 +982,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "detail.html",
             profiles=list_profiles(Path(app.config["DATABASE_PATH"])),
             profile=profile,
-            items=list_feed_items(Path(app.config["DATABASE_PATH"]), profile.id, profile.max_items),
+            items=list_feed_items(Path(app.config["DATABASE_PATH"]), profile.id, 25, (pagination_page(profile.item_count) - 1) * 25),
+            page=pagination_page(profile.item_count),
+            pages=max(1, (profile.item_count + 24) // 25),
             feed_url=build_feed_url(request.url_root, profile.feed_token, settings.public_base_url),
             edit_error=edit_error,
             edit_form=edit_form or {},
@@ -930,10 +997,35 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             failure_notification_categories=FAILURE_NOTIFICATION_CATEGORIES,
         )
 
-    @app.get("/")
+    @app.get("/feeds")
     def index() -> str:
         profiles = list_profiles(Path(app.config["DATABASE_PATH"]))
         return render_template("index.html", profiles=profiles)
+
+    @app.get("/")
+    def timeline():
+        db_path = Path(app.config["DATABASE_PATH"])
+        profiles = list_profiles(db_path)
+        selected = [int(v) for v in request.args.getlist("feed") if v.isdigit()]
+        query = request.args.get("q", "").strip()
+        sort = request.args.get("sort", "recent")
+        orders = {"recent": "i.discovered_at DESC, i.id DESC", "oldest": "i.discovered_at ASC, i.id ASC", "priority": "p.priority DESC, i.discovered_at DESC, i.id DESC", "title": "i.title COLLATE NOCASE, i.id DESC"}
+        where = " WHERE 1=1"
+        params = []
+        if selected:
+            where += " AND p.id IN (" + ",".join("?" for _ in selected) + ")"
+            params.extend(selected)
+        if query:
+            where += " AND (instr(lower(i.title), lower(?)) > 0 OR instr(lower(i.summary), lower(?)) > 0 OR instr(lower(i.link), lower(?)) > 0)"
+            params.extend([query] * 3)
+        source = " FROM feed_items i JOIN profiles p ON p.id=i.profile_id" + where
+        with closing(connect_db(db_path)) as conn:
+            total = conn.execute("SELECT COUNT(*)" + source, params).fetchone()[0]
+            page = pagination_page(total)
+            items = conn.execute("SELECT i.*, p.feed_title, p.priority" + source + " ORDER BY " + orders.get(sort, orders["recent"]) + " LIMIT 25 OFFSET ?", params + [(page - 1) * 25]).fetchall()
+        def page_url(number):
+            return url_for("timeline", q=query, sort=sort, feed=selected, page=number)
+        return render_template("timeline.html", profiles=profiles, items=items, selected=selected, query=query, sort=sort, total=total, page=page, pages=max(1, (total + 24)//25), page_url=page_url)
 
     @app.get("/notifications")
     def notifications_route() -> str:
@@ -1115,6 +1207,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 source_host=source_host(profile.source_url),
                 fetch_mode=profile.fetch_mode,
                 refresh_interval_minutes=profile.refresh_interval_minutes,
+                cron_expression=profile.cron_expression,
+                schedule_timezone=profile.schedule_timezone,
+                priority=profile.priority,
                 max_items=profile.max_items,
             )
             return redirect(url_for("profile_detail", profile_id=profile.id))
@@ -1156,6 +1251,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 exclude_filter_rules=profile.exclude_filter_rules,
                 max_items=profile.max_items,
                 refresh_interval_minutes=profile.refresh_interval_minutes,
+                cron_expression=profile.cron_expression,
+                schedule_timezone=profile.schedule_timezone,
+                priority=profile.priority,
                 fetch_mode=profile.fetch_mode,
                 notify_on_success="1" if profile.notify_on_success else "",
                 notify_on_failure="1" if profile.notify_on_failure else "",
@@ -1172,7 +1270,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             request_kind="ajax" if request.headers.get("X-Requested-With") == "XMLHttpRequest" else "browser",
         )
         try:
-            refresh_profile(Path(app.config["DATABASE_PATH"]), profile_id)
+            changes = refresh_profile(Path(app.config["DATABASE_PATH"]), profile_id)
         except ValueError as exc:
             log_event(logging.WARNING, "profile_manual_refresh_failed", profile_id=profile_id, error=str(exc))
             if request.headers.get("X-Requested-With") == "XMLHttpRequest":
@@ -1192,6 +1290,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return jsonify(
                 {
                     "item_count": profile.item_count,
+                    "new_items": changes["new_items"],
+                    "updated_items": changes["updated_items"],
+                    "message": refresh_result_message(changes),
                     "last_refreshed_at": humanize_datetime(profile.last_refreshed_at, settings.timezone_name),
                     "next_refresh_at": humanize_next_refresh(profile, settings.timezone_name),
                     "status": profile.last_status,
@@ -1311,6 +1412,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             purged=request.args.get("purged") == "1",
         )
 
+    def safe_return_destination(value: str | None, profile_id: int) -> str:
+        fallback = url_for("profile_detail", profile_id=profile_id)
+        if not value or not value.startswith("/") or value.startswith("//"):
+            return fallback
+        if "\\" in value or any(ord(char) < 32 for char in value):
+            return fallback
+        parsed = urlparse(value)
+        if parsed.scheme or parsed.netloc or parsed.path not in {"/", "/feeds", fallback}:
+            return fallback
+        return value
+
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe")
     def safe_topic_route(profile_id: int, item_id: int) -> Response:
         db_path = Path(app.config["DATABASE_PATH"])
@@ -1319,10 +1431,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if profile is None or item is None:
             return Response("Topic not found.", status=404, mimetype="text/plain; charset=utf-8")
 
+        return_to = safe_return_destination(request.args.get("return_to"), profile_id)
         error = ""
         safe_session = None
         try:
             safe_session = create_safe_browser_session(item.link, profile_id, item_id)
+            safe_session.return_to = return_to
         except RuntimeError as exc:
             error = str(exc)
             log_event(
@@ -1340,13 +1454,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 profile=profile,
                 item=item,
                 safe_session=safe_session,
+                return_to=return_to,
                 error=error,
             ),
             status=503 if error else 200,
             mimetype="text/html",
         )
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
             "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'none'; "
             "object-src 'none'; base-uri 'none'; form-action 'self'"
         )
@@ -1366,7 +1481,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             screenshot = safe_session.execute("screenshot")
         except RuntimeError as exc:
             return Response(str(exc), status=410, mimetype="text/plain; charset=utf-8")
-        return Response(screenshot, mimetype="image/png", headers={"Cache-Control": "no-store"})
+        frame_tag = hashlib.sha256(screenshot).hexdigest()
+        if request.if_none_match.contains(frame_tag):
+            response = Response(status=304)
+        else:
+            response = Response(screenshot, mimetype="image/jpeg")
+        response.set_etag(frame_tag)
+        response.headers["Cache-Control"] = "private, no-cache"
+        return response
 
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/state")
     def safe_browser_state_route(profile_id: int, item_id: int, session_id: str) -> Response:
@@ -1374,7 +1496,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if safe_session is None:
             return jsonify({"error": "Safe browser session expired."}), 410
         try:
-            return jsonify(safe_session.execute("state"))
+            state = safe_session.execute("state")
+            for downloaded in state.get("downloads", []):
+                downloaded["downloaders"] = eligible_profiles(Path(app.config["DATABASE_PATH"]), downloaded["name"])
+            return jsonify(state)
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 410
 
@@ -1418,9 +1543,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/close")
     def safe_browser_close_route(profile_id: int, item_id: int, session_id: str) -> Response:
         safe_session = require_safe_session(profile_id, item_id, session_id)
+        return_to = safe_return_destination(
+            getattr(safe_session, "return_to", None) or request.form.get("return_to"), profile_id
+        )
         if safe_session is not None:
             safe_session.stop()
-        return redirect(url_for("profile_detail", profile_id=profile_id))
+        return redirect(return_to)
 
     @app.post("/profiles/<int:profile_id>/preview")
     def profile_preview_route(profile_id: int) -> Response:
@@ -1591,6 +1719,9 @@ def load_form() -> dict[str, str]:
         "exclude_filter_rules": "",
         "max_items": "25",
         "refresh_interval_minutes": "60",
+        "cron_expression": "",
+        "schedule_timezone": "UTC",
+        "priority": "0",
         "fetch_mode": "http",
         "notify_on_success": "",
         "notify_on_failure": "1",
@@ -1645,6 +1776,9 @@ def parse_request_values(values: Any, existing_profile: StoredProfile | None = N
         exclude_filter_rules=normalize_filter_rules(values.get("exclude_filter_rules", "")),
         max_items=parse_max_items(values.get("max_items", "25")),
         refresh_interval_minutes=parse_refresh_interval(values.get("refresh_interval_minutes", "60")),
+        cron_expression=validate_cron(values.get("cron_expression", "")),
+        schedule_timezone=parse_timezone_name(values.get("schedule_timezone", "UTC")),
+        priority=parse_priority(values.get("priority", "0")),
         fetch_mode=fetch_mode,
         notify_on_success=notify_on_success,
         notify_on_failure=bool(notify_failure_categories),
@@ -1810,7 +1944,7 @@ def extract_feed_entries(
             parsed_filter_rules=parsed_filter_rules,
             parsed_exclude_filter_rules=parsed_exclude_filter_rules,
         )
-        if len(container_entries) > len(entries):
+        if len(container_entries) >= len(entries):
             entries = container_entries
             container_fallback_used = True
 
@@ -1843,17 +1977,29 @@ def extract_feed_entries(
 
 
 def select_node_with_scope(node: Any, selector: str) -> Any:
-    normalized_selector = selector.strip()
-    if normalized_selector in {":scope", "self"}:
-        return node
-    return node.select_one(selector)
+    matches = select_nodes_with_scope(node, selector)
+    return matches[0] if matches else None
 
 
 def select_nodes_with_scope(node: Any, selector: str) -> list[Any]:
-    normalized_selector = selector.strip()
-    if normalized_selector in {":scope", "self"}:
-        return [node]
-    return list(node.select(selector))
+    matches = [node]
+    for step in (part.strip() for part in selector.split(">>")):
+        found = []
+        for match in matches:
+            if step in {":scope", "self"}:
+                found.append(match)
+            elif step == "parent":
+                if match.parent is not None:
+                    found.append(match.parent)
+            else:
+                found.extend(match.select(step))
+        seen = set()
+        matches = []
+        for match in found:
+            if id(match) not in seen:
+                seen.add(id(match))
+                matches.append(match)
+    return matches
 
 
 def extract_entries_from_item_nodes(
@@ -1892,8 +2038,6 @@ def extract_entries_from_item_nodes(
 
 
 def should_use_container_link_fallback(nodes: list[Any], entries: list[FeedEntry], config: FeedRequest) -> bool:
-    if len(entries) > 1:
-        return False
     for node in nodes:
         if len(select_nodes_with_scope(node, config.link_selector)) > 1:
             return True
@@ -2128,40 +2272,44 @@ def extract_repeated_link_title_text(
 
 
 def extract_inline_title_text(container_node: Any, link_node: Any) -> str:
-    parent = getattr(link_node, "parent", None)
-    if parent is None:
-        return link_node.get_text(" ", strip=True)
+    # Read the visual line around this anchor, treating wrappers as transparent.
+    # Never cross another link, a line break, or a block boundary.
+    tokens: list[tuple[str, Any, str]] = []
+    blocks = {"p", "div", "li", "article", "section", "tr", "td", "h1", "h2", "h3", "h4", "h5", "h6"}
 
+    def walk(node: Any) -> None:
+        name = getattr(node, "name", None)
+        if name in {"script", "style"}:
+            return
+        if name == "a":
+            tokens.append(("link", node, node.get_text(" ", strip=True)))
+            return
+        if name == "br":
+            tokens.append(("boundary", None, ""))
+            return
+        if name is None:
+            if type(node).__name__ != "Comment":
+                tokens.append(("text", None, str(node)))
+            return
+        if name in blocks:
+            tokens.append(("boundary", None, ""))
+        for child in node.contents:
+            walk(child)
+        if name in blocks:
+            tokens.append(("boundary", None, ""))
+
+    walk(container_node)
+    index = next((i for i, token in enumerate(tokens) if token[1] is link_node), None)
     anchor_text = link_node.get_text(" ", strip=True)
-    siblings = list(getattr(parent, "contents", []))
-    try:
-        link_index = siblings.index(link_node)
-    except ValueError:
+    if index is None:
         return anchor_text
-
-    title_parts: list[str] = []
-    for sibling in reversed(siblings[:link_index]):
-        if getattr(sibling, "name", None) == "br":
-            break
-        if getattr(sibling, "name", None) == "a":
-            break
-        text = sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling).strip()
-        if text:
-            title_parts.insert(0, text)
-
-    if anchor_text:
-        title_parts.append(anchor_text)
-
-    for sibling in siblings[link_index + 1 :]:
-        if getattr(sibling, "name", None) == "br":
-            break
-        if getattr(sibling, "name", None) == "a":
-            break
-        text = sibling.get_text(" ", strip=True) if hasattr(sibling, "get_text") else str(sibling).strip()
-        if text:
-            title_parts.append(text)
-
-    return " ".join(" ".join(title_parts).split()) or anchor_text
+    start = index
+    while start > 0 and tokens[start - 1][0] == "text":
+        start -= 1
+    end = index + 1
+    while end < len(tokens) and tokens[end][0] == "text":
+        end += 1
+    return " ".join(" ".join(token[2] for token in tokens[start:end]).split()) or anchor_text
 
 
 def build_entry_from_nodes(
@@ -2594,6 +2742,9 @@ def init_db(db_path: Path) -> None:
         ensure_column(conn, "profiles", "notify_on_failure", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(conn, "profiles", "notify_failure_categories", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "profiles", "refresh_anchor_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "profiles", "cron_expression", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "profiles", "schedule_timezone", "TEXT NOT NULL DEFAULT 'UTC'")
+        ensure_column(conn, "profiles", "priority", "INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
             UPDATE profiles
@@ -2846,6 +2997,8 @@ def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
         )
         conn.commit()
         profile_id = int(cursor.lastrowid)
+        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, config.schedule_timezone, config.priority, profile_id))
+        conn.commit()
     profile = get_profile_by_id(db_path, profile_id)
     if profile is None:
         raise RuntimeError("Failed to load the saved profile.")
@@ -2886,6 +3039,7 @@ def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> Store
                 profile_id,
             ),
         )
+        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, config.schedule_timezone, config.priority, profile_id))
         conn.commit()
 
     profile = get_profile_by_id(db_path, profile_id)
@@ -3052,7 +3206,7 @@ def should_refresh(profile: StoredProfile) -> bool:
 def get_next_refresh_at(profile: StoredProfile) -> datetime | None:
     if not profile.active:
         return None
-    if profile.refresh_interval_minutes == 0:
+    if profile.refresh_interval_minutes == 0 and not profile.cron_expression:
         return None
     base_candidates = [value for value in (profile.last_refreshed_at, profile.refresh_anchor_at) if value]
     if not base_candidates and profile.created_at:
@@ -3060,10 +3214,12 @@ def get_next_refresh_at(profile: StoredProfile) -> datetime | None:
     if not base_candidates:
         return None
     due_base = max(datetime.fromisoformat(value) for value in base_candidates)
+    if profile.cron_expression:
+        return croniter(profile.cron_expression, due_base.astimezone(ZoneInfo(profile.schedule_timezone))).get_next(datetime).astimezone(timezone.utc)
     return due_base + timedelta(minutes=profile.refresh_interval_minutes)
 
 
-def refresh_profile(db_path: Path, profile_id: int) -> None:
+def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
     profile = get_profile_by_id(db_path, profile_id)
     if profile is None:
         raise ValueError("Profile not found.")
@@ -3114,8 +3270,18 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
         )
         raise RuntimeError(str(exc)) from exc
 
+    changes = {"new_items": 0, "updated_items": 0}
     with closing(connect_db(db_path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         for entry in entries:
+            existing = conn.execute(
+                "SELECT title, summary FROM feed_items WHERE profile_id = ? AND link = ?",
+                (profile_id, entry.link),
+            ).fetchone()
+            if existing is None:
+                changes["new_items"] += 1
+            elif existing["title"] != entry.title or existing["summary"] != entry.summary:
+                changes["updated_items"] += 1
             conn.execute(
                 """
                 INSERT INTO feed_items (profile_id, title, link, summary, discovered_at)
@@ -3158,9 +3324,10 @@ def refresh_profile(db_path: Path, profile_id: int) -> None:
         entry_count=len(entries),
         duration_ms=get_elapsed_ms(refresh_started_at),
     )
+    return changes
 
 
-def list_feed_items(db_path: Path, profile_id: int, limit: int) -> list[FeedEntry]:
+def list_feed_items(db_path: Path, profile_id: int, limit: int, offset: int = 0) -> list[FeedEntry]:
     with closing(connect_db(db_path)) as conn:
         rows = conn.execute(
             """
@@ -3168,9 +3335,9 @@ def list_feed_items(db_path: Path, profile_id: int, limit: int) -> list[FeedEntr
             FROM feed_items
             WHERE profile_id = ?
             ORDER BY discovered_at DESC, id ASC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (profile_id, limit),
+            (profile_id, limit, offset),
         ).fetchall()
     return [
         FeedEntry(
@@ -3356,6 +3523,9 @@ def profile_from_row(row: sqlite3.Row) -> StoredProfile:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         item_count=row["item_count"],
+        cron_expression=row["cron_expression"],
+        schedule_timezone=row["schedule_timezone"],
+        priority=row["priority"],
     )
 
 
@@ -3825,7 +3995,7 @@ def humanize_datetime(value: str | datetime, timezone_name: str = "UTC") -> str:
 def humanize_next_refresh(profile: StoredProfile, timezone_name: str = "UTC") -> str:
     if not profile.active:
         return "Disabled"
-    if profile.refresh_interval_minutes == 0:
+    if profile.refresh_interval_minutes == 0 and not profile.cron_expression:
         return "Manual only"
     next_refresh_at = get_next_refresh_at(profile)
     if next_refresh_at is None:
@@ -3872,3 +4042,38 @@ def highlight_xml_line(line: str) -> str:
 
 
 app = None
+
+
+def validate_cron(raw: str) -> str:
+    expression = raw.strip()
+    if expression:
+        if len(expression.split()) != 5 or not croniter.is_valid(expression):
+            raise ValueError("Cron schedule needs five valid fields: minute hour day month weekday.")
+        try:
+            croniter(expression, datetime.now(timezone.utc)).get_next(datetime)
+        except ValueError as exc:
+            raise ValueError("Cron schedule has no reachable run date.") from exc
+    return expression
+
+
+def parse_priority(raw: str) -> int:
+    try:
+        value = int(raw)
+    except (ValueError, TypeError):
+        raise ValueError("Priority must be an integer from 0 to 100.")
+    if not 0 <= value <= 100:
+        raise ValueError("Priority must be an integer from 0 to 100.")
+    return value
+
+
+def pagination_page(total: int) -> int:
+    return min(max(1, parse_int_or_default(request.args.get("page", "1"), 1)), max(1, (total + 24) // 25))
+
+
+def refresh_result_message(changes: dict[str, int]) -> str:
+    parts = []
+    for key, label in (("new_items", "new"), ("updated_items", "updated")):
+        count = changes[key]
+        if count:
+            parts.append(f"{count} {label} {'item' if count == 1 else 'items'}")
+    return "Refresh complete: " + ", ".join(parts) + "." if parts else "Already up to date."

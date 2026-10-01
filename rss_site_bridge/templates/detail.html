@@ -9,12 +9,12 @@
     <p><a class="link-text" href="{{ profile.source_url }}">{{ profile.source_url }}</a></p>
   </div>
   <div class="topbar-actions">
-    <a class="btn btn-secondary" href="/">Back to dashboard</a>
+    <a class="btn btn-secondary" href="/feeds">Back to dashboard</a>
     <form class="inline-form" action="/profiles/{{ profile.id }}/toggle-active" method="post">
       <button class="btn btn-secondary" type="submit">{{ 'Disable feed' if profile.active else 'Enable feed' }}</button>
     </form>
     {% if profile.active %}
-    <form class="inline-form" action="/profiles/{{ profile.id }}/refresh" method="post">
+    <form class="inline-form" action="/profiles/{{ profile.id }}/refresh" method="post" data-async-refresh>
       <button class="btn btn-primary" type="submit">Refresh</button>
     </form>
     {% endif %}
@@ -48,7 +48,7 @@
         </div>
         <div class="metric-card">
           <div class="metric-label">Refresh interval</div>
-          <div class="metric-value">{{ profile.refresh_interval_minutes }} min</div>
+          <div class="metric-value">{{ profile.cron_expression or (profile.refresh_interval_minutes|string + ' min') }}</div>
         </div>
         <div class="metric-card">
           <div class="metric-label">Last refreshed</div>
@@ -89,11 +89,12 @@
           <h2>Latest topics</h2>
           <p>Topic links open in a new tab.</p>
         </div>
-        <form class="inline-form" action="/profiles/{{ profile.id }}/purge" method="post">
+        <form class="inline-form" action="/profiles/{{ profile.id }}/purge" method="post" data-confirm="Purge all stored entries from this feed? This cannot be undone. The feed settings will be kept.">
           <button class="btn btn-danger" type="submit">Purge entries</button>
         </form>
       </div>
 
+      <p>{{ profile.item_count }} stored items · Page {{ page }} of {{ pages }}</p>
       {% if items %}
       <div class="list-stack">
         {% for item in items %}
@@ -106,7 +107,7 @@
             <span>{{ item.published_at | human_datetime }}</span>
             <div class="item-actions">
               <a class="link-text" href="{{ item.link }}" target="_blank" rel="noreferrer">Open topic</a>
-              <a class="danger-link" href="/profiles/{{ profile.id }}/items/{{ item.id }}/safe">Open safely</a>
+              <a class="danger-link" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=item.id, return_to=request.full_path.rstrip('?')) }}">Open safely</a>
             </div>
           </div>
         </article>
@@ -115,10 +116,14 @@
       {% else %}
       <div class="empty-state">No stored items yet. Refresh the feed after validating the selectors.</div>
       {% endif %}
+      <nav class="button-row pagination-actions" aria-label="Entry pages">
+      {% if page > 1 %}<a class="btn btn-secondary" href="?page={{ page - 1 }}">Previous</a>{% endif %}
+      {% if page < pages %}<a class="btn btn-secondary" href="?page={{ page + 1 }}">Next</a>{% endif %}
+      </nav>
     </section>
   </div>
 
-  <section class="surface section">
+  <section class="surface section feed-settings-panel" aria-label="Feed settings">
     <div class="section-head">
       <div>
         <div class="section-kicker">Settings</div>
@@ -127,7 +132,12 @@
       </div>
     </div>
 
-    <form action="/profiles/{{ profile.id }}/edit" method="post" data-loading-form data-preview-form>
+      <div class="form-actions feed-settings-actions">
+        <button class="btn btn-secondary" type="submit" form="feed-settings-form" formaction="/profiles/{{ profile.id }}" formmethod="get" data-loading-label="Running preview" data-preview-url="/profiles/{{ profile.id }}/preview" data-preview-stream-url="/profiles/{{ profile.id }}/preview/stream" data-preview-target="detail-preview">Preview changes</button>
+        <button class="btn btn-primary" type="submit" form="feed-settings-form">Save changes</button>
+      </div>
+    <div class="feed-settings-scroll" tabindex="0" aria-label="Scrollable feed settings">
+    <form id="feed-settings-form" action="/profiles/{{ profile.id }}/edit" method="post" data-loading-form data-preview-form>
       <input type="hidden" name="preview" value="1">
       <div class="field">
         <label for="edit_feed_title">Feed name</label>
@@ -149,10 +159,12 @@
         <label for="edit_link_selector">Link selector</label>
         <input id="edit_link_selector" name="link_selector" value="{{ edit_form.get('link_selector', profile.link_selector) }}" required>
       </div>
+<div class="field-hint">Use CSS such as <code>a:nth-child(2)</code> or <code>a:nth-of-type(2)</code>. Use <code>:scope</code> for the item itself. Traverse with <code>&gt;&gt; parent</code>: <code>.title &gt;&gt; parent &gt;&gt; a</code>, or <code>:scope &gt;&gt; parent</code>. Repeat parent steps to climb further.</div>
       <div class="field">
         <label for="edit_summary_selector">Summary selector</label>
         <input id="edit_summary_selector" name="summary_selector" value="{{ edit_form.get('summary_selector', profile.summary_selector) }}">
       </div>
+      <details class="feed-settings-advanced"><summary>Include and exclude filters</summary>
       <div class="field">
         <label for="edit_filter_rules">Include filters</label>
         <textarea id="edit_filter_rules" name="filter_rules" placeholder="(alpha OR beta OR gamma) AND premium&#10;build-2?&#10;&quot;release candidate&quot; AND stable">{{ edit_form.get('filter_rules', profile.filter_rules) }}</textarea>
@@ -163,15 +175,20 @@
         <textarea id="edit_exclude_filter_rules" name="exclude_filter_rules" placeholder="draft OR preview&#10;*beta*&#10;&quot;sample item&quot;">{{ edit_form.get('exclude_filter_rules', profile.exclude_filter_rules) }}</textarea>
         <div class="field-hint">Optional. Matching titles are removed after include filters are applied.</div>
       </div>
+      </details>
       <div class="field">
         <label for="edit_max_items">Max items</label>
         <input id="edit_max_items" name="max_items" type="number" min="1" max="100" value="{{ edit_form.get('max_items', profile.max_items) }}" required>
       </div>
+      <details class="feed-settings-advanced"><summary>Schedule, priority and fetching</summary>
       <div class="field">
         <label for="edit_refresh_interval_minutes">Refresh interval (minutes)</label>
         <input id="edit_refresh_interval_minutes" name="refresh_interval_minutes" type="number" min="0" max="1440" value="{{ edit_form.get('refresh_interval_minutes', profile.refresh_interval_minutes) }}" required>
         <div class="field-hint">Set to <code>0</code> to disable automatic refresh. The feed will refresh only when you trigger it manually.</div>
       </div>
+<div class="field"><label>Cron schedule (optional)</label><input name="cron_expression" value="{{ edit_form.get('cron_expression', profile.cron_expression) }}" placeholder="0 */2 * * *"><div class="field-hint">minute hour day month weekday. Example: <code>0 */2 * * *</code> runs every two hours on the hour. Overrides the interval; manual refresh does not shift scheduled times. Leave blank to use the interval.</div></div>
+ <div class="field"><label>Schedule timezone</label><input name="schedule_timezone" value="{{ edit_form.get('schedule_timezone', profile.schedule_timezone) }}" placeholder="America/Chicago" required></div>
+ <div class="field"><label>Feed priority</label><input name="priority" type="number" min="0" max="100" value="{{ edit_form.get('priority', profile.priority) }}" required><div class="field-hint">Higher values appear first when sorting the timeline by priority.</div></div>
       <div class="field">
         <label for="edit_fetch_mode">Fetch mode</label>
         <select id="edit_fetch_mode" name="fetch_mode">
@@ -180,6 +197,7 @@
         </select>
       </div>
 
+      </details>
       {% if smtp_enabled %}
       <div class="field">
         <label>Refresh notifications</label>
@@ -204,10 +222,6 @@
       </div>
       {% endif %}
 
-      <div class="form-actions">
-        <button class="btn btn-secondary" type="submit" formaction="/profiles/{{ profile.id }}" formmethod="get" data-loading-label="Running preview" data-preview-url="/profiles/{{ profile.id }}/preview" data-preview-stream-url="/profiles/{{ profile.id }}/preview/stream" data-preview-target="detail-preview">Preview changes</button>
-        <button class="btn btn-primary" type="submit">Save changes</button>
-      </div>
     </form>
 
     <div class="loading-note" data-loading-note>
@@ -228,7 +242,9 @@
     <p class="error-text">{{ edit_error }}</p>
     {% endif %}
 
-    <section style="margin-top:18px;" data-preview-panel="detail-preview">
+    <details class="feed-preview" data-preview-panel="detail-preview" {% if preview or preview_error %}open{% endif %}>
+      <summary>Extraction preview</summary>
+      <section class="feed-preview-content">
       <div class="section-head" style="margin-bottom:12px;">
         <div>
           <div class="section-kicker">Preview</div>
@@ -253,13 +269,61 @@
       <div class="empty-state" data-preview-empty {% if preview or preview_error %}hidden{% endif %}>Run a preview to inspect extracted titles and links before saving.</div>
     </section>
 
+    </details>
+    <details class="feed-settings-advanced">
+      <summary>Delete feed</summary>
     <div class="notice">
       <strong>Delete feed</strong>
       <p>Removing this feed also deletes all stored items.</p>
-      <form class="inline-form" action="/profiles/{{ profile.id }}/delete" method="post" style="margin-top:12px;" onsubmit="return window.confirm('Delete this feed and all stored items?');">
+      <form class="inline-form" action="/profiles/{{ profile.id }}/delete" method="post" style="margin-top:12px;" data-confirm="Delete this feed and all stored items? This cannot be undone.">
         <button class="btn btn-danger" type="submit">Delete feed</button>
       </form>
     </div>
+    </details>
+    </div>
+
   </section>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+ const settingsPanel = document.querySelector('.feed-settings-panel');
+ const fitSettingsPanel = () => {
+   const viewportHeight = window.visualViewport?.height || window.innerHeight;
+   const top = Math.max(20, settingsPanel.getBoundingClientRect().top);
+   settingsPanel.style.setProperty('--settings-available-height', `${Math.max(200, viewportHeight - top - 20)}px`);
+ };
+ fitSettingsPanel();
+ window.addEventListener('resize', fitSettingsPanel);
+ window.addEventListener('scroll', fitSettingsPanel, {passive: true});
+ window.visualViewport?.addEventListener('resize', fitSettingsPanel);
+ new ResizeObserver(fitSettingsPanel).observe(document.querySelector('.topbar'));
+ document.getElementById('feed-settings-form').addEventListener('submit', event => {
+   if (!event.submitter?.dataset.previewTarget) return;
+   const preview = document.querySelector('[data-preview-panel="detail-preview"]');
+   preview.open = true;
+   preview.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+ });
+ document.querySelector('[data-async-refresh]')?.addEventListener('submit', async event => {
+   event.preventDefault();
+   const form = event.currentTarget, button = form.querySelector('button');
+   button.disabled = true;
+   button.classList.add('refresh-pending');
+   button.setAttribute('aria-busy', 'true');
+   window.showRefreshToast('Fetching feed…', 'progress');
+   try {
+     const response = await fetch(form.action, {method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'}});
+     const payload = await response.json();
+     if (!response.ok || payload.status === 'error') throw new Error(payload.error || 'Refresh failed.');
+     const updated = await fetch(window.location.href);
+     if (!updated.ok) throw new Error('Feed refreshed, but the display could not be updated.');
+     const doc = new DOMParser().parseFromString(await updated.text(), 'text/html');
+     const target = document.querySelector('.compose-grid > .list-stack');
+     target.replaceChildren(...doc.querySelector('.compose-grid > .list-stack').childNodes);
+     window.showRefreshToast(payload.message);
+   } catch (error) { window.showRefreshToast(error.message, 'error'); }
+   finally { button.disabled = false; button.classList.remove('refresh-pending'); button.removeAttribute('aria-busy'); }
+ });
+</script>
 {% endblock %}

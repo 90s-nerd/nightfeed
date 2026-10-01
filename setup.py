@@ -8,12 +8,14 @@ setup(
     python_requires=">=3.9",
     packages=find_packages(include=["rss_site_bridge", "rss_site_bridge.*"]),
     include_package_data=True,
-    package_data={"rss_site_bridge": ["templates/*.html"]},
+    package_data={"rss_site_bridge": ["templates/*.html", "static/*.svg"]},
     install_requires=[
         "beautifulsoup4>=4.12.3",
         "Flask>=3.1.0",
         "gunicorn>=23.0.0",
         "tzdata>=2025.2",
+        "croniter>=6.0.0",
+        "cryptography>=43.0.0",
     ],
     extras_require={
         "browser": ["playwright>=1.53.0"],

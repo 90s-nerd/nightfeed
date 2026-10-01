@@ -9,7 +9,7 @@
     <p>Preview selectors first, then save the feed when the extraction looks correct.</p>
   </div>
   <div class="topbar-actions">
-    <a class="btn btn-secondary" href="/">Back to dashboard</a>
+    <a class="btn btn-secondary" href="/feeds">Back to dashboard</a>
   </div>
 </header>
 {% endblock %}
@@ -48,6 +48,7 @@
         <label for="link_selector">Link selector</label>
         <input id="link_selector" name="link_selector" value="{{ form.link_selector }}" required>
       </div>
+<div class="field-hint">Use CSS such as <code>a:nth-child(2)</code> or <code>a:nth-of-type(2)</code>. Use <code>:scope</code> for the item itself. Traverse with <code>&gt;&gt; parent</code>: <code>.title &gt;&gt; parent &gt;&gt; a</code>, or <code>:scope &gt;&gt; parent</code>. Repeat parent steps to climb further.</div>
       <div class="field">
         <label for="summary_selector">Summary selector</label>
         <input id="summary_selector" name="summary_selector" value="{{ form.summary_selector }}">
@@ -71,6 +72,9 @@
         <input id="refresh_interval_minutes" name="refresh_interval_minutes" type="number" min="0" max="1440" value="{{ form.refresh_interval_minutes }}" required>
         <div class="field-hint">Set to <code>0</code> to disable automatic refresh. The feed will refresh only when you trigger it manually.</div>
       </div>
+<div class="field"><label>Cron schedule (optional)</label><input name="cron_expression" value="{{ form.get('cron_expression', '') }}" placeholder="0 */2 * * *"><div class="field-hint">minute hour day month weekday. Example: <code>0 */2 * * *</code> runs every two hours on the hour. Overrides the interval; manual refresh does not shift scheduled times. Leave blank to use the interval.</div></div>
+ <div class="field"><label>Schedule timezone</label><input name="schedule_timezone" value="{{ form.get('schedule_timezone', 'UTC') }}" placeholder="America/Chicago" required></div>
+ <div class="field"><label>Feed priority</label><input name="priority" type="number" min="0" max="100" value="{{ form.get('priority', '0') }}" required><div class="field-hint">Higher values appear first when sorting the timeline by priority.</div></div>
       <div class="field">
         <label for="fetch_mode">Fetch mode</label>
         <select id="fetch_mode" name="fetch_mode">
