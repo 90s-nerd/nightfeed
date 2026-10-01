@@ -8,7 +8,7 @@ setup(
     python_requires=">=3.9",
     packages=find_packages(include=["rss_site_bridge", "rss_site_bridge.*"]),
     include_package_data=True,
-    package_data={"rss_site_bridge": ["templates/*.html"]},
+    package_data={"rss_site_bridge": ["templates/*.html", "static/*.svg"]},
     install_requires=[
         "beautifulsoup4>=4.12.3",
         "Flask>=3.1.0",

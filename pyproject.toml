@@ -24,7 +24,7 @@ include-package-data = true
 include = ["rss_site_bridge*"]
 
 [tool.setuptools.package-data]
-rss_site_bridge = ["templates/*.html"]
+rss_site_bridge = ["templates/*.html", "static/*.svg"]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel>=0.43.0"]

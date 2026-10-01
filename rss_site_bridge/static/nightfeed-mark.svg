@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="8" y1="4" x2="56" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#253247"/><stop offset="1" stop-color="#121A28"/>
+    </linearGradient>
+    <linearGradient id="moon" x1="13" y1="15" x2="43" y2="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFC084"/><stop offset="1" stop-color="#F58242"/>
+    </linearGradient>
+    <mask id="crescent">
+      <rect width="64" height="64" fill="black"/>
+      <circle cx="29" cy="30" r="18" fill="white"/>
+      <circle cx="37" cy="22" r="18" fill="black"/>
+    </mask>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="19" fill="url(#tile)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="18.5" stroke="#FFFFFF" stroke-opacity=".12"/>
+  <circle cx="29" cy="30" r="18" fill="url(#moon)" mask="url(#crescent)"/>
+  <circle cx="31" cy="36" r="2.5" fill="#FFF2E2"/>
+  <path d="M31 28a8 8 0 0 1 8 8M31 21a15 15 0 0 1 15 15" stroke="#FFF2E2" stroke-width="3.5" stroke-linecap="round"/>
+</svg>
