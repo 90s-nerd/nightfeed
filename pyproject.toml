@@ -1,6 +1,6 @@
 [project]
 name = "nightfeed"
-version = "0.4.1"
+version = "0.4.2"
 description = "Save site extraction profiles and publish RSS feeds from topic listing pages."
 requires-python = ">=3.9"
 dependencies = [

@@ -154,6 +154,50 @@ document.addEventListener('DOMContentLoaded', () => {
       let timer, controller, generation = 0;
       const results = document.querySelector('[data-timeline-results]');
       const status = document.querySelector('[data-search-status]');
+      const input = form.querySelector('[name=q]');
+      const clear = form.querySelector('.search-clear');
+      const settings = form.querySelector('.search-settings');
+      const trigger = settings.querySelector('summary');
+      const dialog = document.createElement('dialog');
+      dialog.className = 'search-settings-dialog'; dialog.id = 'search-settings-dialog';
+      dialog.setAttribute('aria-labelledby', 'search-settings-title');
+      dialog.append(settings.querySelector('.search-settings-panel')); form.append(dialog);
+      trigger.setAttribute('aria-haspopup', 'dialog'); trigger.setAttribute('aria-controls', dialog.id);
+      const mobileSettings = matchMedia('(max-width: 767px)');
+      let restoreSettingsFocus = true;
+      const closeSearchSettings = (restore = true) => {
+        restoreSettingsFocus = restore;
+        dialog.close();
+      };
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.addEventListener('click', event => {
+        event.preventDefault();
+        if (dialog.open) { closeSearchSettings(); return; }
+        restoreSettingsFocus = true;
+        if (mobileSettings.matches) dialog.showModal(); else dialog.show();
+        trigger.setAttribute('aria-expanded', 'true');
+      });
+      const closeSettings = dialog.querySelector('.search-settings-close');
+      closeSettings.hidden = false;
+      closeSettings.addEventListener('click', () => closeSearchSettings());
+      dialog.addEventListener('close', () => {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreSettingsFocus) trigger.focus();
+      });
+      dialog.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeSearchSettings(); }
+      });
+      document.addEventListener('pointerdown', event => {
+        if (dialog.open && !mobileSettings.matches && !dialog.contains(event.target) && !trigger.contains(event.target)) closeSearchSettings(false);
+      });
+      dialog.addEventListener('focusout', () => setTimeout(() => {
+        if (dialog.open && !mobileSettings.matches && !dialog.contains(document.activeElement) && document.activeElement !== trigger) closeSearchSettings(false);
+      }, 0));
+      mobileSettings.addEventListener('change', () => { if (dialog.open) closeSearchSettings(); });
+      dialog.addEventListener('click', event => {
+        const bounds = dialog.getBoundingClientRect();
+        if (event.target === dialog && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) closeSearchSettings();
+      });
       const cancel = () => {
         clearTimeout(timer);
         controller?.abort();
@@ -163,8 +207,18 @@ document.addEventListener('DOMContentLoaded', () => {
       };
       const updateFeedLabel = () => {
         const count = form.querySelectorAll('[name=feed]:checked').length;
-        form.querySelector('summary').textContent = `Filter by feed${count ? ` · ${count} selected` : ''}`;
+        const active = count > 0 || form.querySelector('[name=sort]').value !== 'recent';
+        form.querySelector('.search-filter-dot').hidden = !active;
+        trigger.setAttribute('aria-label', `Search settings${active ? ', filters active' : ''}`);
+        clear.hidden = !input.value && !active;
       };
+      updateFeedLabel();
+      clear.addEventListener('click', () => {
+        input.value = '';
+        form.querySelector('[name=sort]').value = 'recent';
+        form.querySelectorAll('[name=feed]').forEach(input => { input.checked = false; });
+        input.focus(); form.requestSubmit();
+      });
       const load = async (url, historyMode = 'push') => {
         cancel();
         const current = generation;
@@ -199,6 +253,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const isTextInput = target => target.matches('input[type=search], input[type=text], textarea');
       form.addEventListener('input', event => {
         if (!isTextInput(event.target)) return;
+        updateFeedLabel();
         cancel();
         if (!event.isComposing) apply();
       });
@@ -222,14 +277,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const link = event.target.closest('.pagination-actions a');
         if (!link || !plainClick(event)) return;
         event.preventDefault(); load(new URL(link.href));
-      });
-      form.querySelector('.search-reset').addEventListener('click', event => {
-        if (!plainClick(event)) return;
-        event.preventDefault();
-        form.querySelector('[name=q]').value = '';
-        form.querySelector('[name=sort]').value = 'recent';
-        form.querySelectorAll('[name=feed]').forEach(input => { input.checked = false; });
-        updateFeedLabel(); load(new URL(event.currentTarget.href));
       });
       window.addEventListener('popstate', () => {
         const url = new URL(location.href);
