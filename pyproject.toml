@@ -1,6 +1,6 @@
 [project]
 name = "nightfeed"
-version = "0.1.0"
+version = "0.4.0"
 description = "Save site extraction profiles and publish RSS feeds from topic listing pages."
 requires-python = ">=3.9"
 dependencies = [
@@ -24,7 +24,7 @@ include-package-data = true
 include = ["rss_site_bridge*"]
 
 [tool.setuptools.package-data]
-rss_site_bridge = ["templates/*.html", "static/*.svg"]
+rss_site_bridge = ["templates/*.html", "templates/components/*.html", "static/*.svg", "static/*.css", "static/*.js"]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel>=0.43.0"]
