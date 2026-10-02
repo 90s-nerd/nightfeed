@@ -802,6 +802,21 @@ class AppTestCase(unittest.TestCase):
             self.assertEqual("success", notifications[0].category)
             self.assertEqual("info", notifications[0].severity)
             self.assertEqual(1, count_unread_notifications(db_path))
+            self.assertEqual("Refresh complete: 1 new entry.", notifications[0].message)
+
+            with patch("rss_site_bridge.app.extract_feed_entries", return_value=entries):
+                refresh_profile(db_path, profile.id)
+            notifications = list_notifications(db_path, unread_only=False)
+            self.assertEqual(1, sum(n.message == "No new entries. This feed is up to date." for n in notifications))
+
+            updated_entries = [FeedEntry(
+                title="Topic A revised", link=entries[0].link, summary="Updated summary",
+                published_at=entries[0].published_at,
+            )]
+            with patch("rss_site_bridge.app.extract_feed_entries", return_value=updated_entries):
+                refresh_profile(db_path, profile.id)
+            notifications = list_notifications(db_path, unread_only=False)
+            self.assertEqual(1, sum(n.message == "Refresh complete: 1 updated entry." for n in notifications))
 
     def test_failed_refresh_email_is_gated_by_category(self):
         with TemporaryDirectory() as tmpdir:
@@ -1346,10 +1361,10 @@ class AppTestCase(unittest.TestCase):
             )
 
             client = app.test_client()
-            response = client.get(f"/profiles/{profile.id}")
+            response = client.get(f"/profiles/{profile.id}?view=rss")
 
             self.assertEqual(200, response.status_code)
-            self.assertIn(b"Overview", response.data)
+            self.assertIn(b"Permanent feed URL", response.data)
             self.assertIn(f"http://localhost/feeds/{profile.feed_token}.xml".encode(), response.data)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
@@ -1381,7 +1396,7 @@ class AppTestCase(unittest.TestCase):
 
             client = app.test_client()
             response = client.get(
-                f"/profiles/{profile.id}",
+                f"/profiles/{profile.id}?view=rss",
                 headers={
                     "X-Forwarded-Proto": "https",
                     "X-Forwarded-Host": "rss.example.com",
@@ -2126,7 +2141,7 @@ class AppTestCase(unittest.TestCase):
                 },
             )
 
-            response = client.get(f"/profiles/{profile.id}")
+            response = client.get(f"/profiles/{profile.id}?view=rss")
 
             self.assertEqual(200, response.status_code)
             self.assertIn(f"https://rss.example.com/feeds/{profile.feed_token}.xml".encode(), response.data)
@@ -2210,10 +2225,16 @@ class AppTestCase(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             self.assertIn(b"Refresh failed", response.data)
             self.assertIn(b"Selector or extraction problems", response.data)
+            self.assertNotIn(b"https://example.com/forum", response.data)
+            self.assertIn(b'class="notification-dot"', response.data)
+            self.assertIn(b'class="notification-link-button danger-link"', response.data)
 
             read_response = client.post(f"/notifications/{notification.id}/read", data={"status": "all"})
             self.assertEqual(302, read_response.status_code)
             self.assertEqual(0, count_unread_notifications(db_path))
+
+            read_page = client.get("/notifications?status=all")
+            self.assertNotIn(b'class="notification-dot"', read_page.data)
 
             delete_response = client.post(f"/notifications/{notification.id}/delete", data={"status": "all"})
             self.assertEqual(302, delete_response.status_code)
@@ -2406,7 +2427,7 @@ class AppTestCase(unittest.TestCase):
             with patch("rss_site_bridge.app.create_safe_browser_session", return_value=safe_session):
                 response = client.get(f"/profiles/{profile.id}/items/{item_id}/safe")
 
-            self.assertIn(b'class="danger-link"', detail.data)
+            self.assertIn(b'class="safe-link"', detail.data)
             self.assertEqual(200, response.status_code)
             self.assertIn("img-src 'self' data: blob:", response.headers["Content-Security-Policy"])
             self.assertIn(b"Interactive safe browser viewport", response.data)
@@ -2418,7 +2439,9 @@ class AppTestCase(unittest.TestCase):
             self.assertIn(b"name.title = fullName", response.data)
             self.assertIn(b"queueScrollDelta(event.deltaY, event.deltaY, x, y)", response.data)
             self.assertIn(b"flushScrollQueue", response.data)
-            self.assertIn(b'touch-action: none', response.data)
+            shared_styles = client.get('/static/nightfeed-legacy.css')
+            self.assertEqual(shared_styles.status_code, 200)
+            self.assertIn(b'touch-action: none', shared_styles.data)
             self.assertIn(b'screen.addEventListener("pointermove"', response.data)
             self.assertIn(b'queueScrollDelta(touchDelta * scale, touchDelta, x, y)', response.data)
             self.assertIn(b'suppressNextClick = true', response.data)
@@ -2433,12 +2456,11 @@ class AppTestCase(unittest.TestCase):
             self.assertIn(b'command("viewport", {mode: "mobile"})', response.data)
             self.assertIn(b'data-browser-viewport-mode="desktop"', response.data)
             self.assertIn(b'data-browser-viewport-mode="mobile"', response.data)
-            self.assertIn(b'data-mobile-nav-toggle', response.data)
-            self.assertIn(b'aria-controls="sidebar-menu"', response.data)
-            self.assertIn(b'data-mobile-nav-backdrop', response.data)
-            self.assertIn(b'setMobileNavOpen', response.data)
-            self.assertIn(b'@media (max-width: 390px)', response.data)
+            self.assertIn(b'focused-browser', response.data)
+            self.assertIn(b'Skip to content', response.data)
+            self.assertIn(b'@media (max-width: 390px)', shared_styles.data)
             self.assertIn("frame-src 'none'", response.headers["Content-Security-Policy"])
+            shared_styles.close()
 
             base = f"/profiles/{profile.id}/items/{item_id}/safe/{safe_session.id}"
             with patch("rss_site_bridge.app.get_safe_browser_session", return_value=safe_session):

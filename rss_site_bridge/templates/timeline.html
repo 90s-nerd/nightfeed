@@ -1,15 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Timeline · Nightfeed{% endblock %}
-{% block page_header %}<header class="topbar"><div class="page-title"><h1>Timeline</h1><p>Browse and search stored items across your feeds.</p></div><a class="btn btn-primary" href="/compose">Create feed</a></header>{% endblock %}
+{% block page_header %}<header class="topbar reading-column"><div class="page-title"><h1>Timeline</h1></div></header>{% endblock %}
 {% block content %}
-<section class="surface section">
-<form method="get">
-<div class="field"><label for="search">Search all items</label><input id="search" name="q" value="{{ query }}" placeholder="Search titles, summaries, and links"></div>
+<div class="reading-column">
+<section class="surface timeline-search">
+<form method="get" class="reading-filters" data-auto-search>
+<div class="field"><label for="search">Search Timeline</label><input type="search" id="search" name="q" value="{{ query }}" placeholder="Search titles, summaries, and links"></div>
 <div class="field"><label for="sort">Sort</label><select id="sort" name="sort">{% for key,label in [('recent','Newest first'),('oldest','Oldest first'),('priority','Feed priority'),('title','Title A–Z')] %}<option value="{{ key }}" {% if sort == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
-<fieldset class="feed-filter-group"><legend>Feeds (none selected means all)</legend><div class="feed-filter-options">{% for profile in profiles %}<label class="check-option"><input type="checkbox" name="feed" value="{{ profile.id }}" {% if profile.id in selected %}checked{% endif %}>{{ profile.feed_title }}</label>{% endfor %}</div></fieldset>
-<div class="form-actions filter-actions"><button class="btn btn-primary">Apply filters</button><a class="btn btn-secondary" href="/">Reset</a></div>
+<details {% if selected %}open{% endif %}><summary>Filter by feed {% if selected %}· {{ selected|length }} selected{% endif %}</summary><fieldset class="feed-filter-group"><legend>Feeds</legend><div class="feed-filter-options">{% for profile in profiles %}<label class="check-option"><input type="checkbox" name="feed" value="{{ profile.id }}" {% if profile.id in selected %}checked{% endif %}>{{ profile.feed_title }}</label>{% endfor %}</div></fieldset></details>
+<a class="search-reset" href="/">Reset</a><noscript><button class="btn btn-secondary">Search</button></noscript>
 </form></section>
 <section class="surface section" style="margin-top:20px"><p>{{ total }} items · Page {{ page }} of {{ pages }}</p><div class="list-stack">
-{% for item in items %}<article class="item-card"><div class="item-footer"><a href="/profiles/{{ item.profile_id }}">{{ item.feed_title }}</a><span>Priority {{ item.priority }} · {{ item.discovered_at | human_datetime }}</span></div><h3><a class="link-text" href="{{ item.link }}" target="_blank" rel="noreferrer">{{ item.title }}</a></h3>{% if item.summary %}<p class="meta">{{ item.summary }}</p>{% endif %}<a class="danger-link" href="{{ url_for('safe_topic_route', profile_id=item.profile_id, item_id=item.id, return_to=request.full_path.rstrip('?')) }}">Open safely</a></article>{% else %}<div class="empty-state">No items match. Try other filters or refresh a feed.</div>{% endfor %}</div>
+{% for item in items %}<article class="item-card"><div class="topic-heading"><h3><a class="link-text topic-link" href="{{ item.link }}" target="_blank" rel="noreferrer" title="{{ item.title }}" aria-label="{{ item.title }} (opens in a new tab)"><span class="topic-title">{{ item.title }}</span></a></h3><span class="topic-time">{{ item.discovered_at | human_datetime }}</span></div><div class="item-footer"><a class="feed-name-link" href="/profiles/{{ item.profile_id }}">{{ item.feed_title }}</a></div>{% if item.summary %}<p class="meta">{{ item.summary }}</p>{% endif %}<a class="safe-link" href="{{ url_for('safe_topic_route', profile_id=item.profile_id, item_id=item.id, return_to=request.full_path.rstrip('?')) }}">Open safely</a></article>{% else %}<div class="empty-state">{% if query or selected %}No matches. Try other filters or clear filters.{% else %}No items yet. Create a feed, then refresh it.{% endif %}</div>{% endfor %}</div>
 <nav class="button-row pagination-actions" aria-label="Timeline pages">{% if page > 1 %}<a class="btn btn-secondary" href="{{ page_url(page-1) }}">Previous</a>{% endif %}{% if page < pages %}<a class="btn btn-secondary" href="{{ page_url(page+1) }}">Next</a>{% endif %}</nav></section>
+</div>
 {% endblock %}

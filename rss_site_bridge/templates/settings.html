@@ -6,433 +6,50 @@
 <header class="topbar">
   <div class="page-title">
     <h1>Settings</h1>
-    <p>Timezone, feed URL behavior, and refresh notifications.</p>
+
   </div>
 </header>
 {% endblock %}
 
 {% block content %}
-<section class="surface section" style="margin-bottom:16px"><div class="section-head"><div><h2>Downloaders</h2><p>Configure destinations, file extensions, categories and custom send buttons.</p></div><a class="btn btn-secondary" href="/settings/downloaders">Manage downloaders</a></div></section>
-<style>
-  .settings-shell {
-    display: grid;
-    gap: 20px;
-  }
 
-  .settings-frame {
-    display: grid;
-    gap: 28px;
-    padding: 28px;
-  }
 
-  .settings-top {
-    display: grid;
-    grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
-    gap: 24px;
-    align-items: start;
-  }
 
-  .settings-headline {
-    display: grid;
-    gap: 12px;
-  }
+<section class="surface section appearance-panel" aria-labelledby="appearance-heading">
+  <h2 id="appearance-heading">Appearance</h2>
 
-  .settings-headline h2 {
-    margin: 0;
-    font-size: 1.8rem;
-    line-height: 1.05;
-    letter-spacing: -0.05em;
-  }
-
-  .settings-headline p {
-    margin: 0;
-    color: var(--muted);
-    max-width: 52ch;
-    line-height: 1.6;
-  }
-
-  .settings-summary {
-    display: grid;
-    gap: 10px;
-    padding: 16px 18px;
-    border-radius: 18px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
-    border: 1px solid rgba(255, 255, 255, 0.07);
-  }
-
-  .settings-summary-item {
-    display: grid;
-    gap: 3px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  }
-
-  .settings-summary-item:last-child {
-    padding-bottom: 0;
-    border-bottom: 0;
-  }
-
-  .settings-summary-item span {
-    color: var(--muted);
-    font-size: 0.76rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .settings-summary-item strong {
-    font-size: 0.96rem;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-  }
-
-  .settings-sections {
-    display: grid;
-    gap: 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .settings-section {
-    display: grid;
-    grid-template-columns: 220px minmax(0, 1fr);
-    gap: 22px;
-    padding: 24px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .settings-section:last-child {
-    border-bottom: 0;
-    padding-bottom: 0;
-  }
-
-  .settings-section-wide {
-    grid-template-columns: 1fr;
-    gap: 18px;
-  }
-
-  .settings-meta {
-    display: grid;
-    gap: 8px;
-    align-content: start;
-  }
-
-  .settings-meta h3 {
-    margin: 0;
-    font-size: 1.02rem;
-    letter-spacing: -0.02em;
-  }
-
-  .settings-meta p {
-    margin: 0;
-    color: var(--muted);
-    line-height: 1.58;
-  }
-
-  .settings-fields {
-    display: grid;
-    gap: 14px;
-  }
-
-  .settings-fields-two {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0 14px;
-  }
-
-  .settings-toggle-row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 16px;
-    align-items: center;
-    padding: 16px 18px;
-    border-radius: 18px;
-    background:
-      radial-gradient(circle at top left, rgba(242, 139, 75, 0.14), transparent 35%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.02));
-    border: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .settings-toggle-control {
-    appearance: none;
-    position: relative;
-    width: 58px;
-    height: 34px;
-    border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    background: rgba(255, 255, 255, 0.08);
-    cursor: pointer;
-    transition: background 150ms ease, border-color 150ms ease;
-  }
-
-  .settings-toggle-control::after {
-    content: "";
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    background: #ffffff;
-    box-shadow: 0 10px 18px rgba(0, 0, 0, 0.22);
-    transition: transform 150ms ease;
-  }
-
-  .settings-toggle-control:checked {
-    background: linear-gradient(135deg, var(--accent), #ffb173);
-    border-color: rgba(242, 139, 75, 0.4);
-  }
-
-  .settings-toggle-control:checked::after {
-    transform: translateX(24px);
-  }
-
-  .settings-toggle-copy {
-    display: grid;
-    gap: 4px;
-  }
-
-  .settings-toggle-copy strong {
-    font-size: 0.98rem;
-    letter-spacing: -0.02em;
-  }
-
-  .settings-toggle-copy span {
-    color: var(--muted);
-    line-height: 1.55;
-  }
-
-  .settings-pill {
-    display: inline-flex;
-    align-items: center;
-    min-height: 30px;
-    padding: 0 12px;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .settings-pill.on {
-    color: #ffd9c3;
-    background: rgba(242, 139, 75, 0.12);
-    border-color: rgba(242, 139, 75, 0.24);
-  }
-
-  .settings-pill.off {
-    color: var(--muted);
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .settings-smtp {
-    display: grid;
-    gap: 18px;
-    padding-top: 18px;
-  }
-
-  .settings-smtp-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px 24px;
-  }
-
-  .settings-smtp-grid .field {
-    margin-bottom: 0;
-  }
-
-  .settings-inline-note {
-    margin: -2px 0 0;
-    color: var(--muted);
-    line-height: 1.55;
-  }
-
-  .settings-inline-note code {
-    color: var(--text);
-  }
-
-  .settings-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-    padding-top: 6px;
-  }
-
-  .settings-actions .btn {
-    min-width: 168px;
-    min-height: 44px;
-    padding: 0 16px;
-    border-radius: 14px;
-  }
-
-  .settings-tls-row {
-    display: grid;
-    gap: 10px;
-    justify-items: start;
-  }
-
-  .settings-notices {
-    display: grid;
-    gap: 12px;
-  }
-
-  .settings-note {
-    padding: 14px 16px;
-    border-radius: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .settings-note strong {
-    display: block;
-    margin-bottom: 4px;
-  }
-
-  .settings-note p {
-    margin: 0;
-    color: var(--muted);
-    line-height: 1.55;
-  }
-
-  .settings-note.success {
-    background: rgba(63, 196, 138, 0.1);
-    border-color: rgba(63, 196, 138, 0.2);
-  }
-
-  .settings-note.info {
-    background: rgba(59, 130, 246, 0.08);
-    border-color: rgba(59, 130, 246, 0.18);
-  }
-
-  @media (max-width: 1080px) {
-    .settings-top,
-    .settings-section {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  @media (max-width: 760px) {
-    .settings-shell { gap: 14px; }
-
-    .settings-frame {
-      padding: 16px;
-      gap: 20px;
-    }
-
-    .settings-top { gap: 18px; }
-
-    .settings-headline {
-      gap: 9px;
-    }
-
-    .settings-headline h2 {
-      font-size: 1.4rem;
-      line-height: 1.15;
-    }
-
-    .settings-headline p,
-    .settings-meta p {
-      line-height: 1.5;
-    }
-
-    .settings-summary {
-      padding: 14px;
-      border-radius: 15px;
-    }
-
-    .settings-section {
-      gap: 14px;
-      padding: 20px 0;
-    }
-
-    .settings-fields-two {
-      grid-template-columns: 1fr;
-    }
-
-    .settings-toggle-row {
-      grid-template-columns: 1fr;
-      gap: 12px;
-      padding: 14px;
-      border-radius: 15px;
-      justify-items: start;
-    }
-
-    .settings-smtp-grid {
-      grid-template-columns: 1fr;
-      gap: 14px;
-    }
-
-    .settings-actions {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      width: 100%;
-      gap: 8px;
-    }
-
-    .settings-actions .btn,
-    .settings-actions form,
-    .settings-actions form .btn {
-      width: 100%;
-      min-width: 0;
-    }
-  }
-
-  @media (max-width: 390px) {
-    .settings-actions { grid-template-columns: 1fr; }
-  }
-</style>
-
-<form action="/settings" method="post" class="settings-shell">
+  <div class="field"><div class="field-label"><label for="appearance">Color theme</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content" id="appearance-help">System follows your device appearance. This preference applies on this device.</div></details></div><select id="appearance" data-appearance aria-describedby="appearance-help"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+  <noscript>Enable JavaScript to save an appearance preference. Nightfeed follows your device appearance by default.</noscript>
+</section>
+<form action="/settings" method="post" class="settings-shell" data-dirty-form data-returned-draft="{{ 'true' if error or test_error or test_sent else 'false' }}">
   <section class="surface settings-frame">
-    <div class="settings-top">
-      <div class="settings-headline">
-        <div class="section-kicker">Application</div>
-        <h2>Control how Nightfeed looks outward and reports inward.</h2>
-        <p>Use a timezone for consistent timestamps, optionally publish feeds from a separate hostname, and turn on SMTP only when you want delivery emails after refreshes.</p>
-      </div>
-
-      <div class="settings-summary">
-        <div class="settings-summary-item">
-          <span>Timezone</span>
-          <strong>{{ settings.timezone_name }}</strong>
-        </div>
-        <div class="settings-summary-item">
-          <span>Public feed host</span>
-          <strong>{% if settings.public_base_url %}{{ settings.public_base_url }}{% else %}Current request host{% endif %}</strong>
-        </div>
-        <div class="settings-summary-item">
-          <span>SMTP state</span>
-          <strong>{% if settings.smtp_enabled %}Enabled{% else %}Disabled{% endif %}</strong>
-        </div>
-      </div>
-    </div>
-
+    {% if error or test_error %}<div class="editor-errors" data-form-error tabindex="-1" role="alert"><h2>Check your settings</h2><p>{{ error or test_error }}</p></div>{% endif %}
     <div class="settings-sections">
       <section class="settings-section">
         <div class="settings-meta">
-          <h3>Feed display</h3>
-          <p>These values affect timestamp rendering and the host shown in feed URLs.</p>
+          <h3>Scheduling and feed URLs</h3>
+
         </div>
 
         <div class="settings-fields">
           <div class="settings-fields-two">
             <div class="field">
-              <label for="timezone_name">Timezone</label>
+              <div class="field-label"><label for="timezone_name">Refresh schedule timezone</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content">Used for calendar schedules across all feeds. Displayed dates follow your device timezone.</div></details></div>
               <input id="timezone_name" name="timezone_name" value="{{ settings.timezone_name }}" placeholder="America/Chicago" required>
             </div>
             <div class="field">
-              <label for="public_base_url">Public base URL</label>
+              <div class="field-label"><label for="public_base_url">Public base URL</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content">Leave blank unless feeds should be shared from a different hostname.</div></details></div>
               <input id="public_base_url" name="public_base_url" value="{{ settings.public_base_url }}" placeholder="https://rss.example.com">
+
             </div>
           </div>
-          <div class="field-hint">Leave Public base URL blank unless feeds should be shared from a different hostname.</div>
         </div>
       </section>
 
       <section class="settings-section settings-section-wide">
         <div class="settings-meta">
           <h3>Refresh notifications</h3>
-          <p>SMTP notifications send refresh results and let you run a test message before saving if you need to verify credentials.</p>
+
         </div>
 
         <div class="settings-fields">
@@ -440,11 +57,8 @@
             <input class="settings-toggle-control" id="smtp_enabled" name="smtp_enabled" type="checkbox" value="1" {% if settings.smtp_enabled %}checked{% endif %}>
             <label class="settings-toggle-copy" for="smtp_enabled">
               <strong>Enable SMTP notifications</strong>
-              <span>Send an email after refresh success or failure, plus on-demand test emails from this page.</span>
+
             </label>
-            <div class="settings-pill {% if settings.smtp_enabled %}on{% else %}off{% endif %}" id="smtp-state-pill">
-              {% if settings.smtp_enabled %}SMTP enabled{% else %}SMTP disabled{% endif %}
-            </div>
           </div>
 
           <div class="settings-smtp" id="smtp-settings" {% if not settings.smtp_enabled %}style="display: none;"{% endif %}>
@@ -462,34 +76,27 @@
                 <input id="smtp_username" name="smtp_username" value="{{ settings.smtp_username }}" placeholder="alerts@example.com">
               </div>
               <div class="field">
-                <label for="smtp_password">SMTP password</label>
-                <input id="smtp_password" name="smtp_password" type="password" value="{{ settings.smtp_password if error or test_error else '' }}" placeholder="{% if settings.smtp_password and not error and not test_error %}Leave blank to keep saved password{% else %}App password or SMTP password{% endif %}">
+                <div class="field-label"><label for="smtp_password">SMTP password</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content">{% if settings.smtp_password and not error and not test_error %}A password is saved. Leave blank to keep it.{% else %}Enter your SMTP password or app password.{% endif %}</div></details></div>
+                <input id="smtp_password" name="smtp_password" type="password" autocomplete="new-password">
+
               </div>
               <div class="field">
                 <label for="smtp_to_email">To email</label>
                 <input id="smtp_to_email" name="smtp_to_email" value="{{ settings.smtp_to_email }}" placeholder="you@example.com">
               </div>
               <div class="field">
-                <label for="smtp_from_email">From email</label>
+                <div class="field-label"><label for="smtp_from_email">From email</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content">Use an email address or a named mailbox such as <code>Nightfeed &lt;noreply@example.com&gt;</code>.</div></details></div>
                 <input id="smtp_from_email" name="smtp_from_email" value="{{ settings.smtp_from_email }}" placeholder="Nightfeed &lt;noreply@example.com&gt;">
+
               </div>
             </div>
-
-            <p class="settings-inline-note">
-              {% if settings.smtp_password and not error and not test_error %}
-              A password is already saved. Leave the password field blank to keep it unchanged.
-              {% else %}
-              Passwords are stored locally so Nightfeed can send scheduled notifications.
-              {% endif %}
-              The sender can be either a plain address or a named mailbox such as <code>Nightfeed &lt;noreply@example.com&gt;</code>.
-            </p>
 
             <div class="settings-tls-row">
               <label for="smtp_use_tls" class="check-option">
                 <input id="smtp_use_tls" name="smtp_use_tls" type="checkbox" value="1" {% if settings.smtp_use_tls %}checked{% endif %}>
                 <span>Use STARTTLS</span>
               </label>
-              <div class="field-hint">Turn this on when your SMTP provider expects an upgraded TLS connection, which is common on port <code>587</code>.</div>
+              <details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content">Turn this on when your SMTP provider expects an upgraded TLS connection, which is common on port <code>587</code>.</div></details>
             </div>
           </div>
         </div>
@@ -515,7 +122,7 @@
     {% if saved %}
     <div class="settings-note success">
       <strong>Settings saved</strong>
-      <p>Nightfeed updated the current application defaults successfully.</p>
+
     </div>
     {% endif %}
 
@@ -526,30 +133,20 @@
     </div>
     {% endif %}
 
-    {% if test_error %}
-    <p class="error-text">{{ test_error }}</p>
-    {% endif %}
-
-    {% if error %}
-    <p class="error-text">{{ error }}</p>
-    {% endif %}
   </div>
 </form>
-
+<section class="surface section settings-downloaders"><div class="section-head"><div><h2>Downloaders</h2></div><a class="btn btn-secondary" href="/settings/downloaders">Manage downloaders</a></div></section>
+{% include 'components/unsaved_dialog.html' %}
 <script>
   const smtpToggle = document.getElementById("smtp_enabled");
   const smtpSettings = document.getElementById("smtp-settings");
   const sendTestEmailButton = document.getElementById("send-test-email-button");
-  const smtpStatePill = document.getElementById("smtp-state-pill");
 
-  if (smtpToggle && smtpSettings && sendTestEmailButton && smtpStatePill) {
+  if (smtpToggle && smtpSettings && sendTestEmailButton) {
     const syncSmtpVisibility = () => {
       const enabled = smtpToggle.checked;
       smtpSettings.style.display = enabled ? "" : "none";
       sendTestEmailButton.style.display = enabled ? "" : "none";
-      smtpStatePill.textContent = enabled ? "SMTP enabled" : "SMTP disabled";
-      smtpStatePill.classList.toggle("on", enabled);
-      smtpStatePill.classList.toggle("off", !enabled);
     };
 
     smtpToggle.addEventListener("change", syncSmtpVisibility);

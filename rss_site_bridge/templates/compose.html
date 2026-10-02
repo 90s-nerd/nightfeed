@@ -1,160 +1,17 @@
 {% extends "base.html" %}
-
 {% block title %}Create Feed · Nightfeed{% endblock %}
-
-{% block page_header %}
-<header class="topbar">
-  <div class="page-title">
-    <h1>Create Feed</h1>
-    <p>Preview selectors first, then save the feed when the extraction looks correct.</p>
-  </div>
-  <div class="topbar-actions">
-    <a class="btn btn-secondary" href="/feeds">Back to dashboard</a>
-  </div>
-</header>
-{% endblock %}
-
+{% block page_header %}<header class="topbar editor-column"><div class="page-title"><h1>Create Feed</h1></div><a class="btn btn-secondary" href="/feeds">Cancel</a></header>{% endblock %}
 {% block content %}
-<div class="compose-grid" style="grid-template-columns:minmax(0, 1.15fr) minmax(320px, 0.85fr);">
-  <section class="surface section" data-preview-panel="compose-preview">
-    <div class="section-head">
-      <div>
-        <div class="section-kicker">Composer</div>
-        <h2>New source profile</h2>
-        <p>Use HTTP mode first. Switch to browser mode only when the topic list is JavaScript-rendered.</p>
-      </div>
-    </div>
-
-    <form action="/compose" method="get" data-loading-form data-preview-form>
-      <input type="hidden" name="preview" value="1">
-
-      <div class="field">
-        <label for="feed_title">Feed name</label>
-        <input id="feed_title" name="feed_title" value="{{ form.feed_title }}" required>
-      </div>
-      <div class="field">
-        <label for="source_url">Source URL</label>
-        <input id="source_url" name="source_url" value="{{ form.source_url }}" placeholder="https://example.com/topics" required>
-      </div>
-      <div class="field">
-        <label for="item_selector">Item selector</label>
-        <input id="item_selector" name="item_selector" value="{{ form.item_selector }}" required>
-      </div>
-      <div class="field">
-        <label for="title_selector">Title selector</label>
-        <input id="title_selector" name="title_selector" value="{{ form.title_selector }}" required>
-      </div>
-      <div class="field">
-        <label for="link_selector">Link selector</label>
-        <input id="link_selector" name="link_selector" value="{{ form.link_selector }}" required>
-      </div>
-<div class="field-hint">Use CSS such as <code>a:nth-child(2)</code> or <code>a:nth-of-type(2)</code>. Use <code>:scope</code> for the item itself. Traverse with <code>&gt;&gt; parent</code>: <code>.title &gt;&gt; parent &gt;&gt; a</code>, or <code>:scope &gt;&gt; parent</code>. Repeat parent steps to climb further.</div>
-      <div class="field">
-        <label for="summary_selector">Summary selector</label>
-        <input id="summary_selector" name="summary_selector" value="{{ form.summary_selector }}">
-      </div>
-      <div class="field">
-        <label for="filter_rules">Include filters</label>
-        <textarea id="filter_rules" name="filter_rules" placeholder="(alpha OR beta OR gamma) AND premium&#10;build-2?&#10;&quot;release candidate&quot; AND stable">{{ form.filter_rules }}</textarea>
-        <div class="field-hint">Optional. One rule per line. Supports <code>AND</code>, <code>OR</code>, parentheses, quoted phrases, and wildcards.</div>
-      </div>
-      <div class="field">
-        <label for="exclude_filter_rules">Exclude filters</label>
-        <textarea id="exclude_filter_rules" name="exclude_filter_rules" placeholder="draft OR preview&#10;*beta*&#10;&quot;sample item&quot;">{{ form.exclude_filter_rules }}</textarea>
-        <div class="field-hint">Optional. Matching titles are removed after include filters are applied.</div>
-      </div>
-      <div class="field">
-        <label for="max_items">Max items</label>
-        <input id="max_items" name="max_items" type="number" min="1" max="100" value="{{ form.max_items }}" required>
-      </div>
-      <div class="field">
-        <label for="refresh_interval_minutes">Refresh interval (minutes)</label>
-        <input id="refresh_interval_minutes" name="refresh_interval_minutes" type="number" min="0" max="1440" value="{{ form.refresh_interval_minutes }}" required>
-        <div class="field-hint">Set to <code>0</code> to disable automatic refresh. The feed will refresh only when you trigger it manually.</div>
-      </div>
-<div class="field"><label>Cron schedule (optional)</label><input name="cron_expression" value="{{ form.get('cron_expression', '') }}" placeholder="0 */2 * * *"><div class="field-hint">minute hour day month weekday. Example: <code>0 */2 * * *</code> runs every two hours on the hour. Overrides the interval; manual refresh does not shift scheduled times. Leave blank to use the interval.</div></div>
- <div class="field"><label>Schedule timezone</label><input name="schedule_timezone" value="{{ form.get('schedule_timezone', 'UTC') }}" placeholder="America/Chicago" required></div>
- <div class="field"><label>Feed priority</label><input name="priority" type="number" min="0" max="100" value="{{ form.get('priority', '0') }}" required><div class="field-hint">Higher values appear first when sorting the timeline by priority.</div></div>
-      <div class="field">
-        <label for="fetch_mode">Fetch mode</label>
-        <select id="fetch_mode" name="fetch_mode">
-          <option value="http" {% if form.fetch_mode == "http" %}selected{% endif %}>HTTP only</option>
-          <option value="browser" {% if form.fetch_mode == "browser" %}selected{% endif %}>Browser</option>
-        </select>
-      </div>
-
-      {% if smtp_enabled %}
-      <div class="field">
-        <label>Refresh notifications</label>
-        <div class="field-hint">Failure notifications can be limited by category. All refreshes still appear in the app.</div>
-        <div class="check-stack">
-        <input type="hidden" name="notify_failure_categories_present" value="1">
-        <label class="check-option">
-          <input name="notify_on_success" type="checkbox" value="1" {% if form.get('notify_on_success') %}checked{% endif %}>
-          <span>Success notifications</span>
-        </label>
-        {% set selected_failure_categories = form.get('notify_failure_categories', '') %}
-        {% for category in failure_notification_categories %}
-        <label class="check-option">
-          <input name="notify_failure_categories" type="checkbox" value="{{ category }}" {% if category in selected_failure_categories %}checked{% endif %}>
-          <span class="check-copy">
-            <strong>{{ failure_notification_labels[category] }}</strong>
-            <span>{{ failure_notification_samples[category] }}</span>
-          </span>
-        </label>
-        {% endfor %}
-        </div>
-      </div>
-      {% endif %}
-
-      <div class="form-actions">
-        <button class="btn btn-secondary" type="submit" data-loading-label="Running preview" data-preview-url="/preview" data-preview-stream-url="/preview/stream" data-preview-target="compose-preview">Preview</button>
-        <button class="btn btn-primary" type="submit" formaction="/profiles" formmethod="post">Save feed</button>
-      </div>
-    </form>
-
-    <div class="loading-note" data-loading-note>
-      <div class="loading-label">
-        <span class="spinner" aria-hidden="true"></span>
-        Preview progress
-      </div>
-      <div class="loading-status">
-        <div>
-          <strong data-loading-title>Accessing website</strong>
-          <span data-loading-detail>Opening the source page and validating the request.</span>
-        </div>
-        <span class="loading-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-      </div>
-    </div>
-
-    {% if error %}
-    <p class="error-text">{{ error }}</p>
-    {% endif %}
-  </section>
-
-  <section class="surface section">
-    <div class="section-head">
-      <div>
-        <div class="section-kicker">Preview</div>
-        <h2>Matched items</h2>
-        <p data-preview-count>{{ preview|length }} items found with the current selectors.</p>
-      </div>
-    </div>
-
-    {% if preview %}
-    <div class="list-stack" data-preview-list="compose-preview">
-      {% for item in preview %}
-      <article class="preview-card">
-        <h3>{{ item.title }}</h3>
-        <p class="meta">{{ item.link }}</p>
-      </article>
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="list-stack" data-preview-list="compose-preview" hidden></div>
-    {% endif %}
-    <p class="error-text" data-preview-error hidden></p>
-    <div class="empty-state" data-preview-empty {% if preview %}hidden{% endif %}>Run a preview to inspect extracted titles and links before saving.</div>
-  </section>
+<div class="editor-column">
+<form class="surface section feed-editor" action="/profiles" method="post" data-feed-editor="create" data-returned-draft="{{ 'true' if error else 'false' }}" data-initial-preview="{{ 'ready' if preview and not error else 'none' }}">
+  <input type="hidden" name="preview" value="1">
+  <nav class="editor-steps" aria-label="Creation steps" hidden><button type="button" data-editor-go="0">1. Source</button><button type="button" data-editor-go="1">2. Extraction</button><button type="button" data-editor-go="2">3. Schedule &amp; save</button></nav>
+  <div class="editor-errors error-text" data-editor-errors tabindex="-1" {% if not error %}hidden{% endif %}><strong>⚠ Check your feed settings</strong><p>{{ error or '' }}</p></div>
+  {% set editor_kind = 'create' %}{% set field_prefix = '' %}{% set preview_target = 'compose-preview' %}{% set preview_page = '/compose' %}{% set preview_url = '/preview' %}{% set preview_stream = '/preview/stream' %}{% set preview_error = error %}
+  {% include 'components/feed_form.html' %}
+  <div class="editor-actions"><button class="btn btn-secondary" type="button" data-editor-back hidden>Back</button><button class="btn btn-primary" type="button" data-editor-next hidden>Continue</button><button class="btn btn-primary" type="submit" data-editor-save>Save feed</button></div>
+</form>
+{% include 'components/editor_dialogs.html' %}
 </div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='nightfeed-feed-editor.js') }}"></script>{% endblock %}

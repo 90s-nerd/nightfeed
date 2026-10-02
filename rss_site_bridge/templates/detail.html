@@ -1,329 +1,47 @@
 {% extends "base.html" %}
-
 {% block title %}{{ profile.feed_title }} · Nightfeed{% endblock %}
-
 {% block page_header %}
-<header class="topbar">
-  <div class="page-title">
-    <h1>{{ profile.feed_title }}</h1>
-    <p><a class="link-text" href="{{ profile.source_url }}">{{ profile.source_url }}</a></p>
-  </div>
-  <div class="topbar-actions">
-    <a class="btn btn-secondary" href="/feeds">Back to dashboard</a>
-    <form class="inline-form" action="/profiles/{{ profile.id }}/toggle-active" method="post">
-      <button class="btn btn-secondary" type="submit">{{ 'Disable feed' if profile.active else 'Enable feed' }}</button>
-    </form>
-    {% if profile.active %}
-    <form class="inline-form" action="/profiles/{{ profile.id }}/refresh" method="post" data-async-refresh>
-      <button class="btn btn-primary" type="submit">Refresh</button>
-    </form>
-    {% endif %}
-  </div>
+<header class="topbar detail-column">
+  <div class="page-title"><h1>{{ profile.feed_title }}</h1><p><a class="link-text" href="{{ profile.source_url }}" target="_blank" rel="noreferrer" aria-label="Source page (opens in a new tab)">{{ profile.source_url }}</a></p></div>
+  <div class="topbar-actions"><a class="btn btn-secondary" href="/feeds">Back to feeds</a>{% if profile.active %}<form class="inline-form" action="/profiles/{{ profile.id }}/refresh" method="post" data-async-refresh><button class="btn btn-primary" type="submit">Refresh now</button></form>{% endif %}</div>
 </header>
 {% endblock %}
-
 {% block content %}
-<div class="compose-grid" style="grid-template-columns:minmax(0, 1.2fr) minmax(320px, 0.8fr);">
-  <div class="list-stack">
-    <section class="surface section">
-      <div class="section-head">
-        <div>
-          <div class="section-kicker">Feed summary</div>
-          <h2>Overview</h2>
-        </div>
-        <div class="button-row">
-          <a class="btn btn-secondary" href="/feeds/{{ profile.feed_token }}/view">View XML</a>
-          <a class="btn btn-secondary" href="{{ feed_url }}">Raw XML</a>
-        </div>
-      </div>
-
-      <div class="detail-metrics">
-        <div class="metric-card">
-          <div class="metric-label">Status</div>
-          <div class="metric-value">{{ 'disabled' if not profile.active else profile.last_status }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Stored items</div>
-          <div class="metric-value">{{ profile.item_count }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Refresh interval</div>
-          <div class="metric-value">{{ profile.cron_expression or (profile.refresh_interval_minutes|string + ' min') }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Last refreshed</div>
-          <div class="metric-value" style="font-size:0.96rem;">{{ profile.last_refreshed_at | human_datetime }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Next refresh</div>
-          <div class="metric-value" style="font-size:0.96rem;">{{ profile | next_refresh_datetime }}</div>
-        </div>
-      </div>
-
-      <div class="copy-row">
-        <div class="copy-meta">
-          <div class="copy-label">Feed URL</div>
-          <div class="copy-value">{{ feed_url }}</div>
-        </div>
-      </div>
-
-      {% if profile.last_error %}
-      <div class="notice">
-        <strong>Latest refresh issue</strong>
-        <p>{{ profile.last_error }}</p>
-      </div>
-      {% endif %}
-
-      {% if purged %}
-      <div class="notice-soft">
-        <strong>Stored entries cleared</strong>
-        <p>The feed configuration is unchanged. Refresh the feed to repopulate items.</p>
-      </div>
-      {% endif %}
-    </section>
-
-    <section class="surface section">
-      <div class="section-head">
-        <div>
-          <div class="section-kicker">Stored content</div>
-          <h2>Latest topics</h2>
-          <p>Topic links open in a new tab.</p>
-        </div>
-        <form class="inline-form" action="/profiles/{{ profile.id }}/purge" method="post" data-confirm="Purge all stored entries from this feed? This cannot be undone. The feed settings will be kept.">
-          <button class="btn btn-danger" type="submit">Purge entries</button>
-        </form>
-      </div>
-
-      <p>{{ profile.item_count }} stored items · Page {{ page }} of {{ pages }}</p>
-      {% if items %}
-      <div class="list-stack">
-        {% for item in items %}
-        <article class="item-card">
-          <h3>{{ item.title }}</h3>
-          {% if item.summary %}
-          <p class="meta">{{ item.summary }}</p>
-          {% endif %}
-          <div class="item-footer" style="margin-top:12px;">
-            <span>{{ item.published_at | human_datetime }}</span>
-            <div class="item-actions">
-              <a class="link-text" href="{{ item.link }}" target="_blank" rel="noreferrer">Open topic</a>
-              <a class="danger-link" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=item.id, return_to=request.full_path.rstrip('?')) }}">Open safely</a>
-            </div>
-          </div>
-        </article>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="empty-state">No stored items yet. Refresh the feed after validating the selectors.</div>
-      {% endif %}
-      <nav class="button-row pagination-actions" aria-label="Entry pages">
-      {% if page > 1 %}<a class="btn btn-secondary" href="?page={{ page - 1 }}">Previous</a>{% endif %}
-      {% if page < pages %}<a class="btn btn-secondary" href="?page={{ page + 1 }}">Next</a>{% endif %}
-      </nav>
-    </section>
-  </div>
-
-  <section class="surface section feed-settings-panel" aria-label="Feed settings">
-    <div class="section-head">
-      <div>
-        <div class="section-kicker">Settings</div>
-        <h2>Edit feed</h2>
-        <p>Update selectors and fetch behavior for this source.</p>
-      </div>
-    </div>
-
-      <div class="form-actions feed-settings-actions">
-        <button class="btn btn-secondary" type="submit" form="feed-settings-form" formaction="/profiles/{{ profile.id }}" formmethod="get" data-loading-label="Running preview" data-preview-url="/profiles/{{ profile.id }}/preview" data-preview-stream-url="/profiles/{{ profile.id }}/preview/stream" data-preview-target="detail-preview">Preview changes</button>
-        <button class="btn btn-primary" type="submit" form="feed-settings-form">Save changes</button>
-      </div>
-    <div class="feed-settings-scroll" tabindex="0" aria-label="Scrollable feed settings">
-    <form id="feed-settings-form" action="/profiles/{{ profile.id }}/edit" method="post" data-loading-form data-preview-form>
-      <input type="hidden" name="preview" value="1">
-      <div class="field">
-        <label for="edit_feed_title">Feed name</label>
-        <input id="edit_feed_title" name="feed_title" value="{{ edit_form.get('feed_title', profile.feed_title) }}" required>
-      </div>
-      <div class="field">
-        <label for="edit_source_url">Source URL</label>
-        <input id="edit_source_url" name="source_url" value="{{ edit_form.get('source_url', profile.source_url) }}" required>
-      </div>
-      <div class="field">
-        <label for="edit_item_selector">Item selector</label>
-        <input id="edit_item_selector" name="item_selector" value="{{ edit_form.get('item_selector', profile.item_selector) }}" required>
-      </div>
-      <div class="field">
-        <label for="edit_title_selector">Title selector</label>
-        <input id="edit_title_selector" name="title_selector" value="{{ edit_form.get('title_selector', profile.title_selector) }}" required>
-      </div>
-      <div class="field">
-        <label for="edit_link_selector">Link selector</label>
-        <input id="edit_link_selector" name="link_selector" value="{{ edit_form.get('link_selector', profile.link_selector) }}" required>
-      </div>
-<div class="field-hint">Use CSS such as <code>a:nth-child(2)</code> or <code>a:nth-of-type(2)</code>. Use <code>:scope</code> for the item itself. Traverse with <code>&gt;&gt; parent</code>: <code>.title &gt;&gt; parent &gt;&gt; a</code>, or <code>:scope &gt;&gt; parent</code>. Repeat parent steps to climb further.</div>
-      <div class="field">
-        <label for="edit_summary_selector">Summary selector</label>
-        <input id="edit_summary_selector" name="summary_selector" value="{{ edit_form.get('summary_selector', profile.summary_selector) }}">
-      </div>
-      <details class="feed-settings-advanced"><summary>Include and exclude filters</summary>
-      <div class="field">
-        <label for="edit_filter_rules">Include filters</label>
-        <textarea id="edit_filter_rules" name="filter_rules" placeholder="(alpha OR beta OR gamma) AND premium&#10;build-2?&#10;&quot;release candidate&quot; AND stable">{{ edit_form.get('filter_rules', profile.filter_rules) }}</textarea>
-        <div class="field-hint">Optional. One rule per line. Supports <code>AND</code>, <code>OR</code>, parentheses, quoted phrases, and wildcards.</div>
-      </div>
-      <div class="field">
-        <label for="edit_exclude_filter_rules">Exclude filters</label>
-        <textarea id="edit_exclude_filter_rules" name="exclude_filter_rules" placeholder="draft OR preview&#10;*beta*&#10;&quot;sample item&quot;">{{ edit_form.get('exclude_filter_rules', profile.exclude_filter_rules) }}</textarea>
-        <div class="field-hint">Optional. Matching titles are removed after include filters are applied.</div>
-      </div>
-      </details>
-      <div class="field">
-        <label for="edit_max_items">Max items</label>
-        <input id="edit_max_items" name="max_items" type="number" min="1" max="100" value="{{ edit_form.get('max_items', profile.max_items) }}" required>
-      </div>
-      <details class="feed-settings-advanced"><summary>Schedule, priority and fetching</summary>
-      <div class="field">
-        <label for="edit_refresh_interval_minutes">Refresh interval (minutes)</label>
-        <input id="edit_refresh_interval_minutes" name="refresh_interval_minutes" type="number" min="0" max="1440" value="{{ edit_form.get('refresh_interval_minutes', profile.refresh_interval_minutes) }}" required>
-        <div class="field-hint">Set to <code>0</code> to disable automatic refresh. The feed will refresh only when you trigger it manually.</div>
-      </div>
-<div class="field"><label>Cron schedule (optional)</label><input name="cron_expression" value="{{ edit_form.get('cron_expression', profile.cron_expression) }}" placeholder="0 */2 * * *"><div class="field-hint">minute hour day month weekday. Example: <code>0 */2 * * *</code> runs every two hours on the hour. Overrides the interval; manual refresh does not shift scheduled times. Leave blank to use the interval.</div></div>
- <div class="field"><label>Schedule timezone</label><input name="schedule_timezone" value="{{ edit_form.get('schedule_timezone', profile.schedule_timezone) }}" placeholder="America/Chicago" required></div>
- <div class="field"><label>Feed priority</label><input name="priority" type="number" min="0" max="100" value="{{ edit_form.get('priority', profile.priority) }}" required><div class="field-hint">Higher values appear first when sorting the timeline by priority.</div></div>
-      <div class="field">
-        <label for="edit_fetch_mode">Fetch mode</label>
-        <select id="edit_fetch_mode" name="fetch_mode">
-          <option value="http" {% if edit_form.get('fetch_mode', profile.fetch_mode) == "http" %}selected{% endif %}>HTTP only</option>
-          <option value="browser" {% if edit_form.get('fetch_mode', profile.fetch_mode) == "browser" %}selected{% endif %}>Browser</option>
-        </select>
-      </div>
-
-      </details>
-      {% if smtp_enabled %}
-      <div class="field">
-        <label>Refresh notifications</label>
-        <div class="field-hint">Failure notifications can be limited by category. All refreshes still appear in the app.</div>
-        <div class="check-stack">
-        <input type="hidden" name="notify_failure_categories_present" value="1">
-        <label class="check-option">
-          <input name="notify_on_success" type="checkbox" value="1" {% if edit_form.get('notify_on_success', '1' if profile.notify_on_success else '') %}checked{% endif %}>
-          <span>Success notifications</span>
-        </label>
-        {% set selected_failure_categories = edit_form.get('notify_failure_categories', profile.notify_failure_categories | join(',')) %}
-        {% for category in failure_notification_categories %}
-        <label class="check-option">
-          <input name="notify_failure_categories" type="checkbox" value="{{ category }}" {% if category in selected_failure_categories %}checked{% endif %}>
-          <span class="check-copy">
-            <strong>{{ failure_notification_labels[category] }}</strong>
-            <span>{{ failure_notification_samples[category] }}</span>
-          </span>
-        </label>
-        {% endfor %}
-        </div>
-      </div>
-      {% endif %}
-
-    </form>
-
-    <div class="loading-note" data-loading-note>
-      <div class="loading-label">
-        <span class="spinner" aria-hidden="true"></span>
-        Preview progress
-      </div>
-      <div class="loading-status">
-        <div>
-          <strong data-loading-title>Accessing website</strong>
-          <span data-loading-detail>Opening the source page and validating the request.</span>
-        </div>
-        <span class="loading-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-      </div>
-    </div>
-
-    {% if edit_error %}
-    <p class="error-text">{{ edit_error }}</p>
-    {% endif %}
-
-    <details class="feed-preview" data-preview-panel="detail-preview" {% if preview or preview_error %}open{% endif %}>
-      <summary>Extraction preview</summary>
-      <section class="feed-preview-content">
-      <div class="section-head" style="margin-bottom:12px;">
-        <div>
-          <div class="section-kicker">Preview</div>
-          <h2>Extracted titles and links</h2>
-          <p data-preview-count>{{ preview|length }} items found with the current selectors.</p>
-        </div>
-      </div>
-
-      {% if preview %}
-      <div class="list-stack" data-preview-list="detail-preview">
-        {% for item in preview %}
-        <article class="preview-card">
-          <h3>{{ item.title }}</h3>
-          <p class="meta">{{ item.link }}</p>
-        </article>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="list-stack" data-preview-list="detail-preview" hidden></div>
-      {% endif %}
-      <p class="error-text" data-preview-error {% if not preview_error %}hidden{% endif %}>{{ preview_error or "" }}</p>
-      <div class="empty-state" data-preview-empty {% if preview or preview_error %}hidden{% endif %}>Run a preview to inspect extracted titles and links before saving.</div>
-    </section>
-
-    </details>
-    <details class="feed-settings-advanced">
-      <summary>Delete feed</summary>
-    <div class="notice">
-      <strong>Delete feed</strong>
-      <p>Removing this feed also deletes all stored items.</p>
-      <form class="inline-form" action="/profiles/{{ profile.id }}/delete" method="post" style="margin-top:12px;" data-confirm="Delete this feed and all stored items? This cannot be undone.">
-        <button class="btn btn-danger" type="submit">Delete feed</button>
-      </form>
-    </div>
-    </details>
-    </div>
-
+<div class="detail-column">
+  {% if created %}<div class="editor-notice" role="status">Feed created. Refresh now to collect items.</div>{% endif %}
+  {% if saved %}<div class="editor-notice" role="status">Configuration saved.</div>{% endif %}
+  {% if purged %}<div class="editor-notice" role="status">Stored entries cleared. Refresh the feed to collect items again.</div>{% endif %}
+  <p class="meta" data-feed-status>{% if not profile.active %}⏸ Disabled · The RSS URL is unavailable until enabled.{% elif profile.last_status == 'ok' %}✓ Healthy{% elif profile.last_status == 'error' %}⚠ Needs attention{% else %}• Not refreshed yet{% endif %} · {{ profile.item_count }} stored items · Next refresh {{ profile | next_refresh_datetime }}</p>
+  <p class="editor-notice" data-refresh-result role="status" aria-live="polite" hidden></p>
+  <nav class="detail-views" aria-label="Feed views">{% for key, label in [('items', 'Items'), ('configuration', 'Configuration'), ('rss', 'RSS')] %}<a href="/profiles/{{ profile.id }}?view={{ key }}" {% if view == key %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
+  <div data-feed-content>
+  {% if view == 'configuration' %}
+  <form id="feed-settings-form" class="surface section feed-editor" action="/profiles/{{ profile.id }}/edit" method="post" data-feed-editor="edit" data-returned-draft="{{ 'true' if edit_form else 'false' }}" data-initial-preview="{{ 'ready' if preview and not preview_error else 'none' }}">
+    <input type="hidden" name="preview" value="1">
+    <div class="editor-errors error-text" data-editor-errors tabindex="-1" {% if not edit_error %}hidden{% endif %}><strong>⚠ Check your feed settings</strong><p>{{ edit_error or '' }}</p></div>
+    {% set editor_kind = 'edit' %}{% set field_prefix = 'edit_' %}{% set preview_target = 'detail-preview' %}{% set preview_page = '/profiles/' ~ profile.id %}{% set preview_url = '/profiles/' ~ profile.id ~ '/preview' %}{% set preview_stream = '/profiles/' ~ profile.id ~ '/preview/stream' %}
+    {% include 'components/feed_form.html' %}
+    <div class="editor-actions"><a class="btn btn-secondary" href="/profiles/{{ profile.id }}?view=items">Cancel</a><button class="btn btn-primary" type="submit" data-editor-save>Save changes</button></div>
+  </form>
+  {% include 'components/editor_dialogs.html' %}
+  {% elif view == 'rss' %}
+  <section class="surface section"><h2>Permanent feed URL</h2>
+    <div class="field"><label for="permanent-feed-url">RSS feed URL</label><input id="permanent-feed-url" value="{{ feed_url }}" readonly></div>
+    <div class="button-row"><button class="btn btn-secondary" type="button" data-copy-feed-url="permanent-feed-url">Copy feed URL</button>{% if profile.active %}<a class="btn btn-secondary" href="/feeds/{{ profile.feed_token }}/view">View formatted XML</a><a class="btn btn-secondary" href="{{ feed_url }}" target="_blank" rel="noopener noreferrer">Open raw XML</a>{% endif %}</div>
+    <p class="meta" data-copy-status role="status" aria-live="polite"></p>
+    {% if not profile.active %}<p class="meta">Enable this feed to serve its RSS URL. The URL will stay the same.</p>{% endif %}
   </section>
+  {% else %}
+  <section class="surface section" data-items-view>
+    <div class="section-head"><div><h2>Items</h2></div></div>
+    {% if profile.last_error %}<div class="editor-notice editor-notice-error"><strong>Latest refresh issue</strong><p>{{ profile.last_error }}</p></div>{% endif %}
+    <p class="meta">{{ profile.item_count }} stored items · Page {{ page }} of {{ pages }}</p>
+    <div class="list-stack">{% for item in items %}<article class="item-card"><div class="topic-heading"><h3><a class="link-text topic-link" href="{{ item.link }}" target="_blank" rel="noreferrer" title="{{ item.title }}" aria-label="{{ item.title }} (opens in a new tab)"><span class="topic-title">{{ item.title }}</span></a></h3><span class="topic-time">{{ item.published_at | human_datetime }}</span></div>{% if item.summary %}<p class="meta">{{ item.summary }}</p>{% endif %}<a class="safe-link" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=item.id, return_to=request.full_path.rstrip('?')) }}">Open safely</a></article>{% else %}<div class="empty-state">No stored items yet.{% if profile.active %} Refresh now to collect items.{% else %} Enable the feed to refresh it.{% endif %}</div>{% endfor %}</div>
+    <nav class="button-row pagination-actions" aria-label="Entry pages">{% if page > 1 %}<a class="btn btn-secondary" href="?view=items&amp;page={{ page - 1 }}">Previous</a>{% endif %}{% if page < pages %}<a class="btn btn-secondary" href="?view=items&amp;page={{ page + 1 }}">Next</a>{% endif %}</nav>
+  </section>
+  {% endif %}
+  </div>
+  <details class="detail-actions"><summary>Manage feed</summary><div class="button-row"><form class="inline-form" action="/profiles/{{ profile.id }}/toggle-active" method="post"><button class="btn btn-secondary" type="submit">{{ 'Disable feed' if profile.active else 'Enable feed' }}</button></form><a class="btn btn-secondary" href="/profiles/{{ profile.id }}/clone">Duplicate feed</a><form class="inline-form" action="/profiles/{{ profile.id }}/purge" method="post" data-confirm='Clear all stored items from “{{ profile.feed_title }}”? This cannot be undone. The feed settings and URL will be kept.'><button class="btn btn-danger" type="submit">Clear stored items</button></form><form class="inline-form" action="/profiles/{{ profile.id }}/delete" method="post" data-confirm='Delete “{{ profile.feed_title }}” and all stored items? This cannot be undone.'><button class="btn btn-danger" type="submit">Delete feed</button></form></div></details>
 </div>
 {% endblock %}
-
-{% block scripts %}
-<script>
- const settingsPanel = document.querySelector('.feed-settings-panel');
- const fitSettingsPanel = () => {
-   const viewportHeight = window.visualViewport?.height || window.innerHeight;
-   const top = Math.max(20, settingsPanel.getBoundingClientRect().top);
-   settingsPanel.style.setProperty('--settings-available-height', `${Math.max(200, viewportHeight - top - 20)}px`);
- };
- fitSettingsPanel();
- window.addEventListener('resize', fitSettingsPanel);
- window.addEventListener('scroll', fitSettingsPanel, {passive: true});
- window.visualViewport?.addEventListener('resize', fitSettingsPanel);
- new ResizeObserver(fitSettingsPanel).observe(document.querySelector('.topbar'));
- document.getElementById('feed-settings-form').addEventListener('submit', event => {
-   if (!event.submitter?.dataset.previewTarget) return;
-   const preview = document.querySelector('[data-preview-panel="detail-preview"]');
-   preview.open = true;
-   preview.scrollIntoView({behavior: 'smooth', block: 'nearest'});
- });
- document.querySelector('[data-async-refresh]')?.addEventListener('submit', async event => {
-   event.preventDefault();
-   const form = event.currentTarget, button = form.querySelector('button');
-   button.disabled = true;
-   button.classList.add('refresh-pending');
-   button.setAttribute('aria-busy', 'true');
-   window.showRefreshToast('Fetching feed…', 'progress');
-   try {
-     const response = await fetch(form.action, {method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'}});
-     const payload = await response.json();
-     if (!response.ok || payload.status === 'error') throw new Error(payload.error || 'Refresh failed.');
-     const updated = await fetch(window.location.href);
-     if (!updated.ok) throw new Error('Feed refreshed, but the display could not be updated.');
-     const doc = new DOMParser().parseFromString(await updated.text(), 'text/html');
-     const target = document.querySelector('.compose-grid > .list-stack');
-     target.replaceChildren(...doc.querySelector('.compose-grid > .list-stack').childNodes);
-     window.showRefreshToast(payload.message);
-   } catch (error) { window.showRefreshToast(error.message, 'error'); }
-   finally { button.disabled = false; button.classList.remove('refresh-pending'); button.removeAttribute('aria-busy'); }
- });
-</script>
-{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='nightfeed-feed-editor.js') }}"></script>{% endblock %}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from markupsafe import Markup
+
 from .downloaders import register as register_downloaders, eligible_profiles, MAX_SUBMISSION_BYTES
 from croniter import croniter
 from contextlib import closing
@@ -836,15 +838,31 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             exception_type=type(exc).__name__,
         )
 
+    @app.template_filter("local_datetime")
+    def local_datetime_filter(value: str | datetime) -> Markup:
+        if not value:
+            return Markup("Never")
+        try:
+            dt = value if isinstance(value, datetime) else datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return Markup(f'<time datetime="{escape(dt.isoformat())}" data-local-time>{escape(humanize_datetime(dt))}</time>')
+        except ValueError:
+            return Markup(escape(str(value)))
+
     @app.template_filter("human_datetime")
-    def human_datetime_filter(value: str | datetime) -> str:
-        settings = getattr(g, "app_settings", AppSettings())
-        return humanize_datetime(value, settings.timezone_name)
+    def human_datetime_filter(value: str | datetime) -> Markup:
+        return local_datetime_filter(value)
 
     @app.template_filter("next_refresh_datetime")
-    def next_refresh_datetime_filter(profile: StoredProfile) -> str:
-        settings = getattr(g, "app_settings", AppSettings())
-        return humanize_next_refresh(profile, settings.timezone_name)
+    def next_refresh_datetime_filter(profile: StoredProfile) -> Markup:
+        due = get_next_refresh_at(profile)
+        return local_datetime_filter(due) if due else Markup(humanize_next_refresh(profile))
+
+    def parse_feed_request(values: Any, existing_profile: StoredProfile | None = None) -> FeedRequest:
+        values = values.copy()
+        values["schedule_timezone"] = g.app_settings.timezone_name
+        return parse_request_values(values, existing_profile=existing_profile)
 
     def render_compose_page(
         *,
@@ -978,6 +996,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         purged: bool = False,
     ) -> str:
         settings = getattr(g, "app_settings", AppSettings())
+        view = request.args.get("view", "items")
+        if edit_error or preview_error or request.args.get("preview") == "1":
+            view = "configuration"
+        if view not in {"items", "configuration", "rss"}:
+            view = "items"
+        form = {
+            name: getattr(profile, name)
+            for name in load_form()
+            if hasattr(profile, name)
+        }
+        form["notify_on_success"] = "1" if profile.notify_on_success else ""
+        form["notify_failure_categories"] = ",".join(profile.notify_failure_categories)
+        form.update(edit_form or {})
         return render_template(
             "detail.html",
             profiles=list_profiles(Path(app.config["DATABASE_PATH"])),
@@ -988,6 +1019,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             feed_url=build_feed_url(request.url_root, profile.feed_token, settings.public_base_url),
             edit_error=edit_error,
             edit_form=edit_form or {},
+            form=form,
+            view=view,
+            created=request.args.get("created") == "1",
+            saved=request.args.get("saved") == "1",
             preview=preview or [],
             preview_error=preview_error,
             purged=purged,
@@ -1066,13 +1101,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         form = load_form()
         preview: list[FeedEntry] = []
         error = None
-        form_values = request.args.to_dict()
+        form_values = feed_form_values(request.args)
         form_values.pop("preview", None)
         if form_values:
             form = form | form_values
         if request.args.get("preview") == "1":
             try:
-                config = parse_request_values(form_values)
+                config = parse_feed_request(form_values)
                 preview = extract_feed_entries(config)
             except (ValueError, RuntimeError) as exc:
                 error = str(exc)
@@ -1083,7 +1118,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/preview")
     def compose_preview_route() -> Response:
         try:
-            config = parse_request_values(request.form)
+            config = parse_feed_request(request.form)
             preview = extract_feed_entries(config)
             log_event(
                 logging.INFO,
@@ -1101,7 +1136,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.get("/preview/stream")
     def compose_preview_stream_route() -> Response:
         try:
-            config = parse_request_values(request.args)
+            config = parse_feed_request(request.args)
         except (ValueError, RuntimeError) as exc:
             log_event(logging.WARNING, "preview_stream_request_invalid", preview_scope="compose", error=str(exc))
             return Response(
@@ -1197,7 +1232,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/profiles")
     def create_profile_route() -> Response:
         try:
-            config = parse_request_values(request.form)
+            config = parse_feed_request(request.form)
             profile = create_profile(Path(app.config["DATABASE_PATH"]), config)
             log_event(
                 logging.INFO,
@@ -1212,7 +1247,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 priority=profile.priority,
                 max_items=profile.max_items,
             )
-            return redirect(url_for("profile_detail", profile_id=profile.id))
+            return redirect(url_for("profile_detail", profile_id=profile.id, created=1))
         except (ValueError, RuntimeError) as exc:
             log_event(
                 logging.WARNING,
@@ -1223,7 +1258,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
             return (
                 render_compose_page(
-                    form=load_form() | request.form.to_dict(),
+                    form=load_form() | feed_form_values(request.form),
                     preview=[],
                     error=str(exc),
                 ),
@@ -1293,8 +1328,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "new_items": changes["new_items"],
                     "updated_items": changes["updated_items"],
                     "message": refresh_result_message(changes),
-                    "last_refreshed_at": humanize_datetime(profile.last_refreshed_at, settings.timezone_name),
-                    "next_refresh_at": humanize_next_refresh(profile, settings.timezone_name),
+                    "last_refreshed_at": humanize_datetime(profile.last_refreshed_at),
+                    "last_refreshed_iso": profile.last_refreshed_at,
+                    "next_refresh_iso": get_next_refresh_at(profile).isoformat() if get_next_refresh_at(profile) else "",
+                    "next_refresh_at": humanize_next_refresh(profile),
                     "status": profile.last_status,
                     "active": profile.active,
                     "unread_notifications": count_unread_notifications(Path(app.config["DATABASE_PATH"])),
@@ -1309,7 +1346,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             if profile is None:
                 log_event(logging.WARNING, "profile_update_failed", profile_id=profile_id, error="Profile not found.")
                 return Response("Profile not found.", status=404, mimetype="text/plain; charset=utf-8")
-            config = parse_request_values(request.form, existing_profile=profile)
+            config = parse_feed_request(request.form, existing_profile=profile)
             updated_profile = update_profile(Path(app.config["DATABASE_PATH"]), profile_id, config)
             log_event(
                 logging.INFO,
@@ -1319,11 +1356,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 source_host=source_host(updated_profile.source_url),
                 fetch_mode=updated_profile.fetch_mode,
             )
-            return redirect(url_for("profile_detail", profile_id=profile_id))
-        except ValueError as exc:
-            log_event(logging.WARNING, "profile_update_failed", profile_id=profile_id, error=str(exc))
-            return Response(str(exc), status=404, mimetype="text/plain; charset=utf-8")
-        except RuntimeError as exc:
+            return redirect(url_for("profile_detail", profile_id=profile_id, view="configuration", saved=1))
+        except (ValueError, RuntimeError) as exc:
             log_event(logging.WARNING, "profile_update_failed", profile_id=profile_id, error=str(exc))
             profile = get_profile_by_id(Path(app.config["DATABASE_PATH"]), profile_id)
             if profile is None:
@@ -1332,7 +1366,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 render_detail_page(
                     profile=profile,
                     edit_error=str(exc),
-                    edit_form=request.form.to_dict(),
+                    edit_form=feed_form_values(request.form),
                 ),
                 400,
             )
@@ -1378,8 +1412,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 {
                     "active": toggled.active,
                     "status": toggled.last_status,
-                    "last_refreshed_at": humanize_datetime(toggled.last_refreshed_at, settings.timezone_name),
-                    "next_refresh_at": humanize_next_refresh(toggled, settings.timezone_name),
+                    "last_refreshed_at": humanize_datetime(toggled.last_refreshed_at),
+                    "last_refreshed_iso": toggled.last_refreshed_at,
+                    "next_refresh_iso": get_next_refresh_at(toggled).isoformat() if get_next_refresh_at(toggled) else "",
+                    "next_refresh_at": humanize_next_refresh(toggled),
                     "unread_notifications": count_unread_notifications(Path(app.config["DATABASE_PATH"])),
                 }
             )
@@ -1395,10 +1431,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         preview: list[FeedEntry] = []
         preview_error = None
         if request.args.get("preview") == "1":
-            edit_form = request.args.to_dict()
+            edit_form = feed_form_values(request.args)
             edit_form.pop("preview", None)
             try:
-                config = parse_request_values(edit_form, existing_profile=profile)
+                config = parse_feed_request(edit_form, existing_profile=profile)
                 preview = extract_feed_entries(config)
             except (ValueError, RuntimeError) as exc:
                 preview_error = str(exc)
@@ -1490,6 +1526,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         response.headers["Cache-Control"] = "private, no-cache"
         return response
 
+    def safe_state_with_downloaders(state: dict[str, Any]) -> dict[str, Any]:
+        for downloaded in state.get("downloads", []):
+            downloaded["downloaders"] = eligible_profiles(Path(app.config["DATABASE_PATH"]), downloaded["name"])
+        return state
+
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/state")
     def safe_browser_state_route(profile_id: int, item_id: int, session_id: str) -> Response:
         safe_session = require_safe_session(profile_id, item_id, session_id)
@@ -1497,9 +1538,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return jsonify({"error": "Safe browser session expired."}), 410
         try:
             state = safe_session.execute("state")
-            for downloaded in state.get("downloads", []):
-                downloaded["downloaders"] = eligible_profiles(Path(app.config["DATABASE_PATH"]), downloaded["name"])
-            return jsonify(state)
+            return jsonify(safe_state_with_downloaders(state))
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 410
 
@@ -1515,7 +1554,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if action not in {"click", "scroll", "key", "text", "back", "forward", "reload", "navigate", "viewport"}:
             return jsonify({"error": "Unsupported browser action."}), 400
         try:
-            return jsonify(safe_session.execute(action, **payload))
+            return jsonify(safe_state_with_downloaders(safe_session.execute(action, **payload)))
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -1557,7 +1596,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             log_event(logging.WARNING, "preview_failed", preview_scope="profile", profile_id=profile_id, error="Profile not found.")
             return jsonify({"items": [], "error": "Profile not found."}), 404
         try:
-            config = parse_request_values(request.form, existing_profile=profile)
+            config = parse_feed_request(request.form, existing_profile=profile)
             preview = extract_feed_entries(config)
             log_event(
                 logging.INFO,
@@ -1587,7 +1626,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 },
             )
         try:
-            config = parse_request_values(request.args, existing_profile=profile)
+            config = parse_feed_request(request.args, existing_profile=profile)
         except (ValueError, RuntimeError) as exc:
             log_event(logging.WARNING, "preview_stream_request_invalid", preview_scope="profile", profile_id=profile_id, error=str(exc))
             return Response(
@@ -1709,11 +1748,11 @@ def run_scheduler_loop(db_path: Path, stop_event: Event) -> None:
 
 def load_form() -> dict[str, str]:
     return {
-        "feed_title": "Example Topic Feed",
+        "feed_title": "",
         "source_url": "",
-        "item_selector": "article, li, .topic-row",
-        "title_selector": "a",
-        "link_selector": "a",
+        "item_selector": "",
+        "title_selector": "",
+        "link_selector": "",
         "summary_selector": "",
         "filter_rules": "",
         "exclude_filter_rules": "",
@@ -1727,6 +1766,15 @@ def load_form() -> dict[str, str]:
         "notify_on_failure": "1",
         "notify_failure_categories": ",".join(FAILURE_NOTIFICATION_CATEGORIES),
     }
+
+
+def feed_form_values(values: Any) -> dict[str, str]:
+    """Retain repeated notification choices and explicit unchecked values on errors."""
+    result = values.to_dict()
+    if "notify_failure_categories_present" in values:
+        result["notify_failure_categories"] = ",".join(values.getlist("notify_failure_categories"))
+        result["notify_on_success"] = values.get("notify_on_success", "")
+    return result
 
 
 def build_clone_title(db_path: Path, original_title: str) -> str:
@@ -1755,7 +1803,7 @@ def parse_request_values(values: Any, existing_profile: StoredProfile | None = N
         raise ValueError("Fetch mode must be http or browser.")
     notify_on_success = (
         parse_checkbox(values.get("notify_on_success"))
-        if "notify_on_success" in values
+        if "notify_on_success" in values or "notify_failure_categories_present" in values
         else (existing_profile.notify_on_success if existing_profile is not None else False)
     )
     notify_on_failure = (
@@ -2744,6 +2792,7 @@ def init_db(db_path: Path) -> None:
         ensure_column(conn, "profiles", "refresh_anchor_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "profiles", "cron_expression", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "profiles", "schedule_timezone", "TEXT NOT NULL DEFAULT 'UTC'")
+        conn.execute("UPDATE profiles SET schedule_timezone = (SELECT timezone_name FROM app_settings WHERE id = 1)")
         ensure_column(conn, "profiles", "priority", "INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
@@ -2861,6 +2910,7 @@ def update_app_settings(
                 normalized_settings.smtp_from_email,
             ),
         )
+        conn.execute("UPDATE profiles SET schedule_timezone = ?", (normalized_settings.timezone_name,))
         conn.commit()
     return normalized_settings
 
@@ -2997,7 +3047,7 @@ def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
         )
         conn.commit()
         profile_id = int(cursor.lastrowid)
-        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, config.schedule_timezone, config.priority, profile_id))
+        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, get_app_settings(db_path).timezone_name, config.priority, profile_id))
         conn.commit()
     profile = get_profile_by_id(db_path, profile_id)
     if profile is None:
@@ -3039,7 +3089,7 @@ def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> Store
                 profile_id,
             ),
         )
-        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, config.schedule_timezone, config.priority, profile_id))
+        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, get_app_settings(db_path).timezone_name, config.priority, profile_id))
         conn.commit()
 
     profile = get_profile_by_id(db_path, profile_id)
@@ -3314,6 +3364,8 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
         source_url=request_config.source_url,
         refreshed_at=now,
         entry_count=len(entries),
+        new_items=changes["new_items"],
+        updated_items=changes["updated_items"],
     )
     log_event(
         logging.INFO,
@@ -3684,7 +3736,16 @@ def classify_refresh_error(exc: BaseException) -> str:
     return "app"
 
 
-def build_refresh_success_notification(db_path: Path, profile: StoredProfile, *, source_url: str, entry_count: int) -> Notification:
+def refresh_notification_message(new_items: int, updated_items: int) -> str:
+    parts = []
+    if new_items:
+        parts.append(f"{new_items} new entr{'y' if new_items == 1 else 'ies'}")
+    if updated_items:
+        parts.append(f"{updated_items} updated entr{'y' if updated_items == 1 else 'ies'}")
+    return "Refresh complete: " + ", ".join(parts) + "." if parts else "No new entries. This feed is up to date."
+
+
+def build_refresh_success_notification(db_path: Path, profile: StoredProfile, *, source_url: str, entry_count: int, new_items: int = 0, updated_items: int = 0) -> Notification:
     return create_notification(
         db_path,
         profile_id=profile.id,
@@ -3692,9 +3753,9 @@ def build_refresh_success_notification(db_path: Path, profile: StoredProfile, *,
         severity="info",
         category="success",
         title=f"Refresh succeeded: {profile.feed_title}",
-        message=f"Nightfeed saved {entry_count} entr{'y' if entry_count == 1 else 'ies'} for this feed.",
+        message=refresh_notification_message(new_items, updated_items),
         source_url=source_url,
-        metadata={"entry_count": entry_count},
+        metadata={"entry_count": entry_count, "new_items": new_items, "updated_items": updated_items},
     )
 
 
@@ -3768,6 +3829,8 @@ def maybe_send_refresh_notification(
     source_url: str,
     refreshed_at: str,
     entry_count: int = 0,
+    new_items: int = 0,
+    updated_items: int = 0,
     error_message: str = "",
 ) -> None:
     notification = create_notification(
@@ -3778,12 +3841,12 @@ def maybe_send_refresh_notification(
         category="success" if status == "ok" else classify_refresh_error(RuntimeError(error_message)),
         title=f"Refresh {'succeeded' if status == 'ok' else 'failed'}: {profile.feed_title}",
         message=(
-            f"Nightfeed saved {entry_count} entr{'y' if entry_count == 1 else 'ies'} for this feed."
+            refresh_notification_message(new_items, updated_items)
             if status == "ok"
             else error_message
         ),
         source_url=source_url,
-        metadata={"entry_count": entry_count, "refreshed_at": refreshed_at},
+        metadata={"entry_count": entry_count, "new_items": new_items, "updated_items": updated_items, "refreshed_at": refreshed_at},
     )
     maybe_send_notification_email(db_path, profile, notification)
 
@@ -3821,7 +3884,7 @@ def send_test_email(settings: AppSettings) -> None:
     message["Subject"] = "Nightfeed SMTP test"
     message["From"] = settings.smtp_from_email
     message["To"] = settings.smtp_to_email
-    sent_at = humanize_datetime(utcnow_text(), settings.timezone_name)
+    sent_at = humanize_datetime(utcnow_text())
     message.set_content(
         "\n".join(
             [
@@ -3904,7 +3967,7 @@ def render_refresh_notification_html(
     detail_rows = [
         ("Feed", profile.feed_title),
         ("Status", "Success" if is_success else "Error"),
-        ("Refresh time", humanize_datetime(notification.created_at, settings.timezone_name)),
+        ("Refresh time", humanize_datetime(notification.created_at)),
         ("Fetch mode", profile.fetch_mode.upper()),
         ("Source URL", notification.source_url),
         ("Category", FAILURE_NOTIFICATION_LABELS.get(notification.category, notification.category)),
@@ -3940,7 +4003,7 @@ def render_refresh_notification_html(
         f"color:{badge_text}; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;\">"
         f"{'Success' if is_success else 'Error'}</div>"
         f"<p style=\"margin:20px 0 24px; color:#334155; font-size:15px; line-height:1.7;\">{escape(profile.feed_title)} "
-        f"was refreshed in {escape(settings.timezone_name)}.</p>"
+        f"was refreshed. Email timestamps are shown in UTC.</p>"
         f"<table style=\"width:100%; border-collapse:collapse;\">{rendered_rows}</table>"
         f"<div style=\"margin-top:28px;\">{button_html}</div>"
         "<div style=\"margin-top:28px; padding-top:20px; border-top:1px solid #e2e8f0; color:#64748b; font-size:12px; line-height:1.6;\">"
@@ -3961,7 +4024,7 @@ def render_refresh_notification_text(
         "",
         f"Feed: {profile.feed_title}",
         f"Status: {'Success' if is_success else 'Error'}",
-        f"Refresh time: {humanize_datetime(notification.created_at, settings.timezone_name)}",
+        f"Refresh time: {humanize_datetime(notification.created_at)}",
         f"Fetch mode: {profile.fetch_mode.upper()}",
         f"Source URL: {notification.source_url}",
         f"Category: {FAILURE_NOTIFICATION_LABELS.get(notification.category, notification.category)}",

@@ -232,7 +232,7 @@ class DownloaderTests(unittest.TestCase):
         self.client.post('/settings/downloaders/save', data=values, headers=self.headers)
         self.assertEqual(d.get_profile(self.db, self.profile['id'])['secret'], '')
         html = self.client.get('/settings/downloaders').get_data(as_text=True)
-        self.assertIn('data-confirm="Delete this downloader profile?', html)
+        self.assertIn('data-confirm="Delete Home?', html)
         self.assertIn("window.confirm('Clear the saved downloader secret?", html)
 
     def test_submission_pool_is_bounded_and_released(self):

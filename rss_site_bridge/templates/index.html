@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 
-{% block title %}My Feeds · Nightfeed{% endblock %}
+{% block title %}Feeds · Nightfeed{% endblock %}
 
 {% block page_header %}
 <header class="topbar">
   <div class="page-title">
-    <h1>My Feeds (<span data-feed-count>{{ profiles|length }}</span>)</h1>
-    <p>Dashboard view shows each feed, refresh timing, and stored item count.</p>
+    <h1>Feeds (<span data-feed-count>{{ profiles|length }}</span>)</h1>
+
   </div>
   <div class="topbar-actions">
-    <a class="btn btn-primary" href="/compose">New Feed</a>
+    <a class="btn btn-primary" href="/compose">Create feed</a>
   </div>
 </header>
 {% endblock %}
@@ -21,11 +21,10 @@
     {% for profile in profiles %}
     {% set effective_status = 'disabled' if not profile.active else profile.last_status %}
     {% set status_class = 'disabled' if effective_status == 'disabled' else 'error' if effective_status == 'error' else 'ok' if effective_status == 'ok' else 'idle' %}
-    {% set status_label = 'Disabled' if effective_status == 'disabled' else 'Issue' if effective_status == 'error' else 'Healthy' if effective_status == 'ok' else 'Idle' %}
+    {% set status_label = 'Disabled' if effective_status == 'disabled' else 'Needs attention' if effective_status == 'error' else 'Healthy' if effective_status == 'ok' else 'Not refreshed yet' %}
     {% set status_icon = '⏸' if effective_status == 'disabled' else '×' if effective_status == 'error' else '✓' if effective_status == 'ok' else '•' %}
-    <a
+    <article
       class="feed-card"
-      href="/profiles/{{ profile.id }}"
       data-profile-card
       data-profile-id="{{ profile.id }}"
       data-refresh-url="/profiles/{{ profile.id }}/refresh"
@@ -40,38 +39,29 @@
       <div
         class="feed-card-spinner"
         aria-hidden="true"
-        style="display:none; position:absolute; inset:0; border-radius:18px; background:rgba(13,18,26,0.72); align-items:center; justify-content:center; font-weight:600; letter-spacing:0.01em;"
+        style="display:none; position:absolute; inset:0; border-radius:18px; background:var(--nf-overlay); align-items:center; justify-content:center; font-weight:600; letter-spacing:0.01em;"
       >
         Refreshing...
       </div>
+      <div class="feed-row-heading"><div>
       <div class="meta-row">
-        <h3>{{ profile.feed_title }}</h3>
+        <h3><a class="feed-name-link" href="/profiles/{{ profile.id }}">{{ profile.feed_title }}</a></h3>
         <span class="status-badge {{ status_class }}" data-status-badge>
           <span class="status-icon" data-status-icon>{{ status_icon }}</span>
           <span data-status-label>{{ status_label }}</span>
         </span>
       </div>
       <div class="feed-url">{{ profile.source_url }}</div>
-      <div class="meta-row" style="margin-top:14px;">
-        <span class="pill" data-item-count>{{ profile.item_count }} items</span>
+      </div><button type="button" class="feed-menu-trigger" data-feed-more aria-expanded="false" aria-controls="feed-context-menu" aria-label="More actions for {{ profile.feed_title }}"><span aria-hidden="true" class="ellipsis-icon">⋮</span></button></div>
+      <div class="feed-row-meta">
+        <span data-item-count>{{ profile.item_count }} items</span>
+        <span>Last refreshed <span data-last-refreshed>{{ profile.last_refreshed_at | human_datetime }}</span></span>
+        <span>Next refresh <span data-next-refresh>{% if profile.active and not profile.cron_expression and not profile.refresh_interval_minutes %}Manual refresh{% else %}{{ profile | next_refresh_datetime }}{% endif %}</span></span>
       </div>
-      <div class="meta-row" style="margin-top:12px;">
-        <span class="meta">Last refreshed</span>
-        <span data-last-refreshed>{{ profile.last_refreshed_at | human_datetime }}</span>
-      </div>
-      <div class="meta-row" style="margin-top:8px;">
-        <span class="meta">Next refresh</span>
-        <span data-next-refresh>{{ profile | next_refresh_datetime }}</span>
-      </div>
-    </a>
+      <p class="meta" data-feed-availability {% if profile.active %}hidden{% endif %}>The RSS URL is unavailable until this feed is enabled.</p>
+    </article>
     {% endfor %}
 
-    <a class="feed-card" href="/compose" style="display:grid; place-items:center; min-height:166px; text-align:center;">
-      <div>
-        <div style="font-size:2rem; line-height:1; color:#ffbc8f;">+</div>
-        <div style="margin-top:8px; font-weight:600;">New Feed</div>
-      </div>
-    </a>
   </div>
   {% else %}
   <div class="empty-state">
@@ -86,13 +76,12 @@
 {% if profiles %}
 <div
   id="feed-context-menu"
-  style="display:none; position:fixed; min-width:180px; padding:8px; border-radius:14px; border:1px solid var(--line-strong); background:rgba(22,29,41,0.98); box-shadow:0 18px 40px rgba(0,0,0,0.3); z-index:1000;"
+  class="feed-actions-menu" role="group" aria-label="Feed actions" style="display:none;"
 >
   <button
     id="feed-context-refresh"
     type="button"
     class="btn btn-secondary"
-    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent;"
   >
     Refresh feed
   </button>
@@ -100,7 +89,6 @@
     id="feed-context-toggle"
     type="button"
     class="btn btn-secondary"
-    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent;"
   >
     Disable feed
   </button>
@@ -108,15 +96,13 @@
     id="feed-context-clone"
     type="button"
     class="btn btn-secondary"
-    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent;"
   >
-    Clone feed
+    Duplicate feed
   </button>
   <button
     id="feed-context-delete"
     type="button"
-    class="btn btn-secondary"
-    style="width:100%; justify-content:flex-start; background:transparent; border-color:transparent; color:#ffb7b5;"
+    class="btn btn-secondary delete-action"
   >
     Delete feed
   </button>
@@ -133,6 +119,7 @@
     const feedCount = document.querySelector("[data-feed-count]");
     const csrfSafeHeaders = {"X-Requested-With": "XMLHttpRequest"};
     let activeCard = null;
+    let menuTrigger = null;
     let activeRefreshUrl = "";
     let activeToggleUrl = "";
     let activeCloneUrl = "";
@@ -144,6 +131,7 @@
 
     const closeMenu = () => {
       menu.style.display = "none";
+      if (menuTrigger) { menuTrigger.setAttribute("aria-expanded", "false"); if (menu.contains(document.activeElement)) menuTrigger.focus(); }
       activeCard = null;
       activeRefreshUrl = "";
       activeToggleUrl = "";
@@ -159,7 +147,8 @@
       if (spinner) {
         spinner.style.display = isRefreshing ? "flex" : "none";
       }
-      card.style.pointerEvents = isRefreshing ? "none" : "";
+      card.setAttribute("aria-busy", String(isRefreshing));
+      card.querySelector("[data-feed-more]").disabled = isRefreshing;
     };
 
     const applyStatus = (card, status) => {
@@ -170,6 +159,7 @@
         return;
       }
 
+      card.querySelector("[data-feed-availability]").hidden = status !== "disabled";
       badge.classList.remove("ok", "error", "idle", "disabled");
       if (status === "ok") {
         badge.classList.add("ok");
@@ -182,7 +172,7 @@
       if (status === "error") {
         badge.classList.add("error");
         icon.textContent = "×";
-        label.textContent = "Issue";
+        label.textContent = "Needs attention";
         card.dataset.status = "error";
         card.dataset.active = "true";
         return;
@@ -197,7 +187,7 @@
       }
       badge.classList.add("idle");
       icon.textContent = "•";
-      label.textContent = "Idle";
+      label.textContent = "Not refreshed yet";
       card.dataset.status = "idle";
       card.dataset.active = "true";
     };
@@ -227,12 +217,13 @@
           itemCount.textContent = `${payload.item_count} items`;
         }
         if (lastRefreshed) {
-          lastRefreshed.textContent = payload.last_refreshed_at;
+          window.nightfeedTime(lastRefreshed, payload.last_refreshed_iso, payload.last_refreshed_at);
         }
         if (nextRefresh) {
-          nextRefresh.textContent = payload.next_refresh_at;
+          window.nightfeedTime(nextRefresh, payload.next_refresh_iso, payload.next_refresh_at);
         }
         applyStatus(card, payload.status);
+        window.nightfeedUnread(payload.unread_notifications);
         window.showRefreshToast(payload.message);
       } catch (error) {
         applyStatus(card, "error");
@@ -272,10 +263,10 @@
         const lastRefreshed = card.querySelector("[data-last-refreshed]");
         const nextRefresh = card.querySelector("[data-next-refresh]");
         if (lastRefreshed) {
-          lastRefreshed.textContent = payload.last_refreshed_at;
+          window.nightfeedTime(lastRefreshed, payload.last_refreshed_iso, payload.last_refreshed_at);
         }
         if (nextRefresh) {
-          nextRefresh.textContent = payload.next_refresh_at;
+          window.nightfeedTime(nextRefresh, payload.next_refresh_iso, payload.next_refresh_at);
         }
       } catch (error) {
         window.alert(error.message || "Unable to update feed state.");
@@ -321,9 +312,14 @@
     };
 
     cards.forEach((card) => {
-      card.addEventListener("contextmenu", (event) => {
+      const more = card.querySelector('[data-feed-more]');
+      const openMenu = (event) => {
+        event.stopPropagation();
         event.preventDefault();
+        closeMenu();
         activeCard = card;
+        menuTrigger = more;
+        more.setAttribute("aria-expanded", "true");
         activeRefreshUrl = card.dataset.refreshUrl || "";
         activeToggleUrl = card.dataset.toggleUrl || "";
         activeCloneUrl = card.dataset.cloneUrl || "";
@@ -332,8 +328,9 @@
         refreshButton.style.display = isActive ? "flex" : "none";
         toggleButton.textContent = isActive ? "Disable feed" : "Enable feed";
         menu.style.display = "block";
-        menu.style.left = `${event.clientX}px`;
-        menu.style.top = `${event.clientY}px`;
+        const anchor = more.getBoundingClientRect();
+        menu.style.left = `${anchor.left}px`;
+        menu.style.top = `${anchor.bottom + 4}px`;
 
         const rect = menu.getBoundingClientRect();
         if (rect.right > window.innerWidth) {
@@ -342,7 +339,24 @@
         if (rect.bottom > window.innerHeight) {
           menu.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
         }
+        (isActive ? refreshButton : toggleButton).focus();
+      };
+      more.addEventListener('click', event => {
+        event.stopPropagation();
+        if (activeCard === card && menu.style.display !== 'none') closeMenu();
+        else openMenu(event);
       });
+    });
+    menu.addEventListener('click', event => event.stopPropagation());
+    menu.addEventListener('keydown', event => {
+      const buttons = [...menu.querySelectorAll('button')].filter(button => button.style.display !== 'none');
+      const index = buttons.indexOf(document.activeElement);
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[next].focus();
+      }
+      if (event.key === 'Tab') setTimeout(closeMenu, 0);
     });
 
     refreshButton.addEventListener("click", submitRefresh);

@@ -1,0 +1,73 @@
+{# Both editors use the existing submitted names. field_prefix makes labels unique. #}
+{% macro input_field(name, label, value, type='text', required=false, min=none, max=none, hint='') %}
+<div class="field">
+  <div class="field-label"><label for="{{ field_prefix }}{{ name }}">{{ label }}</label>{% if hint %}<details class="ui-hint"><summary aria-label="Help with {{ label }}">?</summary><div class="ui-hint-content" id="{{ field_prefix }}{{ name }}-help">{{ hint }}</div></details>{% endif %}</div>
+  <input id="{{ field_prefix }}{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}" {% if required %}required{% endif %} {% if min is not none %}min="{{ min }}"{% endif %} {% if max is not none %}max="{{ max }}"{% endif %} {% if hint %}aria-describedby="{{ field_prefix }}{{ name }}-help"{% endif %} {% if name == 'source_url' %}placeholder="https://example.com/topics" pattern="https?://.+"{% endif %}>
+</div>
+{% endmacro %}
+<section data-editor-step="0" aria-labelledby="{{ field_prefix }}source-heading">
+  <h2 id="{{ field_prefix }}source-heading" tabindex="-1">Source</h2>
+
+  {{ input_field('feed_title', 'Feed name', form.get('feed_title', ''), required=true) }}
+  {{ input_field('source_url', 'Source URL', form.get('source_url', ''), type='url', required=true, hint='Use the full http:// or https:// address of the page containing your items.') }}
+</section>
+<section data-editor-step="1" aria-labelledby="{{ field_prefix }}extraction-heading">
+  <div class="help-heading"><h2 id="{{ field_prefix }}extraction-heading" tabindex="-1">Extraction</h2><details class="ui-hint"><summary aria-label="Help with selectors">?</summary><div class="ui-hint-content">
+    <p>Use <code>:scope</code> when the item itself is the title or link. Use <code>&gt;&gt; parent</code> to climb to its parent, for example <code>.title &gt;&gt; parent &gt;&gt; a</code>. CSS selectors such as <code>a:nth-child(2)</code> and <code>a:nth-of-type(2)</code> are supported.</p>
+    <p class="meta">Examples, not guaranteed matches: <code>article, li, .topic-row</code> for items and <code>a</code> for titles and links. Inspect the source page and preview your selectors.</p>
+  </div></details></div>
+
+  <div class="extraction-layout"><div class="extraction-fields">
+  {{ input_field('item_selector', 'Item selector', form.get('item_selector', ''), required=true) }}
+  {{ input_field('title_selector', 'Title selector', form.get('title_selector', ''), required=true) }}
+  {{ input_field('link_selector', 'Link selector', form.get('link_selector', ''), required=true) }}
+  {{ input_field('summary_selector', 'Summary selector (optional)', form.get('summary_selector', '')) }}
+
+  <details class="editor-disclosure" {% if form.get('filter_rules') or form.get('exclude_filter_rules') %}open{% endif %}><summary>Include and exclude filters</summary>
+    <div class="field"><div class="field-label"><label for="{{ field_prefix }}filter_rules">Include filters</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content" id="{{ field_prefix }}filters-help">Optional, one rule per line. Supports AND, OR, parentheses, quoted phrases, and * / ? wildcards. Exclusions apply after inclusions.</div></details></div><textarea id="{{ field_prefix }}filter_rules" name="filter_rules" aria-describedby="{{ field_prefix }}filters-help">{{ form.get('filter_rules', '') }}</textarea></div>
+    <div class="field"><label for="{{ field_prefix }}exclude_filter_rules">Exclude filters</label><textarea id="{{ field_prefix }}exclude_filter_rules" name="exclude_filter_rules" aria-describedby="{{ field_prefix }}filters-help">{{ form.get('exclude_filter_rules', '') }}</textarea></div>
+
+  </details>
+  <details class="editor-disclosure" {% if form.get('fetch_mode') == 'browser' %}open{% endif %}><summary>Browser fetching</summary>
+    <div class="field"><div class="field-label"><label for="{{ field_prefix }}fetch_mode">Fetch mode</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content" id="{{ field_prefix }}fetch-help">Start with HTTP. Browser mode requires Playwright and Chromium on the server and can help with JavaScript-rendered listings.</div></details></div><select id="{{ field_prefix }}fetch_mode" name="fetch_mode" aria-describedby="{{ field_prefix }}fetch-help"><option value="http" {% if form.get('fetch_mode', 'http') == 'http' %}selected{% endif %}>HTTP only</option><option value="browser" {% if form.get('fetch_mode') == 'browser' %}selected{% endif %}>Browser</option></select></div>
+
+  </details>
+  </div><div class="editor-preview" data-preview-panel="{{ preview_target }}">
+    <h3>Extraction preview</h3>
+    <div class="button-row"><button class="btn btn-secondary" type="submit" formaction="{{ preview_page }}" formmethod="get" data-editor-preview data-preview-url="{{ preview_url }}" data-preview-stream-url="{{ preview_stream }}">Preview extraction</button></div>
+    <p class="meta" data-editor-preview-status role="status" aria-live="polite">{% if preview_error %}Preview failed.{% elif preview %}{{ preview|length }} matching items.{% else %}{% endif %}</p>
+    <div class="loading-note" data-editor-loading hidden><strong data-editor-stage>Connecting</strong><p data-editor-stage-detail>Opening the source page.</p></div>
+    <p class="error-text" data-editor-preview-error {% if not preview_error %}hidden{% endif %}>{{ preview_error or '' }}</p>
+    <div class="list-stack" data-editor-preview-list>{% for item in preview %}<article class="preview-card"><h3>{{ item.title }}</h3><p class="meta">{{ item.link }}</p></article>{% endfor %}</div>
+    <p class="meta" data-editor-preview-empty hidden>No matching items. Try different selectors or filters.</p>
+  </div>
+  </div>
+</section>
+<section data-editor-step="2" aria-labelledby="{{ field_prefix }}schedule-heading">
+  <h2 id="{{ field_prefix }}schedule-heading" tabindex="-1">Schedule &amp; save</h2>
+  <div class="field" data-schedule-choice hidden><label for="{{ field_prefix }}schedule_mode">Refresh schedule</label><select id="{{ field_prefix }}schedule_mode" data-schedule-mode><option value="interval">Every interval</option><option value="calendar">Calendar schedule</option><option value="manual">Manual only</option></select></div>
+  <div data-schedule-interval>{{ input_field('refresh_interval_minutes', 'Refresh interval (minutes)', form.get('refresh_interval_minutes', 60), type='number', required=true, min=0, max=1440, hint='0 means manual only. Calendar schedules override this interval.') }}</div>
+  <div data-schedule-calendar>{{ input_field('cron_expression', 'Cron schedule (optional)', form.get('cron_expression', ''), hint='Five fields: minute hour day month weekday. Example: 0 */2 * * *. Uses the timezone configured in Settings. Clear to return to interval scheduling.') }}</div>
+
+  <p class="meta" data-schedule-summary></p>
+  <details class="editor-disclosure"><summary>Item limits and priority</summary>
+    {{ input_field('max_items', 'Max items', form.get('max_items', 25), type='number', required=true, min=1, max=100, hint='Controls extraction per refresh and RSS output, not access to stored history.') }}
+    {{ input_field('priority', 'Feed priority', form.get('priority', 0), type='number', required=true, min=0, max=100, hint='Higher values appear first when sorting the Timeline by priority.') }}
+  </details>
+  {% if smtp_enabled %}
+  <details class="editor-disclosure notification-preferences"><summary>Email notifications</summary>
+    <input type="hidden" name="notify_failure_categories_present" value="1">
+    <label class="check-option"><input name="notify_on_success" type="checkbox" value="1" {% if form.get('notify_on_success') in ['1', 1, true, 'on'] %}checked{% endif %}><span>Success notifications</span></label>
+    <fieldset class="notification-failures"><legend>Failure notifications</legend><div class="notification-options">
+    {% set selected_failure_categories = form.get('notify_failure_categories', '') %}
+    {% for category in failure_notification_categories %}
+    <div class="notification-choice">
+      <label class="check-option"><input name="notify_failure_categories" type="checkbox" value="{{ category }}" {% if category in selected_failure_categories %}checked{% endif %}><span class="check-copy"><strong>{{ failure_notification_labels[category] }}</strong></span></label>
+      <details class="ui-hint"><summary aria-label="Help with {{ failure_notification_labels[category] }}">?</summary><div class="ui-hint-content">{{ failure_notification_samples[category] }}</div></details>
+    </div>
+    {% endfor %}
+    </div></fieldset>
+  </details>
+  {% endif %}
+
+</section>

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
+{% block body_class %}focused-browser{% endblock %}
 
 {% block title %}Safe browser · {{ item.title }} · Nightfeed{% endblock %}
 
 {% block page_header %}
 <header class="topbar">
   <div class="page-title">
-    <h1>Safe browser</h1>
+    <div class="help-heading"><h1>Isolated browser</h1><details class="ui-hint"><summary aria-label="Help with Isolated browser">?</summary><div class="ui-hint-content">This page runs in a separate browser session. Click to type and scroll to move through the page. Remote screenshots do not expose page text to screen readers; Open original provides direct access.</div></details></div>
     <p>{{ item.title }}</p>
   </div>
   <div class="topbar-actions">
@@ -34,6 +35,7 @@
 playwright install chromium</pre>
 </section>
 {% else %}
+<div class="session-ended" data-session-ended role="status" hidden><h2>Session ended</h2><p>Temporary files and cookies are no longer available. Starting again creates a new session.</p><div class="button-row"><a class="btn btn-primary" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=item.id, return_to=return_to) }}">Start new session</a><a class="btn btn-secondary" href="{{ return_to }}">Return to feed</a></div></div>
 <section class="surface safe-browser-shell"
   data-safe-browser
   data-screenshot-url="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/screenshot"
@@ -97,18 +99,19 @@ playwright install chromium</pre>
       data-browser-screen>
     <div class="safe-browser-loading" data-browser-loading hidden>Updating…</div>
   </div>
-  <p class="safe-browser-hint">Click inside the page, then type normally. Scroll over the viewport to move through the remote page.</p>
+
 </section>
 
 
 <dialog class="downloader-dialog" data-downloader-dialog aria-labelledby="send-title">
   <form data-downloader-send-form>
-    <div class="section-head"><div><h2 id="send-title">Send to downloader</h2><p data-send-file></p></div><button class="btn btn-secondary" type="button" data-send-close aria-label="Close send dialog">Close</button></div>
+    <div class="section-head"><div><div class="help-heading"><h2 id="send-title">Send to downloader</h2><details class="ui-hint"><summary aria-label="Help with Send to downloader">?</summary><div class="ui-hint-content">Supported files up to 10 MB; up to four active submissions. Acceptance confirms receipt by the downloader. Category directories are managed by your downloader. Existing downloads keep their category.</div></details></div><p data-send-file></p></div><button class="btn btn-secondary" type="button" data-send-close aria-label="Close send dialog">Close</button></div>
     <div class="downloader-dialog-body">
       <div class="field"><label for="send-destination">Destination</label><select id="send-destination" data-send-destination></select></div>
       <div class="field"><label for="send-category">Category</label><select id="send-category" data-send-category required></select><p class="meta" data-send-path></p></div>
       <label class="check-option"><input type="checkbox" data-send-start>Start immediately</label>
-      <p class="meta">Category directories are managed by your downloader. Existing downloads keep their category.</p>
+
+      <p class="editor-notice" data-send-caution hidden>A previous attempt was not confirmed. Sending again could create a duplicate; review the downloader before retrying.</p>
       <p class="error-text" role="alert" data-send-error></p>
       <p class="meta" role="status" data-send-progress></p>
     </div>
@@ -147,6 +150,7 @@ playwright install chromium</pre>
     let restored = [];
     try {restored = JSON.parse(sessionStorage.getItem(storageKey) || '[]');} catch (_) {}
     const submissionStates = new Map(Array.isArray(restored) ? restored : []);
+    let sending = false;
     let selectedFile = null, categoryOptions = [], categoryRequired = true, categoryRequest = 0;
     const updateCategoryPath = () => {
       const category = categoryOptions.find(c => c.name === categorySelect.value);
@@ -174,12 +178,14 @@ playwright install chromium</pre>
       } catch(error) {if(serial === categoryRequest){sendError.textContent = error.message; sendProgress.textContent = '';}}
     };
     const openSend = file => {
-      if (['sending','unknown','added','already_present'].includes(submissionStates.get(file.id)?.status)) return;
+      if (sending || ['sending','unknown','added','already_present'].includes(submissionStates.get(file.id)?.status)) return;
       selectedFile = file;
+      sendDialog.querySelector('[data-send-caution]').hidden = submissionStates.get(file.id)?.status !== 'error';
       sendDialog.querySelector('[data-send-file]').textContent = file.name;
       destinationSelect.replaceChildren(...file.downloaders.map(profile => new Option(profile.name, profile.id)));
       sendDialog.showModal(); loadCategories();
     };
+    sendDialog.addEventListener('cancel', () => { categoryRequest++; });
     destinationSelect.addEventListener('change', loadCategories);
     categorySelect.addEventListener('change', updateCategoryPath);
     sendDialog.querySelectorAll('[data-send-close], [data-send-cancel]').forEach(button => button.addEventListener('click', () => {categoryRequest++; sendDialog.close();}));
@@ -213,18 +219,27 @@ playwright install chromium</pre>
       event.preventDefault();
       if(submitSend.disabled || !selectedFile) return;
       const file = selectedFile;
+      sending = true; destinationSelect.disabled = true; categorySelect.disabled = true;
       submitSend.disabled = true; sendError.textContent = ''; sendProgress.textContent = 'Starting submission…';
       try {
         const response = await fetch(`${browser.dataset.downloadBase}${encodeURIComponent(file.id)}/send`, {method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken}, body:JSON.stringify({downloader_id:Number(destinationSelect.value),category:categorySelect.value,start_immediately:sendDialog.querySelector('[data-send-start]').checked})});
         const result = await response.json(); if(!response.ok) throw new Error(result.error);
         recordSubmission(file.id, result); sendDialog.close(); pollSubmission(file.id, result.id);
       } catch(error) {sendError.textContent = error.message;}
-      finally {submitSend.disabled = false; sendProgress.textContent = '';}
+      finally {sending = false; destinationSelect.disabled = false; categorySelect.disabled = false; submitSend.disabled = false; sendProgress.textContent = '';}
     });
     for (const [fileId, result] of submissionStates) {
       if (result.status === 'sending') pollSubmission(fileId, result.id);
     }
     let busy = false, polling = false, ended = false, lastInteraction = Date.now();
+    const endSession = () => {
+      ended = true;
+      document.querySelector('[data-session-ended]').hidden = false;
+      browser.querySelectorAll('button, input').forEach(control => control.disabled = true);
+    };
+    document.querySelector('form[action$="/close"]').addEventListener('submit', event => {
+      if (downloadCount && !window.confirm('Closing removes temporary files and session cookies. Save any files you need. Submitted jobs continue independently.')) event.preventDefault();
+    });
     const inputQueue = [];
     let frameTag = null;
     let currentFrameUrl = null, framePending = false, frameAgain = false;
@@ -382,7 +397,7 @@ playwright install chromium</pre>
       try {
         const response = await fetch(browser.dataset.screenshotUrl, {cache: 'no-store', headers: frameTag ? {'If-None-Match': frameTag} : {}, signal: AbortSignal.timeout(15000)});
         if (response.status === 304) return;
-        if (!response.ok) {if(response.status === 410) ended = true; throw new Error('Session ended or screen unavailable.');}
+        if (!response.ok) {if(response.status === 410) endSession(); throw new Error('Session ended or screen unavailable.');}
         const nextTag = response.headers.get('ETag');
         const url = URL.createObjectURL(await response.blob());
         const image = new Image(); image.src = url;
@@ -407,7 +422,7 @@ playwright install chromium</pre>
           body: JSON.stringify({action, ...payload}),
         });
         const state = await response.json();
-        if (!response.ok) { if(response.status === 410) ended = true; throw new Error(state.error || 'Browser command failed.'); }
+        if (!response.ok) { if(response.status === 410) endSession(); throw new Error(state.error || 'Browser command failed.'); }
         renderState(state);
         refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
       } catch(error) { loading.textContent = error.message; loading.hidden = false; }
@@ -615,7 +630,7 @@ playwright install chromium</pre>
       polling = true;
       try {
         const response = await fetch(browser.dataset.stateUrl, {cache: 'no-store', signal: AbortSignal.timeout(15000)});
-        if (!response.ok) { if(response.status === 410) ended = true; throw new Error('Session ended or connection unavailable.'); }
+        if (!response.ok) { if(response.status === 410) endSession(); throw new Error('Session ended or connection unavailable.'); }
         renderState(await response.json());
         refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
       } catch(error) { loading.textContent = error.message; loading.hidden = false; }
