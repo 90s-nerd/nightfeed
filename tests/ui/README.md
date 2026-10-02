@@ -14,6 +14,7 @@ python tests/ui/check_feedback.py
 python tests/ui/check_hints.py
 python tests/ui/check_topic_dates.py
 python tests/ui/check_notification_menu.py
+python tests/ui/check_async_timeline.py
 ```
 
 The checks cover responsive layouts and themes, feed creation/editing and

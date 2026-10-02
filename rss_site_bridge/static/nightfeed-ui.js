@@ -151,27 +151,93 @@ document.addEventListener('DOMContentLoaded', () => {
     enhance();
     new MutationObserver(enhance).observe(document.body, {childList:true, subtree:true});
     document.querySelectorAll('[data-auto-search]').forEach(form => {
-      let timer;
-      try {
-        const caret = JSON.parse(sessionStorage.getItem('nightfeed.search.focus') || 'null');
-        sessionStorage.removeItem('nightfeed.search.focus');
-        if (caret) { const input = form.querySelector('[name=q]'); input.focus(); input.setSelectionRange(caret.start, caret.end); }
-      } catch (_) { /* Search still works when storage is unavailable. */ }
+      let timer, controller, generation = 0;
+      const results = document.querySelector('[data-timeline-results]');
+      const status = document.querySelector('[data-search-status]');
+      const cancel = () => {
+        clearTimeout(timer);
+        controller?.abort();
+        generation++;
+        results.removeAttribute('aria-busy');
+        status.hidden = true;
+      };
+      const updateFeedLabel = () => {
+        const count = form.querySelectorAll('[name=feed]:checked').length;
+        form.querySelector('summary').textContent = `Filter by feed${count ? ` · ${count} selected` : ''}`;
+      };
+      const load = async (url, historyMode = 'push') => {
+        cancel();
+        const current = generation;
+        controller = new AbortController();
+        results.setAttribute('aria-busy', 'true');
+        status.textContent = 'Updating timeline…'; status.hidden = false;
+        try {
+          const response = await fetch(url, {signal: controller.signal});
+          if (!response.ok) throw new Error('Timeline request failed');
+          const document = new DOMParser().parseFromString(await response.text(), 'text/html');
+          const next = document.querySelector('[data-timeline-results]');
+          if (!next) throw new Error('Timeline results missing');
+          if (current !== generation) return;
+          // Keep the form and its focused input mounted, including on mobile.
+          results.replaceChildren(...next.childNodes);
+          if (historyMode === 'push' && url.href !== location.href) history.pushState(null, '', url);
+          enhance();
+          status.textContent = results.querySelector('p').textContent;
+          status.hidden = true;
+        } catch (error) {
+          if (current !== generation || error.name === 'AbortError') return;
+          status.textContent = 'Could not update the timeline. ';
+          const retry = document.createElement('button');
+          retry.type = 'button'; retry.className = 'link-text'; retry.textContent = 'Retry';
+          retry.addEventListener('click', () => load(url, historyMode));
+          status.append(retry); status.hidden = false;
+        } finally {
+          if (current === generation) results.removeAttribute('aria-busy');
+        }
+      };
       const apply = () => { clearTimeout(timer); timer = setTimeout(() => form.requestSubmit(), 450); };
       const isTextInput = target => target.matches('input[type=search], input[type=text], textarea');
-      form.addEventListener('input', event => { if (isTextInput(event.target) && !event.isComposing) apply(); });
+      form.addEventListener('input', event => {
+        if (!isTextInput(event.target)) return;
+        cancel();
+        if (!event.isComposing) apply();
+      });
       form.addEventListener('compositionend', event => { if (isTextInput(event.target)) apply(); });
       form.addEventListener('change', event => {
         if (isTextInput(event.target)) return;
         clearTimeout(timer);
         form.requestSubmit();
       });
-      form.addEventListener('submit', () => {
+      form.addEventListener('submit', event => {
+        if (event.defaultPrevented) return;
+        event.preventDefault();
         clearTimeout(timer);
-        const input = form.querySelector('[name=q]');
-        if (document.activeElement === input) {
-          try { sessionStorage.setItem('nightfeed.search.focus', JSON.stringify({start: input.selectionStart, end: input.selectionEnd})); } catch (_) {}
-        }
+        updateFeedLabel();
+        const url = new URL(form.action);
+        url.search = new URLSearchParams(new FormData(form)).toString();
+        load(url);
+      });
+      const plainClick = event => !event.defaultPrevented && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
+      results.addEventListener('click', event => {
+        const link = event.target.closest('.pagination-actions a');
+        if (!link || !plainClick(event)) return;
+        event.preventDefault(); load(new URL(link.href));
+      });
+      form.querySelector('.search-reset').addEventListener('click', event => {
+        if (!plainClick(event)) return;
+        event.preventDefault();
+        form.querySelector('[name=q]').value = '';
+        form.querySelector('[name=sort]').value = 'recent';
+        form.querySelectorAll('[name=feed]').forEach(input => { input.checked = false; });
+        updateFeedLabel(); load(new URL(event.currentTarget.href));
+      });
+      window.addEventListener('popstate', () => {
+        const url = new URL(location.href);
+        form.querySelector('[name=q]').value = url.searchParams.get('q') || '';
+        const sort = url.searchParams.get('sort') || 'recent';
+        form.querySelector('[name=sort]').value = ['recent', 'oldest', 'priority', 'title'].includes(sort) ? sort : 'recent';
+        form.querySelectorAll('[name=feed]').forEach(input => { input.checked = url.searchParams.getAll('feed').includes(input.value); });
+        updateFeedLabel(); load(url, 'none');
       });
     });
   });
