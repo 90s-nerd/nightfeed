@@ -5,10 +5,13 @@
 <div class="reading-column">
 <section class="surface timeline-search">
 <form method="get" class="reading-filters" data-auto-search>
-<div class="field"><label for="search">Search Timeline</label><input type="search" id="search" name="q" value="{{ query }}" placeholder="Search titles, summaries, and links"></div>
-<div class="field"><label for="sort">Sort</label><select id="sort" name="sort">{% for key,label in [('recent','Newest first'),('oldest','Oldest first'),('priority','Feed priority'),('title','Title A–Z')] %}<option value="{{ key }}" {% if sort == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
-<details {% if selected %}open{% endif %}><summary>Filter by feed {% if selected %}· {{ selected|length }} selected{% endif %}</summary><fieldset class="feed-filter-group"><legend>Feeds</legend><div class="feed-filter-options">{% for profile in profiles %}<label class="check-option"><input type="checkbox" name="feed" value="{{ profile.id }}" {% if profile.id in selected %}checked{% endif %}>{{ profile.feed_title }}</label>{% endfor %}</div></fieldset></details>
-<a class="search-reset" href="/">Reset</a><noscript><button class="btn btn-secondary">Search</button></noscript>
+<div class="field timeline-query"><label for="search">Search Timeline</label><svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="search" name="q" value="{{ query }}" placeholder="Search timeline…"><button class="search-clear" type="button" aria-label="Reset search and filters" title="Reset search and filters" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+<details class="search-settings"><summary aria-label="Search settings" title="Search settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h9m4 0h5M3 12h3m4 0h11M3 18h11m4 0h3"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg><span class="search-filter-dot" {% if not selected and sort == 'recent' %}hidden{% endif %}></span></summary>
+<div class="search-settings-panel">
+<div class="search-settings-heading"><h2 id="search-settings-title">Search settings</h2><button type="button" class="search-settings-close" aria-label="Close search settings" hidden>×</button></div>
+<div class="field"><label for="sort">Sort by</label><select id="sort" name="sort">{% for key,label in [('recent','Newest first'),('oldest','Oldest first'),('priority','Feed priority'),('title','Title A–Z')] %}<option value="{{ key }}" {% if sort == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+<fieldset class="feed-filter-group"><legend>Feeds</legend><div class="feed-filter-options">{% for profile in profiles %}<label class="check-option"><span>{{ profile.feed_title }}</span><input type="checkbox" name="feed" value="{{ profile.id }}" {% if profile.id in selected %}checked{% endif %}></label>{% else %}<p class="meta">No feeds yet.</p>{% endfor %}</div></fieldset>
+</div></details><noscript><button class="btn btn-secondary">Search</button></noscript>
 </form></section>
 <p class="meta" data-search-status role="status" hidden></p>
 <section class="surface section" data-timeline-results style="margin-top:20px"><p>{{ total }} items · Page {{ page }} of {{ pages }}</p><div class="list-stack">

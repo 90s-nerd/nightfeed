@@ -82,11 +82,11 @@ def run():
                     assert page.evaluate('searchSubmissions.length') == 0
                     page.wait_for_function('searchSubmissions.length === 1')
                     page.locator('#search').fill('Sample story')
+                    page.locator('.reading-filters summary').click()
                     page.locator('#sort').select_option('title')
                     assert page.evaluate('searchSubmissions.length') == 2
                     page.wait_for_timeout(500)
                     assert page.evaluate('searchSubmissions.length') == 2
-                    page.locator('.reading-filters summary').click()
                     page.locator('input[name=feed]').check()
                     assert page.evaluate('searchSubmissions.length') == 3
                     page.wait_for_timeout(500)
@@ -95,6 +95,7 @@ def run():
                     timeline_bounds=page.locator('.topbar').bounding_box()
                     page.locator('#search').fill('Sample'); page.wait_for_url('**/?q=Sample**')
                     expect(page.locator('#search')).to_be_focused()
+                    page.locator('.reading-filters summary').click()
                     page.locator('#sort').select_option('title'); page.wait_for_url('**/*sort=title*')
                     page.goto(origin+'/feeds'); feed_bounds=page.locator('.topbar').bounding_box()
                     assert feed_bounds['x']==timeline_bounds['x'] and feed_bounds['width']==timeline_bounds['width']

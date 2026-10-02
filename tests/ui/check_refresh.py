@@ -66,6 +66,15 @@ def run():
                             assert all(abs(panel['extra']) < 2 for panel in panel_spacing), (name, width, theme, panel_spacing)
                             nav = page.get_by_role('navigation', name='Primary navigation')
                             assert nav.is_visible(), (name, width, 'hidden navigation')
+                            if width < 768:
+                                brand = page.get_by_role('link', name='Nightfeed home')
+                                assert brand.is_visible(), (name, width, 'missing mobile brand')
+                                header = page.locator('.sidebar-header')
+                                assert header.evaluate("el => getComputedStyle(el).position === 'fixed'")
+                                assert page.locator('.topbar').bounding_box()['y'] >= header.bounding_box()['height']
+                                assert header.evaluate("el => getComputedStyle(el).backdropFilter.includes('blur')")
+                                assert nav.evaluate("el => getComputedStyle(el).backdropFilter === 'none'")
+                                assert nav.bounding_box()['height'] <= 60, (width, 'bottom bar too tall')
                             for label in ['Timeline', 'Feeds', 'Notifications', 'Settings']:
                                 link = nav.get_by_role('link', name=label, exact=True)
                                 assert link.is_visible(), (label, width)
@@ -76,6 +85,13 @@ def run():
                             checks.append({'screen': name, 'width': width, 'theme': theme, 'overflow': False})
                             if name in ['timeline', 'feeds', 'settings', 'xml', 'compose', 'detail', 'configuration', 'rss'] and width in [390, 1440]:
                                 page.screenshot(path=str(output / f'{name}-{width}-{theme}.png'))
+                            if name == 'timeline' and width == 390:
+                                page.evaluate('window.scrollTo(0, 350)')
+                                page.wait_for_timeout(100)
+                                assert page.locator('.sidebar-header').bounding_box()['y'] == 0
+                                assert nav.bounding_box()['y'] + nav.bounding_box()['height'] == 1000
+                                assert page.get_by_role('link', name='Nightfeed home').evaluate('(el) => { const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }')
+                                page.screenshot(path=str(output / f'timeline-scrolled-{width}-{theme}.png'))
                 page.set_viewport_size({'width': 390, 'height': 1000})
                 page.goto(origin + '/feeds')
                 more = page.locator('[data-feed-more]').first
@@ -102,6 +118,7 @@ def run():
                 page.locator('[data-status-label]').get_by_text('Not refreshed yet', exact=True).wait_for()
                 page.goto(origin + f'/?q=thoughtful&feed={profile.id}&sort=oldest')
                 page.get_by_role('link', name='Next', exact=True).click()
+                page.wait_for_url('**/*page=2*')
                 assert 'page=2' in page.url and 'sort=oldest' in page.url and 'q=thoughtful' in page.url
                 assert page.locator('input[name=feed]').is_checked()
                 page.goto(origin + '/settings')

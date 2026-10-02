@@ -35,6 +35,8 @@ def run():
                     page.goto(origin)
                     page.evaluate("window.originalSearch = document.querySelector('#search'); window.marker = 'same document';")
                     search = page.locator('#search')
+                    reset = page.get_by_role('button', name='Reset search and filters')
+                    expect(reset).to_be_hidden()
                     search.fill('Story 0')
                     page.wait_for_timeout(150)
                     assert page.locator('.item-card').count() == 25
@@ -44,16 +46,34 @@ def run():
                     assert page.evaluate('originalSearch.selectionStart') == 7
                     assert page.locator('.external-icon').count() == 10
                     assert page.locator('.privacy-icon').count() == 10
+                    page.locator('.reading-filters summary').click()
+                    expect(page.get_by_role('dialog', name='Search settings')).to_be_visible()
+                    assert page.locator('.search-settings-panel .check-option').bounding_box()['height'] <= 48
+                    assert page.locator('.search-settings-panel .check-option span').bounding_box()['width'] > 200
+                    if width == 390:
+                        bounds = page.get_by_role('dialog').bounding_box()
+                        assert round(bounds['y'] + bounds['height']) == 900
+                    else:
+                        bounds = page.get_by_role('dialog').bounding_box()
+                        query_bounds = search.bounding_box()
+                        assert bounds['y'] == query_bounds['y'] + query_bounds['height'] + 8
+                        assert bounds['x'] + bounds['width'] == query_bounds['x'] + query_bounds['width']
+                        assert not page.get_by_role('dialog').evaluate("el => el.matches(':modal')")
                     page.locator('#sort').select_option('title')
                     page.wait_for_url('**/*sort=title*')
                     expect(page.locator('.topic-title').first).to_have_text('Story 00')
-                    page.locator('.reading-filters summary').click()
                     page.locator('[name=feed]').check()
                     page.wait_for_url('**/*feed=*')
-                    expect(page.locator('.reading-filters summary')).to_contain_text('1 selected')
-                    page.locator('.search-reset').click()
+                    expect(page.locator('.search-filter-dot')).to_be_visible()
+                    page.get_by_role('button', name='Close search settings').click()
+                    expect(page.locator('.reading-filters summary')).to_be_focused()
+                    reset.click()
                     expect(page.locator('.item-card')).to_have_count(25)
                     expect(search).to_have_value('')
+                    expect(reset).to_be_hidden()
+                    expect(page.locator('.search-filter-dot')).to_be_hidden()
+                    expect(page.locator('#sort')).to_have_value('recent')
+                    assert not page.locator('[name=feed]').is_checked()
                     page.get_by_role('link', name='Next', exact=True).click()
                     expect(page.locator('.item-card')).to_have_count(5)
                     page.wait_for_url('**/*page=2*')
@@ -62,7 +82,6 @@ def run():
                     page.go_back()
                     expect(search).to_have_value('Story 0')
                     expect(page.locator('.item-card')).to_have_count(10)
-                    page.locator('.reading-filters summary').click()
                     # A response already in flight must not replace newer input, even before its debounce fires.
                     page.evaluate("""() => {
                         window.realFetch = window.fetch;
@@ -91,6 +110,30 @@ def run():
                     expect(page.locator('.topic-title').first).to_contain_text('Story 2')
                     assert page.evaluate("originalSearch === document.querySelector('#search') && marker === 'same document'")
                     assert not errors, errors
+                    # Sort alone makes reset available; Escape dismisses the sheet and restores focus.
+                    reset.click()
+                    page.locator('.reading-filters summary').click()
+                    page.locator('#sort').select_option('oldest')
+                    page.wait_for_url('**/*sort=oldest*')
+                    page.keyboard.press('Escape')
+                    expect(page.locator('.reading-filters summary')).to_be_focused()
+                    expect(reset).to_be_visible()
+                    reset.click()
+                    expect(reset).to_be_hidden()
+                    output = ROOT / '.test-preview/refreshed-ui'
+                    output.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(output / f'timeline-search-{width}.png'))
+                    page.locator('.reading-filters summary').click()
+                    page.screenshot(path=str(output / f'timeline-search-settings-{width}.png'))
+                    if width == 1440:
+                        search.click()
+                        expect(page.get_by_role('dialog')).to_be_hidden()
+                        expect(search).to_be_focused()
+                        page.locator('.reading-filters summary').click()
+                        page.set_viewport_size({'width': 390, 'height': 900})
+                        expect(page.get_by_role('dialog')).to_be_hidden()
+                        page.locator('.reading-filters summary').click()
+                        assert page.get_by_role('dialog').evaluate("el => el.matches(':modal')")
                     page.close()
                 # Native submission remains available without JavaScript.
                 context = browser.new_context(java_script_enabled=False)
