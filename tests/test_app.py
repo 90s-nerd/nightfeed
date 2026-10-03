@@ -524,7 +524,7 @@ class AppTestCase(unittest.TestCase):
 
             with patch(
                 "rss_site_bridge.app.extract_feed_entries",
-                side_effect=lambda request_config: (
+                side_effect=lambda request_config, **kwargs: (
                     setattr(request_config, "source_url", "https://new.example/forum") or entries
                 ),
             ):

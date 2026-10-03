@@ -7,6 +7,7 @@
 - Stores source profiles in SQLite.
 - Persists discovered feed items so each source has a permanent feed URL.
 - Refreshes sources on demand and on a background timer.
+- Opens refresh notifications as saved reports showing new entries, before/after updates, and failure diagnostics. Opening a report marks it as read; changed entries include Open safely links. Reports created before this feature retain their existing summary; entry-level history is recorded for subsequent refreshes.
 - Uses HTTP-only fetching by default.
 - Offers an optional hardened browser mode for JavaScript-rendered pages.
 - Opens stored topics in an optional interactive, isolated browser with popup and ad-request controls.
