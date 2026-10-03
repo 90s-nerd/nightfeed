@@ -31,6 +31,7 @@ import sqlite3
 import ssl
 import sys
 import time
+import traceback
 from tempfile import TemporaryDirectory
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -1081,6 +1082,38 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         mark_notification_read(Path(app.config["DATABASE_PATH"]), notification_id)
         return redirect(url_for("notifications_route", status=request.form.get("status", "unread")))
 
+    @app.get("/notifications/<int:notification_id>")
+    def notification_detail_route(notification_id: int):
+        db_path = Path(app.config["DATABASE_PATH"])
+        notification = get_notification(db_path, notification_id)
+        if notification is None:
+            return Response("Notification not found.", status=404)
+        if request.method == "GET" and not notification.read_at:
+            mark_notification_read(db_path, notification_id)
+            notification = get_notification(db_path, notification_id) or notification
+            g.unread_notification_count = count_unread_notifications(db_path)
+        try:
+            report = json.loads(notification.metadata_json)
+        except (ValueError, TypeError):
+            report = {}
+        if not isinstance(report, dict):
+            report = {}
+        changes = report.get("changes", [])
+        if isinstance(changes, list) and notification.profile_id:
+            links = [entry["link"] for entry in changes if isinstance(entry, dict) and isinstance(entry.get("link"), str)]
+            if links:
+                with closing(connect_db(db_path)) as conn:
+                    rows = conn.execute("SELECT id, link FROM feed_items WHERE profile_id = ? AND link IN (" +
+                                        ",".join("?" for _ in links) + ")", [notification.profile_id, *links]).fetchall()
+                item_ids = {row["link"]: row["id"] for row in rows}
+                for entry in changes:
+                    if isinstance(entry, dict):
+                        entry["item_id"] = item_ids.get(entry.get("link"))
+        status = "all" if request.args.get("status") == "all" else "unread"
+        return render_template("notification_detail.html", notification=notification, report=report,
+                               profile=get_profile_by_id(db_path, notification.profile_id) if notification.profile_id else None,
+                               status_filter=status, failure_notification_labels=FAILURE_NOTIFICATION_LABELS)
+
     @app.post("/notifications/read-all")
     def mark_all_notifications_read_route() -> Response:
         mark_all_notifications_read(Path(app.config["DATABASE_PATH"]))
@@ -1455,7 +1488,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if "\\" in value or any(ord(char) < 32 for char in value):
             return fallback
         parsed = urlparse(value)
-        if parsed.scheme or parsed.netloc or parsed.path not in {"/", "/feeds", fallback}:
+        allowed = parsed.path in {"/", "/feeds", fallback}
+        if re.fullmatch(r"/notifications/[1-9]\d*", parsed.path):
+            notification = get_notification(Path(app.config["DATABASE_PATH"]), int(parsed.path.rsplit("/", 1)[-1]))
+            allowed = notification is not None and notification.profile_id == profile_id
+        if parsed.scheme or parsed.netloc or not allowed:
             return fallback
         return value
 
@@ -3287,9 +3324,16 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
         refresh_interval_minutes=profile.refresh_interval_minutes,
     )
     request_config = profile.to_feed_request()
+    stages = []
+    def record_stage(title: str, detail: str) -> None:
+        stages.append({"title": title, "detail": detail, "elapsed_ms": get_elapsed_ms(refresh_started_at)})
+    context = {"fetch_mode": profile.fetch_mode, "item_selector": profile.item_selector,
+               "title_selector": profile.title_selector, "link_selector": profile.link_selector,
+               "summary_selector": profile.summary_selector, "filter_rules": profile.filter_rules,
+               "exclude_filter_rules": profile.exclude_filter_rules, "max_items": profile.max_items}
     try:
-        entries = extract_feed_entries(request_config)
-    except (ValueError, RuntimeError) as exc:
+        entries = extract_feed_entries(request_config, progress=record_stage)
+    except Exception as exc:
         with closing(connect_db(db_path)) as conn:
             conn.execute(
                 """
@@ -3308,6 +3352,8 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
             source_url=request_config.source_url,
             refreshed_at=now,
             error_message=str(exc),
+            report={"context": context, "stages": stages, "duration_ms": get_elapsed_ms(refresh_started_at),
+                    "errors": refresh_error_details(exc)},
         )
         log_event(
             logging.WARNING,
@@ -3321,6 +3367,7 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
         raise RuntimeError(str(exc)) from exc
 
     changes = {"new_items": 0, "updated_items": 0}
+    changed_entries = []
     with closing(connect_db(db_path)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         for entry in entries:
@@ -3332,6 +3379,11 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
                 changes["new_items"] += 1
             elif existing["title"] != entry.title or existing["summary"] != entry.summary:
                 changes["updated_items"] += 1
+            if existing is None or existing["title"] != entry.title or existing["summary"] != entry.summary:
+                changed_entries.append({"kind": "new" if existing is None else "updated",
+                                        "title": entry.title, "link": entry.link, "summary": entry.summary,
+                                        "previous_title": existing["title"] if existing else "",
+                                        "previous_summary": existing["summary"] if existing else ""})
             conn.execute(
                 """
                 INSERT INTO feed_items (profile_id, title, link, summary, discovered_at)
@@ -3366,6 +3418,8 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
         entry_count=len(entries),
         new_items=changes["new_items"],
         updated_items=changes["updated_items"],
+        report={"changes": changed_entries, "context": context, "stages": stages,
+                "duration_ms": get_elapsed_ms(refresh_started_at)},
     )
     log_event(
         logging.INFO,
@@ -3745,6 +3799,22 @@ def refresh_notification_message(new_items: int, updated_items: int) -> str:
     return "Refresh complete: " + ", ".join(parts) + "." if parts else "No new entries. This feed is up to date."
 
 
+def refresh_error_details(error: BaseException) -> list[dict[str, Any]]:
+    """Capture the exception chain without local variables or absolute server paths."""
+    errors = []
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        detail = {"type": type(error).__name__, "message": str(error),
+                  "frames": [f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}"
+                             for frame in traceback.extract_tb(error.__traceback__)]}
+        if isinstance(error, HTTPError):
+            detail["http_status"] = error.code
+        errors.append(detail)
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    return errors
+
+
 def build_refresh_success_notification(db_path: Path, profile: StoredProfile, *, source_url: str, entry_count: int, new_items: int = 0, updated_items: int = 0) -> Notification:
     return create_notification(
         db_path,
@@ -3832,6 +3902,7 @@ def maybe_send_refresh_notification(
     new_items: int = 0,
     updated_items: int = 0,
     error_message: str = "",
+    report: dict[str, Any] | None = None,
 ) -> None:
     notification = create_notification(
         db_path,
@@ -3846,7 +3917,7 @@ def maybe_send_refresh_notification(
             else error_message
         ),
         source_url=source_url,
-        metadata={"entry_count": entry_count, "new_items": new_items, "updated_items": updated_items, "refreshed_at": refreshed_at},
+        metadata={**(report or {}), "entry_count": entry_count, "new_items": new_items, "updated_items": updated_items, "refreshed_at": refreshed_at},
     )
     maybe_send_notification_email(db_path, profile, notification)
 

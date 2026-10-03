@@ -29,7 +29,7 @@
     {% for notification in notifications %}
     <article class="item-card notification-card {{ 'notification-unread' if not notification.read_at else '' }}">
       <div class="notification-copy">
-          <h3>{% if not notification.read_at %}<span class="notification-dot" role="img" aria-label="Unread"></span>{% endif %}{{ notification.title }}</h3>
+          <h3>{% if not notification.read_at %}<span class="notification-dot" role="img" aria-label="Unread"></span>{% endif %}<a class="notification-report-link" href="{{ url_for('notification_detail_route', notification_id=notification.id, status=status_filter) }}">{{ notification.title }}</a></h3>
           <p class="meta notification-meta">
             {{ notification.created_at | human_datetime }}
             {% if notification.profile_id %}
@@ -69,4 +69,8 @@
   </div>
   {% endif %}
 </section>
+<script>
+  // A restored browser-history page must reflect notifications opened since it was saved.
+  window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
+</script>
 {% endblock %}

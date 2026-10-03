@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Refresh report · Nightfeed{% endblock %}
+{% block page_header %}
+<header class="topbar">
+  <div class="page-title"><a class="feed-name-link" href="{{ url_for('notifications_route', status=status_filter) }}">← Notifications</a><h1>Refresh report</h1></div>
+</header>
+{% endblock %}
+{% block content %}
+<div class="refresh-report">
+<section class="surface section">
+  <div class="section-head"><h2>{{ notification.title }}</h2><span class="status-badge {{ 'error' if notification.severity == 'error' else 'ok' }}">{{ failure_notification_labels.get(notification.category, notification.category) if notification.severity == 'error' else 'Success' }}</span></div>
+  <p class="meta">{{ notification.created_at | human_datetime }}{% if profile %} · <a class="feed-name-link" href="/profiles/{{ profile.id }}">{{ notification.profile_title }}</a>{% endif %}</p>
+  {% if notification.severity == 'error' %}<pre class="report-error">{{ notification.message }}</pre><p class="meta">This failed refresh did not change stored entries.</p>{% else %}<p>{{ notification.message }}</p>{% endif %}
+  {% if notification.severity != 'error' and 'new_items' in report %}
+  <dl class="report-counts"><div><dt>New entries</dt><dd>{{ report.new_items }}</dd></div><div><dt>Updated entries</dt><dd>{{ report.updated_items }}</dd></div>{% if 'entry_count' in report %}<div><dt>Entries checked</dt><dd>{{ report.entry_count }}</dd></div>{% endif %}</dl>
+  {% endif %}
+  <dl class="report-facts">
+  {% if notification.source_url %}<div><dt>Source</dt><dd><a href="{{ notification.source_url }}" target="_blank" rel="noreferrer">{{ notification.source_url }}</a></dd></div>{% endif %}
+  {% if report.context %}<div><dt>Fetch mode</dt><dd>{{ 'Browser' if report.context.fetch_mode == 'browser' else 'HTTP' }}</dd></div>{% endif %}
+  {% if 'duration_ms' in report %}<div><dt>Duration</dt><dd>{{ '%.2f'|format(report.duration_ms / 1000) }} seconds</dd></div>{% endif %}
+  {% if notification.severity == 'error' and report.stages %}<div><dt>Last stage</dt><dd>{{ report.stages[-1].title }} — {{ report.stages[-1].detail }}</dd></div>{% endif %}
+  <div><dt>Email</dt><dd>{% if notification.emailed_at %}Sent {{ notification.emailed_at | human_datetime }}{% else %}Not sent{% endif %}</dd></div>
+  </dl>
+  <div class="report-actions">{% if profile %}<a class="feed-name-link" href="/profiles/{{ profile.id }}">View feed</a><a class="feed-name-link" href="/profiles/{{ profile.id }}?view=configuration">Feed settings</a>{% endif %}
+  </div>
+</section>
+{% if notification.severity == 'error' %}
+<section class="surface section"><details class="report-technical"><summary>Troubleshooting</summary><p>
+{% if notification.category == 'http_status' %}Check whether the source is accessible. A 403 may indicate that the site blocks automated requests; a 404 can mean the source URL changed; a 5xx error usually comes from the source server. Review the status and error details below.
+{% elif notification.category == 'fetch' %}Check the source URL and the Nightfeed server's network connection. For timeouts, try again later. For a non-HTML response, check that the source points to a web page rather than a file or API.
+{% elif notification.category in ['selector', 'extraction'] %}Open Feed settings and run Preview extraction. Check the item, title, and link selectors against the current page. If the content requires JavaScript, try browser fetch mode.
+{% elif notification.category == 'filter_empty' %}Review the include and exclude filters in Feed settings, then run Preview extraction to see which entries remain.
+{% elif notification.category == 'link_blocked' %}Review the source URL and link selector. Extracted links must resolve to supported URLs on the allowed site.
+{% elif notification.category == 'browser' %}Check that the browser runtime is installed and the server has enough resources to launch it. Review the error details for launch or timeout failures.
+{% else %}Review the error chain and refresh stages below. Use the notification ID, timestamp, and call stack when investigating server logs.
+{% endif %}</p><p class="meta">Notification #{{ notification.id }}</p></details></section>
+{% endif %}
+{% if notification.severity != 'error' %}
+  {% if 'changes' in report %}
+    {% for kind, heading in [('new', 'New entries'), ('updated', 'Updated entries')] %}
+    {% set entries = report.changes|selectattr('kind', 'equalto', kind)|list %}
+    {% if entries %}<section class="surface section"><h2>{{ heading }} ({{ entries|length }})</h2><div class="list-stack">
+      {% for entry in entries %}<article class="report-entry"><h3><a class="topic-link" href="{{ entry.link }}" target="_blank" rel="noreferrer">{{ entry.title }}</a></h3>
+      {% if kind == 'new' %}{% if entry.summary %}<p class="report-text">{{ entry.summary }}</p>{% endif %}
+      {% else %}
+        {% for key, label in [('title', 'Title'), ('summary', 'Summary')] %}
+        {% if entry[key] != entry['previous_' ~ key] %}<div class="entry-change"><h4>{{ label }} changed</h4><dl><div><dt>Before</dt><dd>{{ entry['previous_' ~ key] or 'Empty' }}</dd></div><div><dt>After</dt><dd>{{ entry[key] or 'Empty' }}</dd></div></dl></div>{% endif %}
+        {% endfor %}
+      {% endif %}{% if entry.item_id and profile %}<a class="safe-link" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=entry.item_id, return_to=request.full_path.rstrip('?')) }}">Open safely</a>{% endif %}</article>{% endfor %}</div></section>{% endif %}
+    {% endfor %}
+  {% else %}<section class="surface section"><p class="meta">Entry-level changes were not recorded for this older notification.</p></section>{% endif %}
+{% endif %}
+{% if report.context or report.stages or report.errors %}
+<section class="surface section"><details class="report-technical" {% if notification.severity == 'error' %}open{% endif %}><summary>Refresh diagnostics</summary>
+  {% if report.errors %}<h3>Error details</h3>{% for error in report.errors %}<div class="report-exception"><h4>{{ error.type }}{% if error.http_status %} · HTTP {{ error.http_status }}{% endif %}</h4><pre>{{ error.message }}</pre>{% if error.frames %}<details><summary>Call stack</summary><pre>{{ error.frames|join('\n') }}</pre></details>{% endif %}</div>{% endfor %}{% endif %}
+  {% if report.stages %}<h3>Refresh stages</h3><ol class="report-stages">{% for stage in report.stages %}<li><strong>{{ stage.title }}</strong><span class="meta"> · {{ '%.2f'|format(stage.elapsed_ms / 1000) }}s</span><p>{{ stage.detail }}</p></li>{% endfor %}</ol>{% endif %}
+  {% if report.context %}<h3>Settings used for this refresh</h3><dl class="report-facts">{% for key, label in [('item_selector','Item selector'), ('title_selector','Title selector'), ('link_selector','Link selector'), ('summary_selector','Summary selector'), ('filter_rules','Include filters'), ('exclude_filter_rules','Exclude filters'), ('max_items','Entry limit')] %}<div><dt>{{ label }}</dt><dd><code>{{ report.context[key] if report.context[key] != '' else 'None' }}</code></dd></div>{% endfor %}</dl>{% endif %}
+</details></section>
+{% elif notification.severity == 'error' %}<section class="surface section"><p class="meta">Detailed diagnostics were not recorded for this older notification.</p></section>{% endif %}
+</div>
+{% endblock %}
