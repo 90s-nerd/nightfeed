@@ -72,7 +72,7 @@ def run():
                                 header = page.locator('.sidebar-header')
                                 assert header.evaluate("el => getComputedStyle(el).position === 'fixed'")
                                 assert page.locator('.topbar').bounding_box()['y'] >= header.bounding_box()['height']
-                                assert header.evaluate("el => getComputedStyle(el).backdropFilter.includes('blur')")
+                                assert header.evaluate("el => matchMedia('(prefers-reduced-transparency: reduce), (forced-colors: active)').matches ? getComputedStyle(el).backdropFilter === 'none' : getComputedStyle(el).backdropFilter.includes('blur')"), header.evaluate("el => ({filter: getComputedStyle(el).backdropFilter, width: innerWidth, reduced: matchMedia('(prefers-reduced-transparency: reduce)').matches, forced: matchMedia('(forced-colors: active)').matches})")
                                 assert nav.evaluate("el => getComputedStyle(el).backdropFilter === 'none'")
                                 assert nav.bounding_box()['height'] <= 60, (width, 'bottom bar too tall')
                             for label in ['Timeline', 'Feeds', 'Notifications', 'Settings']:

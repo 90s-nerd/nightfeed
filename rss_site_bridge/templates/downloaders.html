@@ -86,15 +86,15 @@ document.getElementById('downloader-name').addEventListener('input', event => {
 });
 document.querySelectorAll('[data-test-downloader]').forEach(button => button.addEventListener('click', async () => {
   const output = document.querySelector(`[data-test-result="${button.dataset.testDownloader}"]`);
-  button.disabled = true; output.textContent = 'Connecting…';
+  button.disabled = true; window.nightfeedStatus(output, 'Connecting…', 'progress');
   try {
     const response = await fetch(`/settings/downloaders/${button.dataset.testDownloader}/test`, {method:'POST', headers:{'X-CSRF-Token':token}});
     const result = await response.json(); if (!response.ok) throw new Error(result.error);
-    output.textContent = `Connected: ${result.version}, API ${result.api_version}. Categories: ${result.categories.map(c => c.name).join(', ') || 'none'}.`;
+    window.nightfeedStatus(output, `Connected: ${result.version}, API ${result.api_version}. Categories: ${result.categories.map(c => c.name).join(', ') || 'none'}.`);
     if (document.querySelector('input[name="id"]').value === button.dataset.testDownloader) {
       document.getElementById('downloader-categories').replaceChildren(...result.categories.map(c => {const option=document.createElement('option');option.value=c.name;return option;}));
     }
-  } catch(error) {output.textContent=error.message;} finally {button.disabled=false;}
+  } catch(error) {window.nightfeedStatus(output, error.message, 'error');} finally {button.disabled=false;}
 }));
 document.querySelectorAll('[data-check-job]').forEach(button => button.addEventListener('click', async () => {
   button.disabled=true;

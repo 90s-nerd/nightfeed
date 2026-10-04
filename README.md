@@ -6,6 +6,8 @@
 
 - Stores source profiles in SQLite.
 - Persists discovered feed items so each source has a permanent feed URL.
+- Labels unseen topics NEW and puts them first in the default timeline. A title visible for one continuous second is recorded as seen; opening a topic also records it. Badges and pagination stay stable during a browsing session. Existing topics are marked seen on the initial upgrade. Seen state is shared across devices and users of the same Nightfeed instance.
+- Filter the timeline to new topics or saved bookmarks, and mark all topics seen to catch up. Saving a topic keeps it available after it is seen. Previously seen topics show UPDATED when their title or summary changes, with a before/after summary accumulated until the update is seen. Bookmarks are shared across the instance.
 - Refreshes sources on demand and on a background timer.
 - Opens refresh notifications as saved reports showing new entries, before/after updates, and failure diagnostics. Opening a report marks it as read; changed entries include Open safely links. Reports created before this feature retain their existing summary; entry-level history is recorded for subsequent refreshes.
 - Uses HTTP-only fetching by default.

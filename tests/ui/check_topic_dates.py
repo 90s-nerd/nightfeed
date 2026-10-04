@@ -49,7 +49,10 @@ with TemporaryDirectory() as temp:
                         page.goto(origin+route)
                         heading=page.locator('.topic-heading')
                         text=heading.locator('.topic-title');stamp=heading.locator('.topic-time')
-                        assert text.evaluate("el => el.scrollWidth > el.clientWidth && getComputedStyle(el).textOverflow === 'ellipsis'")
+                        if width < 768:
+                            assert text.evaluate("el => getComputedStyle(el).webkitLineClamp === '2' && el.scrollHeight > el.clientHeight && Math.abs(el.clientHeight - 2 * parseFloat(getComputedStyle(el).lineHeight)) < 2")
+                        else:
+                            assert text.evaluate("el => el.scrollWidth > el.clientWidth && getComputedStyle(el).textOverflow === 'ellipsis'")
                         assert abs(text.bounding_box()['y']-stamp.bounding_box()['y']) < 10
                         assert heading.locator('.topic-link').get_attribute('title')==title
                         assert 'Discovered' not in heading.inner_text()

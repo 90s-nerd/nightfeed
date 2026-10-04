@@ -40,15 +40,15 @@
     {% for kind, heading in [('new', 'New entries'), ('updated', 'Updated entries')] %}
     {% set entries = report.changes|selectattr('kind', 'equalto', kind)|list %}
     {% if entries %}<section class="surface section"><h2>{{ heading }} ({{ entries|length }})</h2><div class="list-stack">
-      {% for entry in entries %}<article class="report-entry"><h3><a class="topic-link" href="{{ entry.link }}" target="_blank" rel="noreferrer">{{ entry.title }}</a></h3>
+      {% for entry in entries %}<article class="report-entry" {% if entry.item_id %}data-topic-id="{{ entry.item_id }}" data-topic-revision="{{ entry.updated_at or '' }}"{% endif %}><h3 data-topic-title>{% if entry.item_id and not entry.seen_at %}<span class="topic-new">NEW</span> {% endif %}<a class="topic-link" href="{{ entry.link }}" target="_blank" rel="noreferrer">{{ entry.title }}</a></h3>
       {% if kind == 'new' %}{% if entry.summary %}<p class="report-text">{{ entry.summary }}</p>{% endif %}
       {% else %}
         {% for key, label in [('title', 'Title'), ('summary', 'Summary')] %}
         {% if entry[key] != entry['previous_' ~ key] %}<div class="entry-change"><h4>{{ label }} changed</h4><dl><div><dt>Before</dt><dd>{{ entry['previous_' ~ key] or 'Empty' }}</dd></div><div><dt>After</dt><dd>{{ entry[key] or 'Empty' }}</dd></div></dl></div>{% endif %}
         {% endfor %}
-      {% endif %}{% if entry.item_id and profile %}<a class="safe-link" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=entry.item_id, return_to=request.full_path.rstrip('?')) }}">Open safely</a>{% endif %}</article>{% endfor %}</div></section>{% endif %}
+      {% endif %}{% if entry.item_id and profile %}{% with item=entry, topic_profile_id=profile.id %}{% include 'components/topic_actions.html' %}{% endwith %}{% endif %}</article>{% endfor %}</div></section>{% endif %}
     {% endfor %}
-  {% else %}<section class="surface section"><p class="meta">Entry-level changes were not recorded for this older notification.</p></section>{% endif %}
+  {% else %}<section class="surface section"><p class="meta">Entry-level changes are unavailable for this refresh.</p></section>{% endif %}
 {% endif %}
 {% if report.context or report.stages or report.errors %}
 <section class="surface section"><details class="report-technical" {% if notification.severity == 'error' %}open{% endif %}><summary>Refresh diagnostics</summary>
@@ -56,6 +56,6 @@
   {% if report.stages %}<h3>Refresh stages</h3><ol class="report-stages">{% for stage in report.stages %}<li><strong>{{ stage.title }}</strong><span class="meta"> · {{ '%.2f'|format(stage.elapsed_ms / 1000) }}s</span><p>{{ stage.detail }}</p></li>{% endfor %}</ol>{% endif %}
   {% if report.context %}<h3>Settings used for this refresh</h3><dl class="report-facts">{% for key, label in [('item_selector','Item selector'), ('title_selector','Title selector'), ('link_selector','Link selector'), ('summary_selector','Summary selector'), ('filter_rules','Include filters'), ('exclude_filter_rules','Exclude filters'), ('max_items','Entry limit')] %}<div><dt>{{ label }}</dt><dd><code>{{ report.context[key] if report.context[key] != '' else 'None' }}</code></dd></div>{% endfor %}</dl>{% endif %}
 </details></section>
-{% elif notification.severity == 'error' %}<section class="surface section"><p class="meta">Detailed diagnostics were not recorded for this older notification.</p></section>{% endif %}
+{% elif notification.severity == 'error' %}<section class="surface section"><p class="meta">Detailed diagnostics are unavailable for this refresh.</p></section>{% endif %}
 </div>
 {% endblock %}

@@ -45,6 +45,7 @@ class NotificationReportTests(unittest.TestCase):
         self.assertIn(b'First title', response.data)
         self.assertIn(b'Second title', response.data)
         self.assertIn(b'New story', response.data)
+        self.assertNotIn(b'Entry-level changes are unavailable', response.data)
         self.assertNotIn(b'Third title', response.data)
         self.assertIn(b'First title', self.client.get(f'/notifications/{first.id}').data)
 
@@ -55,6 +56,16 @@ class NotificationReportTests(unittest.TestCase):
         response = self.client.get(f'/notifications/{notification.id}')
         self.assertIn(b'No new entries', response.data)
         self.assertNotIn(b'older notification', response.data)
+
+    def test_missing_snapshots_do_not_imply_notification_age_or_invent_entries(self):
+        self.refresh([self.entry('Current feed entry')])
+        notification = create_notification(self.db, profile_id=self.profile.id, event_type='refresh', severity='info', category='success',
+                                           title='Refresh succeeded', message='Nightfeed saved 5 entries for this feed.', metadata={'entry_count': 5})
+        response = self.client.get(f'/notifications/{notification.id}')
+        self.assertIn(b'Entry-level changes are unavailable for this refresh.', response.data)
+        self.assertNotIn(b'older notification', response.data)
+        self.assertNotIn(b'Current feed entry', response.data)
+        self.assertNotIn(b'No new entries', response.data)
 
     def test_safe_links_for_new_and_updated_entries_return_to_report(self):
         self.refresh([self.entry('Original')])
@@ -123,7 +134,7 @@ class NotificationReportTests(unittest.TestCase):
                                            category='app', title='Problem', message='<script>alert(1)</script>')
         unread = count_unread_notifications(self.db)
         response = self.client.get(f'/notifications/{notification.id}?status=all')
-        self.assertIn(b'not recorded', response.data)
+        self.assertIn(b'Detailed diagnostics are unavailable for this refresh.', response.data)
         self.assertIn(b'&lt;script&gt;', response.data)
         self.assertNotIn(b'<script>alert(1)</script>', response.data)
         self.assertEqual(unread - 1, count_unread_notifications(self.db))
@@ -150,6 +161,12 @@ class NotificationReportTests(unittest.TestCase):
         self.assertFalse(notifications[second.id].read_at)
         self.client.get(f'/notifications/{first.id}')
         self.assertEqual(read_at, next(item for item in list_notifications(self.db) if item.id == first.id).read_at)
+        all_page = self.client.get('/notifications')
+        self.assertIn(f'/notifications/{first.id}?status=all'.encode(), all_page.data)
+        self.assertIn(f'/notifications/{second.id}?status=all'.encode(), all_page.data)
+        all_soup = BeautifulSoup(all_page.data, 'html.parser')
+        self.assertEqual('All', all_soup.select_one('[aria-current="page"].btn').get_text(strip=True))
+        self.assertEqual('/notifications?status=all', soup.select_one('.page-title a')['href'])
         unread_page = self.client.get('/notifications?status=unread')
         self.assertNotIn(f'/notifications/{first.id}?'.encode(), unread_page.data)
         self.assertIn(f'/notifications/{second.id}?'.encode(), unread_page.data)

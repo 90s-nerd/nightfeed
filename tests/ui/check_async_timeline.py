@@ -48,8 +48,12 @@ def run():
                     assert page.locator('.privacy-icon').count() == 10
                     page.locator('.reading-filters summary').click()
                     expect(page.get_by_role('dialog', name='Search settings')).to_be_visible()
-                    assert page.locator('.search-settings-panel .check-option').bounding_box()['height'] <= 48
-                    assert page.locator('.search-settings-panel .check-option span').bounding_box()['width'] > 200
+                    feed_option = page.locator('.search-settings-panel .check-option').filter(has=page.locator('[name=feed]'))
+                    sort_label = page.locator('.search-settings-panel label[for=sort]').bounding_box()
+                    for legend in page.locator('.search-settings-panel legend').all():
+                        assert abs(legend.bounding_box()['x'] - sort_label['x']) < 1
+                    assert feed_option.bounding_box()['height'] <= 48
+                    assert feed_option.locator('span').bounding_box()['width'] > 200
                     if width == 390:
                         bounds = page.get_by_role('dialog').bounding_box()
                         assert round(bounds['y'] + bounds['height']) == 900
@@ -72,7 +76,7 @@ def run():
                     expect(search).to_have_value('')
                     expect(reset).to_be_hidden()
                     expect(page.locator('.search-filter-dot')).to_be_hidden()
-                    expect(page.locator('#sort')).to_have_value('recent')
+                    expect(page.locator('#sort')).to_have_value('new')
                     assert not page.locator('[name=feed]').is_checked()
                     page.get_by_role('link', name='Next', exact=True).click()
                     expect(page.locator('.item-card')).to_have_count(5)

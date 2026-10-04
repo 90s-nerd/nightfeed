@@ -247,8 +247,9 @@
     if (!button) return;
     const input = document.getElementById(button.dataset.copyFeedUrl);
     const status = document.querySelector('[data-copy-status]');
-    try { await navigator.clipboard.writeText(input.value); status.textContent = 'Feed URL copied.'; }
-    catch (_) { input.focus(); input.select(); status.textContent = 'Copy unavailable. The feed URL is selected; copy it with your device’s copy command.'; }
+    window.nightfeedStatus(status, '', 'progress');
+    try { await navigator.clipboard.writeText(input.value); window.nightfeedStatus(status, 'Feed URL copied.'); }
+    catch (_) { input.focus(); input.select(); window.nightfeedStatus(status, 'Copy unavailable. The feed URL is selected; copy it with your device’s copy command.', 'error'); }
   });
   document.querySelector('[data-async-refresh]')?.addEventListener('submit', async event => {
     if (event.defaultPrevented) return;
@@ -257,7 +258,8 @@
     const status = document.querySelector('[data-refresh-result]');
     if (button.disabled) return;
     button.disabled = true; button.setAttribute('aria-busy', 'true');
-    status.hidden = false; status.textContent = 'Fetching feed…'; status.classList.remove('editor-notice-error');
+    window.clearNightfeedNotices();
+    window.nightfeedStatus(status, 'Fetching feed…', 'progress'); status.classList.remove('editor-notice-error');
     try {
       const response = await fetch(refreshForm.action, {method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'}});
       const payload = await response.json();
@@ -268,8 +270,8 @@
       document.querySelector('[data-feed-status]').replaceChildren(...doc.querySelector('[data-feed-status]').childNodes);
       if (!document.querySelector('[data-feed-editor]')) document.querySelector('[data-feed-content]').replaceChildren(...doc.querySelector('[data-feed-content]').childNodes);
       window.nightfeedUnread(payload.unread_notifications);
-      status.textContent = payload.message;
-    } catch (error) { status.classList.add('editor-notice-error'); status.textContent = error.message; }
+      window.nightfeedStatus(status, payload.message);
+    } catch (error) { status.classList.add('editor-notice-error'); window.nightfeedStatus(status, error.message, 'error'); }
     finally { button.disabled = false; button.removeAttribute('aria-busy'); }
   });
 })();

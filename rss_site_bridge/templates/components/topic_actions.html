@@ -1,0 +1,10 @@
+<div class="topic-actions">
+  <a class="safe-link" href="{{ url_for('safe_topic_route', profile_id=topic_profile_id, item_id=item.id, return_to=request.full_path.rstrip('?')) }}">Open safely</a>
+  <button type="button" class="topic-save" data-topic-save aria-pressed="{{ 'true' if item.saved_at else 'false' }}" aria-label="{{ 'Remove from saved' if item.saved_at else 'Save for later' }}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span>{{ 'Saved' if item.saved_at else 'Save for later' }}</span>
+  </button>
+  <span class="topic-action-status meta" role="status"></span>
+</div>
+{% if item.is_updated and item.topic_changes %}<details class="topic-changes"><summary>What changed</summary>
+{% for change in item.topic_changes %}<div class="entry-change"><h4>{{ change.field }}</h4><dl><div><dt>Before</dt><dd>{{ change.before or 'Empty' }}</dd></div><div><dt>After</dt><dd>{{ change.after or 'Empty' }}</dd></div></dl></div>{% endfor %}
+</details>{% endif %}

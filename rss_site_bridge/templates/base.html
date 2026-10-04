@@ -2,11 +2,13 @@
 <html lang="en">
   <head>
     <meta name="downloader-csrf" content="{{ downloader_csrf }}">
+    <meta name="topic-csrf" content="{{ topic_csrf }}">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>{% block title %}Nightfeed{% endblock %}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='nightfeed-mark.svg') }}">
     <script src="{{ url_for('static', filename='nightfeed-ui.js') }}"></script>
+    <script src="{{ url_for('static', filename='nightfeed-seen.js') }}" defer></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-legacy.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-ui.css') }}">
