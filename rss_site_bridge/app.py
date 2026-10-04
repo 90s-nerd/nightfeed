@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from markupsafe import Markup
 
-from .downloaders import register as register_downloaders, eligible_profiles, MAX_SUBMISSION_BYTES
+from .downloaders import register as register_downloaders, eligible_profiles, MAX_SUBMISSION_BYTES, encryption_key
+from itsdangerous import URLSafeTimedSerializer, BadSignature
 from croniter import croniter
 from contextlib import closing
 from dataclasses import dataclass
@@ -157,6 +158,19 @@ class FeedEntry:
     summary: str
     published_at: datetime
     id: int | None = None
+    seen_at: str | None = None
+    saved_at: str | None = None
+    updated_at: str | None = None
+    update_seen_at: str | None = None
+    changes_json: str = "[]"
+
+    @property
+    def is_updated(self) -> bool:
+        return bool(self.seen_at and self.updated_at and self.updated_at > max(self.seen_at, self.update_seen_at or ""))
+
+    @property
+    def topic_changes(self) -> list:
+        return json.loads(self.changes_json)
 
 
 @dataclass
@@ -775,6 +789,71 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     init_db(Path(app.config["DATABASE_PATH"]))
     register_downloaders(app, get_safe_browser_session)
+    topic_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-topic-seen")
+    view_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-timeline-view")
+
+    @app.context_processor
+    def topic_context():
+        return {"topic_csrf": topic_signer.dumps("seen")}
+
+    @app.post("/api/topics/seen")
+    def topics_seen_route():
+        try:
+            if topic_signer.loads(request.headers.get("X-CSRF-Token", ""), max_age=86400) != "seen":
+                raise BadSignature("Invalid token")
+        except BadSignature:
+            return jsonify(error="Reload the page to update topic visibility."), 403
+        if request.headers.get("Origin") and request.headers["Origin"] != request.host_url.rstrip("/"):
+            return jsonify(error="Cross-origin requests are not allowed."), 403
+        payload = request.get_json(silent=True)
+        ids = payload.get("ids") if isinstance(payload, dict) else None
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(type(value) is not int or not 0 < value < 2**63 for value in ids):
+            return jsonify(error="Provide between 1 and 100 topic IDs."), 400
+        revisions = payload.get("revisions", {})
+        if not isinstance(revisions, dict) or len(revisions) > 100 or any(not isinstance(value, str) or len(value) > 64 for value in revisions.values()):
+            return jsonify(error="Invalid topic revisions."), 400
+        return jsonify(seen=mark_topics_seen(Path(app.config["DATABASE_PATH"]), ids, revisions))
+
+    @app.post("/api/topics/<int:item_id>/save")
+    def topic_save_route(item_id: int):
+        if not 0 < item_id < 2**63:
+            return jsonify(error="Invalid topic ID."), 400
+        try:
+            if topic_signer.loads(request.headers.get("X-CSRF-Token", ""), max_age=86400) != "seen":
+                raise BadSignature("Invalid token")
+        except BadSignature:
+            return jsonify(error="Reload the page to save topics."), 403
+        if request.headers.get("Origin") and request.headers["Origin"] != request.host_url.rstrip("/"):
+            return jsonify(error="Cross-origin requests are not allowed."), 403
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or type(payload.get("saved")) is not bool:
+            return jsonify(error="Provide a saved state."), 400
+        with closing(connect_db(Path(app.config["DATABASE_PATH"]))) as conn:
+            row = conn.execute("SELECT id FROM feed_items WHERE id = ?", (item_id,)).fetchone()
+            if row is None:
+                return jsonify(error="Topic not found."), 404
+            conn.execute("UPDATE feed_items SET saved_at = ? WHERE id = ?", (utcnow_text() if payload["saved"] else None, item_id))
+            conn.commit()
+        return jsonify(saved=payload["saved"])
+
+    @app.post("/api/topics/seen-all")
+    def topics_seen_all_route():
+        try:
+            if topic_signer.loads(request.headers.get("X-CSRF-Token", ""), max_age=86400) != "seen":
+                raise BadSignature("Invalid token")
+            payload = request.get_json(silent=True)
+            token = payload.get("browse", "") if isinstance(payload, dict) else ""
+            if not isinstance(token, str):
+                raise BadSignature("Invalid view")
+            view = view_signer.loads(token, max_age=7200)
+        except BadSignature:
+            return jsonify(error="Reload the timeline to mark topics seen."), 403
+        if request.headers.get("Origin") and request.headers["Origin"] != request.host_url.rstrip("/"):
+            return jsonify(error="Cross-origin requests are not allowed."), 403
+        with closing(connect_db(Path(app.config["DATABASE_PATH"]))) as conn:
+            count = conn.execute("UPDATE feed_items SET seen_at = ? WHERE seen_at IS NULL AND id <= ?", (utcnow_text(), view["ceiling"])).rowcount
+            conn.commit()
+        return jsonify(seen=count)
     if app.config.get("START_SCHEDULER") and not app.config.get("TESTING"):
         ensure_scheduler(app)
     log_event(
@@ -1044,10 +1123,27 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         profiles = list_profiles(db_path)
         selected = [int(v) for v in request.args.getlist("feed") if v.isdigit()]
         query = request.args.get("q", "").strip()
-        sort = request.args.get("sort", "recent")
-        orders = {"recent": "i.discovered_at DESC, i.id DESC", "oldest": "i.discovered_at ASC, i.id ASC", "priority": "p.priority DESC, i.discovered_at DESC, i.id DESC", "title": "i.title COLLATE NOCASE, i.id DESC"}
-        where = " WHERE 1=1"
-        params = []
+        new_only = request.args.get("new_only") == "1"
+        saved_only = request.args.get("saved_only") == "1"
+        sort = request.args.get("sort", "new")
+        orders = {"new": "is_new DESC, i.discovered_at DESC, i.id DESC", "recent": "i.discovered_at DESC, i.id DESC", "oldest": "i.discovered_at ASC, i.id ASC", "priority": "p.priority DESC, i.discovered_at DESC, i.id DESC", "title": "i.title COLLATE NOCASE, i.id DESC"}
+        if sort not in orders:
+            sort = "new"
+        view_token = request.args.get("browse", "")
+        try:
+            view = view_signer.loads(view_token, max_age=7200)
+        except BadSignature:
+            with closing(connect_db(db_path)) as conn:
+                ceiling = conn.execute("SELECT COALESCE(MAX(id), 0) FROM feed_items").fetchone()[0]
+            view = {"started_at": utcnow_text(), "ceiling": ceiling}
+            view_token = view_signer.dumps(view)
+        where = " WHERE i.id <= ?"
+        params = [view["ceiling"]]
+        if new_only:
+            where += " AND (i.seen_at IS NULL OR i.seen_at >= ?)"
+            params.append(view["started_at"])
+        if saved_only:
+            where += " AND i.saved_at IS NOT NULL"
         if selected:
             where += " AND p.id IN (" + ",".join("?" for _ in selected) + ")"
             params.extend(selected)
@@ -1058,16 +1154,20 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         with closing(connect_db(db_path)) as conn:
             total = conn.execute("SELECT COUNT(*)" + source, params).fetchone()[0]
             page = pagination_page(total)
-            items = conn.execute("SELECT i.*, p.feed_title, p.priority" + source + " ORDER BY " + orders.get(sort, orders["recent"]) + " LIMIT 25 OFFSET ?", params + [(page - 1) * 25]).fetchall()
+            items = conn.execute("SELECT i.*, p.feed_title, p.priority, (i.seen_at IS NULL OR i.seen_at >= ?) AS is_new" + source + " ORDER BY " + orders[sort] + " LIMIT 25 OFFSET ?", [view["started_at"], *params, (page - 1) * 25]).fetchall()
+        items = [dict(item) for item in items]
+        for item in items:
+            item["is_updated"] = bool(item["seen_at"] and item["updated_at"] and item["updated_at"] > item["seen_at"] and (not item["update_seen_at"] or item["update_seen_at"] < item["updated_at"] or item["update_seen_at"] >= view["started_at"]))
+            item["topic_changes"] = json.loads(item["changes_json"])
         def page_url(number):
-            return url_for("timeline", q=query, sort=sort, feed=selected, page=number)
-        return render_template("timeline.html", profiles=profiles, items=items, selected=selected, query=query, sort=sort, total=total, page=page, pages=max(1, (total + 24)//25), page_url=page_url)
+            return url_for("timeline", q=query, sort=sort, feed=selected, page=number, browse=view_token, new_only="1" if new_only else None, saved_only="1" if saved_only else None)
+        return render_template("timeline.html", profiles=profiles, items=items, selected=selected, query=query, sort=sort, total=total, page=page, pages=max(1, (total + 24)//25), page_url=page_url, browse=view_token, new_only=new_only, saved_only=saved_only)
 
     @app.get("/notifications")
     def notifications_route() -> str:
-        status_filter = request.args.get("status", "unread").strip().lower()
+        status_filter = request.args.get("status", "all").strip().lower()
         if status_filter not in {"unread", "all"}:
-            status_filter = "unread"
+            status_filter = "all"
         db_path = Path(app.config["DATABASE_PATH"])
         return render_template(
             "notifications.html",
@@ -1080,7 +1180,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/notifications/<int:notification_id>/read")
     def mark_notification_read_route(notification_id: int) -> Response:
         mark_notification_read(Path(app.config["DATABASE_PATH"]), notification_id)
-        return redirect(url_for("notifications_route", status=request.form.get("status", "unread")))
+        return redirect(url_for("notifications_route", status=request.form.get("status", "all")))
 
     @app.get("/notifications/<int:notification_id>")
     def notification_detail_route(notification_id: int):
@@ -1103,13 +1203,23 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             links = [entry["link"] for entry in changes if isinstance(entry, dict) and isinstance(entry.get("link"), str)]
             if links:
                 with closing(connect_db(db_path)) as conn:
-                    rows = conn.execute("SELECT id, link FROM feed_items WHERE profile_id = ? AND link IN (" +
+                    rows = conn.execute("SELECT id, link, title, summary, seen_at, saved_at, updated_at, update_seen_at FROM feed_items WHERE profile_id = ? AND link IN (" +
                                         ",".join("?" for _ in links) + ")", [notification.profile_id, *links]).fetchall()
                 item_ids = {row["link"]: row["id"] for row in rows}
+                seen_times = {row["link"]: row["seen_at"] for row in rows}
+                live_items = {row["link"]: row for row in rows}
                 for entry in changes:
                     if isinstance(entry, dict):
                         entry["item_id"] = item_ids.get(entry.get("link"))
-        status = "all" if request.args.get("status") == "all" else "unread"
+                        entry["seen_at"] = seen_times.get(entry.get("link"))
+                        live = live_items.get(entry.get("link"))
+                        entry["id"] = entry["item_id"]
+                        entry["saved_at"] = live["saved_at"] if live else None
+                        # A historical report can acknowledge only the revision it shows.
+                        entry["updated_at"] = live["updated_at"] if live and live["title"] == entry.get("title") and (live["summary"] or "") == (entry.get("summary") or "") else None
+                        entry["is_updated"] = False
+                        entry["topic_changes"] = []
+        status = "unread" if request.args.get("status") == "unread" else "all"
         return render_template("notification_detail.html", notification=notification, report=report,
                                profile=get_profile_by_id(db_path, notification.profile_id) if notification.profile_id else None,
                                status_filter=status, failure_notification_labels=FAILURE_NOTIFICATION_LABELS)
@@ -1122,7 +1232,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/notifications/<int:notification_id>/delete")
     def delete_notification_route(notification_id: int) -> Response:
         delete_notification(Path(app.config["DATABASE_PATH"]), notification_id)
-        return redirect(url_for("notifications_route", status=request.form.get("status", "unread")))
+        return redirect(url_for("notifications_route", status=request.form.get("status", "all")))
 
     @app.post("/notifications/delete-read")
     def delete_read_notifications_route() -> Response:
@@ -1503,6 +1613,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         item = get_feed_item(db_path, profile_id, item_id)
         if profile is None or item is None:
             return Response("Topic not found.", status=404, mimetype="text/plain; charset=utf-8")
+
+        if request.method == "GET":
+            with closing(connect_db(db_path)) as conn:
+                revision = conn.execute("SELECT updated_at FROM feed_items WHERE id = ?", (item.id,)).fetchone()[0]
+            mark_topics_seen(db_path, [item.id], {str(item.id): revision or ""})
 
         return_to = safe_return_destination(request.args.get("return_to"), profile_id)
         error = ""
@@ -2790,6 +2905,13 @@ def init_db(db_path: Path) -> None:
             """
         )
         ensure_column(conn, "app_settings", "public_base_url", "TEXT NOT NULL DEFAULT ''")
+        if "seen_at" not in {row[1] for row in conn.execute("PRAGMA table_info(feed_items)")}:
+            ensure_column(conn, "feed_items", "seen_at", "TEXT")
+            conn.execute("UPDATE feed_items SET seen_at = ?", (utcnow_text(),))
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_items_seen ON feed_items(seen_at, discovered_at DESC, id DESC)")
+        for column in ("saved_at", "updated_at", "update_seen_at"):
+            ensure_column(conn, "feed_items", column, "TEXT")
+        ensure_column(conn, "feed_items", "changes_json", "TEXT NOT NULL DEFAULT '[]'")
         ensure_column(conn, "app_settings", "smtp_enabled", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "app_settings", "smtp_host", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "app_settings", "smtp_port", "INTEGER NOT NULL DEFAULT 0")
@@ -3372,7 +3494,7 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
         conn.execute("BEGIN IMMEDIATE")
         for entry in entries:
             existing = conn.execute(
-                "SELECT title, summary FROM feed_items WHERE profile_id = ? AND link = ?",
+                "SELECT title, summary, seen_at, updated_at, update_seen_at, changes_json FROM feed_items WHERE profile_id = ? AND link = ?",
                 (profile_id, entry.link),
             ).fetchone()
             if existing is None:
@@ -3384,6 +3506,15 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
                                         "title": entry.title, "link": entry.link, "summary": entry.summary,
                                         "previous_title": existing["title"] if existing else "",
                                         "previous_summary": existing["summary"] if existing else ""})
+            if existing is not None and (existing["title"] != entry.title or existing["summary"] != entry.summary):
+                baseline = {key: existing[key] or "" for key in ("title", "summary")}
+                if existing["seen_at"] and existing["updated_at"] and existing["updated_at"] > max(existing["seen_at"], existing["update_seen_at"] or ""):
+                    for change in json.loads(existing["changes_json"]):
+                        baseline[change["field"].lower()] = change["before"]
+                topic_changes = [{"field": key.capitalize(), "before": baseline[key], "after": getattr(entry, key)}
+                                 for key in ("title", "summary") if baseline[key] != getattr(entry, key)]
+                conn.execute("UPDATE feed_items SET updated_at = ?, changes_json = ? WHERE profile_id = ? AND link = ?",
+                             (utcnow_text() if topic_changes else None, json.dumps(topic_changes), profile_id, entry.link))
             conn.execute(
                 """
                 INSERT INTO feed_items (profile_id, title, link, summary, discovered_at)
@@ -3433,11 +3564,24 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
     return changes
 
 
+def mark_topics_seen(db_path: Path, ids: list[int], revisions: dict | None = None) -> list[int]:
+    placeholders = ",".join("?" for _ in ids)
+    with closing(connect_db(db_path)) as conn:
+        conn.execute("UPDATE feed_items SET seen_at = COALESCE(seen_at, ?) WHERE id IN (" + placeholders + ")", [utcnow_text(), *ids])
+        for item_id in ids:
+            revision = (revisions or {}).get(str(item_id))
+            if revision:
+                conn.execute("UPDATE feed_items SET update_seen_at = ? WHERE id = ? AND updated_at = ?", (utcnow_text(), item_id, revision))
+        rows = conn.execute("SELECT id FROM feed_items WHERE id IN (" + placeholders + ")", ids).fetchall()
+        conn.commit()
+    return [row[0] for row in rows]
+
+
 def list_feed_items(db_path: Path, profile_id: int, limit: int, offset: int = 0) -> list[FeedEntry]:
     with closing(connect_db(db_path)) as conn:
         rows = conn.execute(
             """
-            SELECT id, title, link, summary, discovered_at
+            SELECT id, title, link, summary, discovered_at, seen_at, saved_at, updated_at, update_seen_at, changes_json
             FROM feed_items
             WHERE profile_id = ?
             ORDER BY discovered_at DESC, id ASC
@@ -3452,6 +3596,8 @@ def list_feed_items(db_path: Path, profile_id: int, limit: int, offset: int = 0)
             summary=row["summary"],
             published_at=datetime.fromisoformat(row["discovered_at"]),
             id=row["id"],
+            seen_at=row["seen_at"],
+            saved_at=row["saved_at"], updated_at=row["updated_at"], update_seen_at=row["update_seen_at"], changes_json=row["changes_json"],
         )
         for row in rows
     ]

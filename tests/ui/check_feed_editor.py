@@ -99,7 +99,7 @@ def run():
                         assert page.locator('[data-editor-save]').evaluate('(el) => el === document.activeElement')
                         page.locator('[data-editor-save]').click()
                         page.locator('[data-dialog-save]').click()
-                        page.wait_for_url('**/profiles/*?created=1')
+                        page.get_by_text('Feed created. Refresh now to collect items.', exact=True).wait_for()
                         assert page.get_by_text('Feed created. Refresh now to collect items.', exact=True).is_visible()
                         new = max(list_profiles(db), key=lambda profile: profile.id)
                         assert new.last_status == 'idle' and new.item_count == 0 and new.refresh_interval_minutes == 0
@@ -145,7 +145,7 @@ def run():
                         page.locator('[name=max_items]').fill('25')
                         page.locator('[data-editor-save]').click()
                         page.locator('[data-dialog-save]').click()
-                        page.wait_for_url('**view=configuration&saved=1')
+                        page.get_by_text('Configuration saved.', exact=True).wait_for()
                         current = get_profile_by_id(db, original.id)
                         assert current.feed_token == original.feed_token and current.item_count == 1
                         page.get_by_role('link', name='RSS', exact=True).click()
@@ -192,7 +192,7 @@ def run():
                 page.locator('[name=cron_expression]').fill('0 9 * * mon-fri')
                 assert page.locator('[name=schedule_timezone]').count() == 0
                 page.locator('[data-editor-save]').click()
-                page.wait_for_url('**?created=1')
+                page.get_by_text('Feed created. Refresh now to collect items.', exact=True).wait_for()
                 new = max(list_profiles(db), key=lambda profile: profile.id)
                 assert new.cron_expression == '0 9 * * mon-fri' and new.schedule_timezone == 'UTC'
                 assert new.last_status == 'idle' and new.item_count == 0

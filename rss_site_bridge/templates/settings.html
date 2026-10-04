@@ -5,7 +5,7 @@
 {% block page_header %}
 <header class="topbar">
   <div class="page-title">
-    <h1>Settings</h1>
+    <h1 class="sr-only">Settings</h1>
 
   </div>
 </header>
@@ -120,14 +120,14 @@
 
   <div class="settings-notices">
     {% if saved %}
-    <div class="settings-note success">
+    <div class="settings-note success" role="status" data-transient-notice data-notice-query="saved">
       <strong>Settings saved</strong>
 
     </div>
     {% endif %}
 
     {% if test_sent %}
-    <div class="settings-note info">
+    <div class="settings-note info" role="status" data-transient-notice data-notice-query="test_sent">
       <strong>Test email sent</strong>
       <p>A verification email was sent to {{ settings.smtp_to_email }} using the current SMTP settings.</p>
     </div>

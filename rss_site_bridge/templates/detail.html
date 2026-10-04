@@ -8,9 +8,9 @@
 {% endblock %}
 {% block content %}
 <div class="detail-column">
-  {% if created %}<div class="editor-notice" role="status">Feed created. Refresh now to collect items.</div>{% endif %}
-  {% if saved %}<div class="editor-notice" role="status">Configuration saved.</div>{% endif %}
-  {% if purged %}<div class="editor-notice" role="status">Stored entries cleared. Refresh the feed to collect items again.</div>{% endif %}
+  {% if created %}<div class="editor-notice" role="status" data-transient-notice data-notice-query="created">Feed created. Refresh now to collect items.</div>{% endif %}
+  {% if saved %}<div class="editor-notice" role="status" data-transient-notice data-notice-query="saved">Configuration saved.</div>{% endif %}
+  {% if purged %}<div class="editor-notice" role="status" data-transient-notice data-notice-query="purged">Stored entries cleared. Refresh the feed to collect items again.</div>{% endif %}
   <p class="meta" data-feed-status>{% if not profile.active %}⏸ Disabled · The RSS URL is unavailable until enabled.{% elif profile.last_status == 'ok' %}✓ Healthy{% elif profile.last_status == 'error' %}⚠ Needs attention{% else %}• Not refreshed yet{% endif %} · {{ profile.item_count }} stored items · Next refresh {{ profile | next_refresh_datetime }}</p>
   <p class="editor-notice" data-refresh-result role="status" aria-live="polite" hidden></p>
   <nav class="detail-views" aria-label="Feed views">{% for key, label in [('items', 'Items'), ('configuration', 'Configuration'), ('rss', 'RSS')] %}<a href="/profiles/{{ profile.id }}?view={{ key }}" {% if view == key %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
@@ -28,7 +28,7 @@
   <section class="surface section"><h2>Permanent feed URL</h2>
     <div class="field"><label for="permanent-feed-url">RSS feed URL</label><input id="permanent-feed-url" value="{{ feed_url }}" readonly></div>
     <div class="button-row"><button class="btn btn-secondary" type="button" data-copy-feed-url="permanent-feed-url">Copy feed URL</button>{% if profile.active %}<a class="btn btn-secondary" href="/feeds/{{ profile.feed_token }}/view">View formatted XML</a><a class="btn btn-secondary" href="{{ feed_url }}" target="_blank" rel="noopener noreferrer">Open raw XML</a>{% endif %}</div>
-    <p class="meta" data-copy-status role="status" aria-live="polite"></p>
+    <p class="meta" data-copy-status role="status" aria-live="polite" hidden></p>
     {% if not profile.active %}<p class="meta">Enable this feed to serve its RSS URL. The URL will stay the same.</p>{% endif %}
   </section>
   {% else %}
@@ -36,7 +36,7 @@
     <div class="section-head"><div><h2>Items</h2></div></div>
     {% if profile.last_error %}<div class="editor-notice editor-notice-error"><strong>Latest refresh issue</strong><p>{{ profile.last_error }}</p></div>{% endif %}
     <p class="meta">{{ profile.item_count }} stored items · Page {{ page }} of {{ pages }}</p>
-    <div class="list-stack">{% for item in items %}<article class="item-card"><div class="topic-heading"><h3><a class="link-text topic-link" href="{{ item.link }}" target="_blank" rel="noreferrer" title="{{ item.title }}" aria-label="{{ item.title }} (opens in a new tab)"><span class="topic-title">{{ item.title }}</span></a></h3><span class="topic-time">{{ item.published_at | human_datetime }}</span></div>{% if item.summary %}<p class="meta">{{ item.summary }}</p>{% endif %}<a class="safe-link" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=item.id, return_to=request.full_path.rstrip('?')) }}">Open safely</a></article>{% else %}<div class="empty-state">No stored items yet.{% if profile.active %} Refresh now to collect items.{% else %} Enable the feed to refresh it.{% endif %}</div>{% endfor %}</div>
+    <div class="list-stack">{% for item in items %}<article class="item-card" data-topic-id="{{ item.id }}" data-topic-revision="{{ item.updated_at or '' }}"><div class="topic-heading"><h3 data-topic-title>{% if not item.seen_at %}<span class="topic-new">NEW</span>{% endif %}{% if item.is_updated %}<span class="topic-updated">UPDATED</span>{% endif %}<a class="link-text topic-link" href="{{ item.link }}" target="_blank" rel="noreferrer" title="{{ item.title }}" aria-label="{{ item.title }} (opens in a new tab)"><span class="topic-title">{{ item.title }}</span></a></h3><span class="topic-time">{{ item.published_at | human_datetime }}</span></div>{% if item.summary %}<p class="meta">{{ item.summary }}</p>{% endif %}{% set topic_profile_id = profile.id %}{% include 'components/topic_actions.html' %}</article>{% else %}<div class="empty-state">No stored items yet.{% if profile.active %} Refresh now to collect items.{% else %} Enable the feed to refresh it.{% endif %}</div>{% endfor %}</div>
     <nav class="button-row pagination-actions" aria-label="Entry pages">{% if page > 1 %}<a class="btn btn-secondary" href="?view=items&amp;page={{ page - 1 }}">Previous</a>{% endif %}{% if page < pages %}<a class="btn btn-secondary" href="?view=items&amp;page={{ page + 1 }}">Next</a>{% endif %}</nav>
   </section>
   {% endif %}

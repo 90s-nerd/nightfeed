@@ -1,3 +1,36 @@
+// Success confirmations expire; progress and errors remain until replaced.
+(() => {
+  const timers = new WeakMap();
+  window.expireNightfeedNotice = element => {
+    clearTimeout(timers.get(element));
+    timers.set(element, setTimeout(() => {
+      element.hidden = true;
+      // Dynamic status nodes should not leave an empty paragraph behind.
+      if (!element.hasAttribute('data-transient-notice')) element.textContent = '';
+      timers.delete(element);
+    }, 6000));
+  };
+  window.nightfeedStatus = (element, message, kind = 'success') => {
+    clearTimeout(timers.get(element)); timers.delete(element);
+    element.textContent = message; element.hidden = !message;
+    if (message && kind === 'success') window.expireNightfeedNotice(element);
+  };
+  window.clearNightfeedNotices = () => document.querySelectorAll('[data-transient-notice]').forEach(element => {
+    clearTimeout(timers.get(element)); timers.delete(element); element.hidden = true;
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const url = new URL(location.href);
+    let cleaned = false;
+    document.querySelectorAll('[data-transient-notice]').forEach(element => {
+      window.expireNightfeedNotice(element);
+      const parameter = element.dataset.noticeQuery;
+      if (parameter && url.searchParams.has(parameter)) { url.searchParams.delete(parameter); cleaned = true; }
+    });
+    // Refresh and history navigation should not replay an old action confirmation.
+    if (cleaned) history.replaceState(history.state, '', url);
+  });
+})();
+
 // Apply appearance before styles load; storage can be unavailable in private contexts.
 (() => {
   const key = 'nightfeed.appearance.v1';
@@ -207,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
       };
       const updateFeedLabel = () => {
         const count = form.querySelectorAll('[name=feed]:checked').length;
-        const active = count > 0 || form.querySelector('[name=sort]').value !== 'recent';
+        const active = count > 0 || form.querySelector('[name=sort]').value !== 'new' || !!form.querySelector('[name=new_only]:checked, [name=saved_only]:checked');
         form.querySelector('.search-filter-dot').hidden = !active;
         trigger.setAttribute('aria-label', `Search settings${active ? ', filters active' : ''}`);
         clear.hidden = !input.value && !active;
@@ -215,8 +248,9 @@ document.addEventListener('DOMContentLoaded', () => {
       updateFeedLabel();
       clear.addEventListener('click', () => {
         input.value = '';
-        form.querySelector('[name=sort]').value = 'recent';
+        form.querySelector('[name=sort]').value = 'new';
         form.querySelectorAll('[name=feed]').forEach(input => { input.checked = false; });
+        form.querySelectorAll('[name=new_only], [name=saved_only]').forEach(input => { input.checked = false; });
         input.focus(); form.requestSubmit();
       });
       const load = async (url, historyMode = 'push') => {
@@ -232,6 +266,11 @@ document.addEventListener('DOMContentLoaded', () => {
           const next = document.querySelector('[data-timeline-results]');
           if (!next) throw new Error('Timeline results missing');
           if (current !== generation) return;
+          const browse = document.querySelector('[name=browse]')?.value;
+          if (browse) {
+            form.querySelector('[name=browse]').value = browse;
+            url.searchParams.set('browse', browse);
+          }
           // Keep the form and its focused input mounted, including on mobile.
           results.replaceChildren(...next.childNodes);
           if (historyMode === 'push' && url.href !== location.href) history.pushState(null, '', url);
@@ -281,9 +320,11 @@ document.addEventListener('DOMContentLoaded', () => {
       window.addEventListener('popstate', () => {
         const url = new URL(location.href);
         form.querySelector('[name=q]').value = url.searchParams.get('q') || '';
-        const sort = url.searchParams.get('sort') || 'recent';
-        form.querySelector('[name=sort]').value = ['recent', 'oldest', 'priority', 'title'].includes(sort) ? sort : 'recent';
+        form.querySelector('[name=browse]').value = url.searchParams.get('browse') || form.querySelector('[name=browse]').value;
+        const sort = url.searchParams.get('sort') || 'new';
+        form.querySelector('[name=sort]').value = ['new', 'recent', 'oldest', 'priority', 'title'].includes(sort) ? sort : 'new';
         form.querySelectorAll('[name=feed]').forEach(input => { input.checked = url.searchParams.getAll('feed').includes(input.value); });
+        form.querySelectorAll('[name=new_only], [name=saved_only]').forEach(input => { input.checked = url.searchParams.get(input.name) === '1'; });
         updateFeedLabel(); load(url, 'none');
       });
     });
