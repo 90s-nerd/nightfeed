@@ -26,7 +26,7 @@ from .downloaders import encryption_key
 
 DEFAULTS = dict(new=True, updated=False, failures=False, feeds=[], interval=15,
                 daily_limit=12, quiet=False, quiet_start='22:00', quiet_end='08:00', timezone='UTC')
-log = logging.getLogger(__name__)
+log = logging.getLogger('nightfeed.push')
 
 
 def connect(db):
@@ -192,16 +192,22 @@ def dispatch(db, now=None):
         failures = len({event['feed_id'] for event in events if event['failed']})
         parts = ([f'{new} new topics'] if new else []) + ([f'{updated} updated topics'] if updated else []) + ([f'{failures} feed failures'] if failures else [])
         payload = {'title': 'Nightfeed · ' + (feeds[0][:160] if len(feeds) == 1 else f'{len(feeds)} feeds'),
-                   'body': ', '.join(parts), 'url': f'/notifications/{events[-1]["notification_id"]}' if len(events) == 1 else '/notifications', 'tag': 'nightfeed-summary'}
+                   'body': ', '.join(parts), 'url': f'/notifications/{events[-1]["notification_id"]}' if len(events) == 1 else '/notifications',
+                   # Distinct batches alert again; retrying a batch replaces only itself.
+                   'tag': 'nightfeed-summary-' + hashlib.sha256(json.dumps([
+                       device['id'], events[-1]['notification_id'], events[-1]['created_at'], new, updated, failures
+                   ]).encode()).hexdigest()[:24]}
         try:
             deliver(db, device, payload)
         except Exception as exc:
             code = getattr(getattr(exc, 'response', None), 'status_code', None)
             retries = device['retries'] + 1
             with closing(connect(db)) as conn:
-                disabled = code in (404, 410) or retries >= 3
+                # Only a provider-confirmed expired subscription needs re-registration.
+                # Network outages and provider errors must not revoke device opt-in.
+                disabled = code in (404, 410)
                 conn.execute('UPDATE push_devices SET enabled=?, retries=?, last_error=?, due_at=?, lease_until=0 WHERE id=?',
-                             (int(not disabled), retries, 'Subscription expired. Enable notifications again.' if code in (404,410) else 'Push delivery failed. Send a test or enable notifications again.', now + min(3600, 300 * 2**retries), device['id']))
+                             (int(not disabled), retries, 'Subscription expired. Enable notifications again.' if disabled else 'Push delivery temporarily failed. Nightfeed will retry automatically.', now + min(3600, 300 * 2**min(retries, 4)), device['id']))
                 if disabled:
                     conn.execute('DELETE FROM push_events WHERE device_id=?', (device['id'],))
                 conn.commit()
@@ -212,6 +218,7 @@ def dispatch(db, now=None):
                 conn.execute('UPDATE push_devices SET sent=?, day=?, retries=0, last_error=\'\', lease_until=0, due_at=? WHERE id=?',
                              ((device['sent'] if device['day'] == day else 0) + 1, day, now + prefs['interval'] * 60, device['id']))
                 conn.commit()
+            log.info('Push summary accepted by provider (new=%s, updated=%s, failures=%s); subscription payload omitted', new, updated, failures)
 
 
 def register(app):
@@ -332,7 +339,7 @@ def register(app):
                 return jsonify(error='Wait one minute before sending another test.'), 429
             conn.commit()
         try:
-            deliver(db, row, dict(title='Nightfeed', body='Notifications are ready on this device.', url='/settings', tag='nightfeed-test'))
+            deliver(db, row, dict(title='Nightfeed', body='Notifications are ready on this device.', url='/settings', tag=f'nightfeed-test-{int(now)}'))
         except Exception:
             return jsonify(error='The test could not be delivered. Check server connectivity and device permissions.'), 502
         return jsonify(message='Test sent. Check your device notifications.')

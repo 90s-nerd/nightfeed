@@ -206,6 +206,28 @@ class PushTests(unittest.TestCase):
         self.assertFalse(self.row()['enabled'])
 
     @patch.object(push, 'deliver')
+    def test_long_outage_retains_opt_in_and_pending_summary_until_recovery(self, deliver):
+        self.subscribe()
+        self.queue(new=2)
+        deliver.side_effect = RuntimeError('offline')
+        for now in (1900, 2500, 3700, 6100, 9700):
+            push.dispatch(self.db, now)
+        self.assertEqual(deliver.call_count, 5)
+        self.assertTrue(self.row()['enabled'])
+        self.assertIn('retry automatically', self.row()['last_error'])
+        tags = [call.args[2]['tag'] for call in deliver.call_args_list]
+        self.assertEqual(len(set(tags)), 1)
+        self.assertEqual(self.row()['sent'], 0)
+        deliver.side_effect = None
+        push.dispatch(self.db, 13300)
+        self.assertEqual(deliver.call_args.args[2]['body'], '2 new topics')
+        self.assertEqual(self.row()['sent'], 1)
+        self.assertEqual(self.row()['last_error'], '')
+        self.queue(new=1, now=14000)
+        push.dispatch(self.db, 15000)
+        self.assertNotEqual(deliver.call_args.args[2]['tag'], tags[0])
+
+    @patch.object(push, 'deliver')
     def test_explicit_test_is_throttled_and_resubscribe_cannot_bypass(self, deliver):
         self.subscribe()
         self.assertEqual(self.post('test', device_token=self.token).status_code, 200)
