@@ -12,7 +12,7 @@
   <div class="topbar-actions">
     <a class="btn btn-secondary" href="{{ item.link }}" target="_blank" rel="noreferrer">Open original</a>
     {% if safe_session %}
-    <form class="inline-form" action="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/close" method="post">
+    <form class="inline-form" action="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/close" method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
       <input type="hidden" name="return_to" value="{{ return_to }}">
       <button class="btn btn-primary" type="submit">Close session</button>
     </form>

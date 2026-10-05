@@ -1,3 +1,4 @@
+from auth_support import authenticated_client
 """Push preferences, durable summaries, and opt-in delivery protections."""
 import base64
 import json
@@ -30,7 +31,7 @@ class PushTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.db = Path(self.temp.name) / 'app.db'
         self.app = create_app(dict(TESTING=True, START_SCHEDULER=False, DATABASE_PATH=self.db))
-        self.client = self.app.test_client()
+        self.client = authenticated_client(self.app)
         html = self.client.get('/settings').text
         self.csrf = re.search(r'name="push-csrf" content="([^"]+)"', html)[1]
         self.headers = {'X-CSRF-Token': self.csrf}
@@ -64,7 +65,7 @@ class PushTests(unittest.TestCase):
             self.assertEqual(tuple(key), tuple(conn.execute('SELECT private_key,public_key FROM push_config').fetchone()))
         defaults = self.subscribe()['preferences']
         self.assertEqual((defaults['new'], defaults['updated'], defaults['failures'], defaults['interval'], defaults['daily_limit']), (True, False, False, 15, 12))
-        self.assertEqual(self.client.get('/api/push/config').headers['Cache-Control'], 'no-store')
+        self.assertIn('no-store', self.client.get('/api/push/config').headers['Cache-Control'])
         manifest = self.client.get('/manifest.webmanifest').json
         self.assertEqual(manifest['display'], 'standalone')
         for icon in manifest['icons']:
@@ -83,6 +84,39 @@ class PushTests(unittest.TestCase):
         self.subscribe()
         self.assertEqual(self.post('preferences', device_token='another-device', preferences={}).status_code, 400)
         self.assertEqual(self.post('subscribe', subscription=sample_subscription()).status_code, 400)
+
+    @patch.object(push, 'deliver')
+    def test_logout_preserves_device_and_delivers_summary(self, deliver):
+        from rss_site_bridge.auth import COOKIE, fingerprint
+        self.subscribe(updated=True)
+        self.queue(new=2, updated=3)
+        before = self.row()
+        old_cookie = self.client.get_cookie(COOKIE).value
+        response = self.client.post('/auth/logout')
+        self.assertEqual(response.headers['Clear-Site-Data'], '"cache"')
+        self.assertEqual(self.row(), before)
+        with closing(push.connect(self.db)) as conn:
+            self.assertIsNone(conn.execute('SELECT 1 FROM auth_sessions WHERE token_hash=?', (fingerprint(old_cookie),)).fetchone())
+        push.dispatch(self.db, 1900)
+        self.assertEqual(deliver.call_count, 1)
+        payload = deliver.call_args.args[2]
+        self.assertEqual(payload['title'], 'Nightfeed · News')
+        self.assertEqual(payload['body'], '2 new topics, 3 updated topics')
+        self.assertEqual(payload['url'], '/notifications/1')
+        self.assertEqual(self.client.get(payload['url']).status_code, 302)
+        self.assertEqual(self.client.post('/api/push/device', json=dict(device_token=self.token), headers=self.headers).status_code, 401)
+
+    @patch.object(push, 'deliver')
+    def test_multiple_feeds_summary_counts_and_list_link(self, deliver):
+        self.subscribe(updated=True, failures=True)
+        self.queue(new=2)
+        self.queue(new=1, updated=4, now=1100, profile=SimpleNamespace(id=999, feed_title='Other'))
+        self.queue(status='error', now=1200)
+        push.dispatch(self.db, 1900)
+        payload = deliver.call_args.args[2]
+        self.assertEqual(payload['title'], 'Nightfeed · 2 feeds')
+        self.assertEqual(payload['body'], '3 new topics, 4 updated topics, 1 feed failures')
+        self.assertEqual(payload['url'], '/notifications')
 
     @patch.object(push, 'deliver')
     def test_unchanged_refreshes_do_not_alert_and_changes_batch(self, deliver):

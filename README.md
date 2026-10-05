@@ -21,13 +21,144 @@ The default mode is the safest path for noisy sites because it never opens a bro
 
 ## Run
 
+### Authentication and upgrading
+
+Nightfeed requires authentication for all private pages, RSS XML, downloads, previews,
+browser sessions and APIs. Only the sign-in/setup pages and generic static/PWA assets
+are public. Upgrading keeps your feeds and settings, but previously unauthenticated
+RSS readers must be configured with an API key. Back up your database and the
+installation's `*.downloaders.key` file before upgrading.
+
+On first start, create the single owner account at `/auth/setup`. Setup requires the
+server-only token in `data/rss_site_bridge.setup-token` (next to the configured database).
+For Docker, read it with `docker compose exec nightfeed cat /app/data/rss_site_bridge.setup-token`.
+Alternatively supply a random `NIGHTFEED_SETUP_TOKEN` of at least 32 characters through
+your deployment's secret management. The generated file is removed after setup. Never
+expose the data directory through a web server. Passwords are salted with scrypt;
+use a unique passphrase of 15–256 characters. There is no default password.
+
+Serve production instances over HTTPS. Cookies default to Secure, HttpOnly and SameSite
+Lax. For **local HTTP development only**, set `NIGHTFEED_SECURE_COOKIES=0`; otherwise
+an HTTP browser cannot retain the setup/login cookie. Session defaults are 12 hours
+maximum and 30 minutes of inactivity. Change these under **Settings → Security**.
+Password changes revoke other sessions. Security changes also sign out other sessions.
+
+Open **Settings → Manage profile** (also available in the account menu) to change
+your display name. After linking your SSO identity, **Use name from SSO provider**
+makes the name read-only and refreshes it from the verified ID token's `name` claim
+on SSO sign-in. Your local name is retained for switching back. If the provider
+does not supply a valid name, Nightfeed keeps the last provider name, or shows your
+local name until the provider supplies one.
+Logout revokes the server session, clears browser cache and stops the session from
+being reused. It preserves push registration, notification preferences and the device
+management token, so notifications continue after logout or session expiry without
+re-enabling them. Use **Settings → Mobile notifications → Turn off** to stop delivery
+on a device. Private responses use `no-store`. Push notices include feed names and
+new/updated topic counts (or failure counts), including while signed out. Opening
+the notification list or report requires a valid session; otherwise Nightfeed shows
+the sign-in page, even when automatic SSO is enabled. After sign-in, the requested
+report opens.
+
+**Settings → Security** also controls password lockout (default: five failures,
+15-minute window/lockout, automatic unlock), comma-separated IP/CIDR exclusions and
+manual unlock. Both IP and account limits apply; excluded addresses bypass both.
+There are no exclusions by default. Exempt only networks you control.
+
+If all sessions are locked out, stop Nightfeed and run an offline recovery command
+against its persisted database, then restart it:
+
+```bash
+python -m rss_site_bridge.auth unlock --database data/rss_site_bridge.db
+python -m rss_site_bridge.auth reset-password --database data/rss_site_bridge.db
+```
+
+Password reset prompts securely; neither command takes a password on the command line.
+Both revoke every browser session. API keys are independent credentials: revoke them
+separately if a key may have been exposed.
+
+### OpenID Connect / Authelia
+
+Under **Settings → Security**, enter the exact HTTPS issuer, client ID, client secret,
+and callback URL (`https://your-nightfeed-host/auth/oidc/callback`). Register a
+confidential authorization-code client at your provider with that exact redirect URI,
+`openid profile` scopes and PKCE S256. The default token authentication method is
+`client_secret_basic`. See [Authelia client configuration](https://www.authelia.com/configuration/identity-providers/openid-connect/clients/).
+
+Discovery uses `<issuer>/.well-known/openid-configuration`. Alternatively turn off
+discovery and supply HTTPS authorization, token and JWKS endpoints. TLS certificate
+verification is required. Save the settings, then **Link owner SSO identity** after
+confirming your Nightfeed password and signing into your own provider account. You
+may also enter the exact owner `sub` manually. Only that issuer/subject pair can log
+in; usernames and email addresses do not grant access. Authelia subjects are stable
+identifiers whose behavior depends on its client configuration; see its
+[claims documentation](https://www.authelia.com/integration/openid-connect/openid-connect-1.0-claims/).
+
+Once the identity is linked, you can enable automatic SSO redirects, hide the local
+login form, customize button text, and configure an optional HTTPS provider logout
+URL (including any required provider parameters). Logout always revokes Nightfeed's
+session first; provider sign-out depends on that provider's logout URL. Protect SSO
+with the provider's MFA policy. The authorization flow validates state, PKCE, nonce,
+signature, issuer, audience and expiry; provider tokens are not persisted.
+
+Keep the local password for security changes and recovery. Set
+`NIGHTFEED_FORCE_LOGIN_FORM=1` and restart the container to restore local login even
+when the form is hidden and automatic SSO is enabled. This restores the form without
+bypassing password verification or lockout. `/auth/login?sso=off` pauses auto-redirect
+for that visit but does not override a disabled form.
+
+### Scoped API keys and RSS readers
+
+Create keys under **Settings → API keys**. Select only the required permissions and,
+when practical, restrict the key to particular feeds. Empty feed selection means all
+current and future feeds. Each key can have a UTC expiry or no expiry; revoke it at
+any time. Creation requires your current password. Keys contain 256 bits of random
+entropy, are shown once, and are stored only as SHA-256 hashes.
+
+| Permission | Accessible endpoints |
+| --- | --- |
+| `rss:read` | `GET /feeds/<feed-token>.xml` |
+| `feeds:read` | `GET /api/v1/feeds` |
+| `topics:read` | `GET /api/v1/topics` (up to 100 recent permitted topics) |
+| `notifications:read` | `GET /api/v1/notifications` (up to 100 recent permitted feed notifications) |
+| `feeds:refresh` | `POST /api/v1/feeds/<feed-id>/refresh` |
+
+Keys cannot access browser pages, account settings, passwords, SSO configuration,
+downloader credentials or key administration. Each permission has an explicit endpoint
+allowlist; future routes are denied automatically. Feed restrictions apply to every
+permission. General notifications without a feed are omitted from the API.
+
+Use `Authorization: Bearer YOUR_KEY` or `X-API-Key: YOUR_KEY` over HTTPS. RSS readers
+that support HTTP Basic can use username `apikey` and the key as the password.
+Basic authentication is for reads; use Bearer or X-API-Key for refresh requests.
+Keep the existing RSS URL and configure credentials separately. Query-string keys
+are deliberately unsupported because URLs can leak through logs/history/referrers.
+The included Gunicorn configuration omits query strings and headers from access logs;
+configure your reverse proxy to redact credentials and OIDC callback queries too.
+
+### Trusted proxies
+
+Forwarded headers are ignored by default. Configure proxy IPs/CIDRs and the number of
+forwarded hops under **Settings → Security**, or explicitly override them with
+`NIGHTFEED_TRUSTED_PROXIES` and `NIGHTFEED_TRUSTED_PROXY_HOPS`. Only connections from
+a listed direct proxy may supply `X-Forwarded-For` and `X-Forwarded-Proto`. Your proxy
+must preserve the original Host header and overwrite incoming forwarded headers.
+Forwarded host, port and prefix headers are never trusted. A typical single-proxy
+deployment uses one hop and the proxy's exact address. Use `Public base URL` for a
+fixed external feed hostname. Do not expose the backend port publicly when deploying
+behind a reverse proxy.
+
+The schema keeps users, OIDC identities, sessions and API keys separate, with keys
+and sessions tied to a user ID. Only one owner can be created. Supporting additional
+users will require resource ownership and authorization migrations before enabling
+account creation; the current owner model does not imply shared multi-user access.
+
 ### Mobile notifications
 
 Serve Nightfeed over HTTPS with a certificate trusted by your phone. Open **Settings → Mobile notifications** on each device. On iPhone/iPad (iOS/iPadOS 16.4 or later), first use **Add to Home Screen** for the short Safari guide, then open the installed app to enable notifications. Android and desktop browsers can enable push directly; the guide also explains installing Nightfeed as an app.
 
 Permission is requested only when you press **Enable on this device**. The default sends new-topic summaries at most every 15 minutes, with a maximum of 12 automatic notifications per device per local day. Choose new topics, updated topics, refresh failures, selected feeds, a 5/15/60-minute interval, a daily limit of 1–24, and optional quiet hours. Preferences and quiet hours use the timezone of the device when saved. Unchanged refreshes never alert; a failing feed alerts once until it recovers. Changes are grouped across feeds. During quiet hours or after the daily limit, pending events are held for up to 24 hours; older events expire rather than creating a backlog of alerts. **Send test** is an explicit exception to these preferences and is limited to once a minute. **Turn off** stops delivery for this device.
 
-The server needs outbound HTTPS access to the browser's push provider (Apple, Google, or Mozilla); your phone needs internet to receive the summary. Opening the app or its refresh report requires access to your Nightfeed address, depending on how you host it. Summaries include feed names and counts, which may appear on your lock screen and are encrypted for delivery. The service worker does not cache private pages or fetch the server to display notifications.
+The server needs outbound HTTPS access to the browser's push provider (Apple, Google, or Mozilla); your phone needs internet to receive the notice. Notices show the feed name (or number of feeds) and new-topic, updated-topic and failure counts. These summaries can appear while signed out or on the lock screen. Opening their details requires authentication and access to your Nightfeed address. The service worker does not cache private pages or fetch the server to display notifications.
 
 Optionally set `NIGHTFEED_PUSH_CONTACT=mailto:you@example.com` to provide an administrator contact for VAPID authentication. Otherwise Nightfeed uses its HTTPS hostname. Persist and back up the database **and** its existing `rss_site_bridge.downloaders.key` file together: the encrypted push signing key uses the same installation encryption key as downloader credentials. Losing that key requires restoring it and re-enabling notifications. Expired subscriptions are disabled; Settings lets the affected device enable them again. There is no external push account to configure, and no incoming public port is required for delivery.
 
@@ -39,16 +170,18 @@ macOS/Linux:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install .
+export NIGHTFEED_SECURE_COOKIES=0 # local HTTP development only
 flask --app rss_site_bridge.app:create_app run --debug
 ```
 
 Windows PowerShell:
 
-Install Python 3.9 or newer first. During installation, enable **Add python.exe to PATH**, then restart PowerShell and verify it with `python --version`.
+Install Python 3.10 or newer first. During installation, enable **Add python.exe to PATH**, then restart PowerShell and verify it with `python --version`.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
+$env:NIGHTFEED_SECURE_COOKIES = "0" # local HTTP development only
 .\.venv\Scripts\python.exe -m flask --app rss_site_bridge.app:create_app run --debug
 ```
 
@@ -93,7 +226,9 @@ Build and run with Docker Compose:
 docker compose up --build
 ```
 
-The app will be available at `http://127.0.0.1:5000`.
+The app listens on port 5000. Use an HTTPS reverse proxy for production. For local
+HTTP testing, set `NIGHTFEED_SECURE_COOKIES=0` in your shell or Compose `.env` file
+before starting it, then open `http://127.0.0.1:5000`.
 
 Files are persisted by mounting the local `./data` directory into the container:
 
@@ -171,7 +306,7 @@ GitHub setup notes:
 
 Reverse proxy note:
 
-- Nightfeed honors standard `X-Forwarded-Proto`, `X-Forwarded-Host`, and related proxy headers, so feed URLs can render as `https://...` when the app is behind Nginx Proxy Manager, Traefik, or a similar reverse proxy.
+- Nightfeed accepts forwarded client IP and HTTPS headers only from explicitly configured trusted proxies. Configure them under Settings → Security; preserve the Host header at your proxy.
 - If you want feed URLs to always use a fixed public host, set `Public base URL` in the Nightfeed settings page.
 
 ## Older Pip Fallback

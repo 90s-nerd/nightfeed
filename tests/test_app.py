@@ -1,3 +1,4 @@
+from auth_support import authenticated_client
 from datetime import datetime, timedelta, timezone
 from contextlib import closing
 from pathlib import Path
@@ -1272,7 +1273,7 @@ class AppTestCase(unittest.TestCase):
                 refresh_profile(db_path, profile.id)
 
             saved = get_profile_by_token(db_path, profile.feed_token)
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get("/feeds/{0}.xml".format(saved.feed_token))
 
             self.assertEqual(200, response.status_code)
@@ -1290,7 +1291,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get("/", headers={"X-Request-ID": "trace-123"})
 
             self.assertEqual(200, response.status_code)
@@ -1325,7 +1326,7 @@ class AppTestCase(unittest.TestCase):
             set_profile_active(db_path, profile.id, active=False)
             saved = get_profile_by_id(db_path, profile.id)
 
-            client = app.test_client()
+            client = authenticated_client(app)
             xml_response = client.get(f"/feeds/{saved.feed_token}.xml")
             view_response = client.get(f"/feeds/{saved.feed_token}/view")
 
@@ -1360,7 +1361,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get(f"/profiles/{profile.id}?view=rss")
 
             self.assertEqual(200, response.status_code)
@@ -1368,7 +1369,7 @@ class AppTestCase(unittest.TestCase):
             self.assertIn(f"http://localhost/feeds/{profile.feed_token}.xml".encode(), response.data)
 
     @unittest.skipIf(flask is None, "Flask is not installed in this environment.")
-    def test_profile_route_uses_forwarded_https_host_from_reverse_proxy(self):
+    def test_profile_route_uses_trusted_proxy_https_and_preserved_host(self):
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "rss.db"
             app = create_app(
@@ -1394,15 +1395,14 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
-            response = client.get(
-                f"/profiles/{profile.id}?view=rss",
-                headers={
-                    "X-Forwarded-Proto": "https",
-                    "X-Forwarded-Host": "rss.example.com",
-                    "X-Forwarded-Port": "443",
-                },
-            )
+            client = authenticated_client(app)
+            from rss_site_bridge.auth import COOKIE
+            client.set_cookie(COOKIE, client.get_cookie(COOKIE).value, domain="rss.example.com")
+            with patch.dict("os.environ", {"NIGHTFEED_TRUSTED_PROXIES": "127.0.0.1/32", "NIGHTFEED_TRUSTED_PROXY_HOPS": "1"}):
+                response = client.get(
+                    f"/profiles/{profile.id}?view=rss",
+                    headers={"Host": "rss.example.com", "X-Forwarded-Proto": "https", "X-Forwarded-Host": "evil.test"},
+                )
 
             self.assertEqual(200, response.status_code)
             self.assertIn(f"https://rss.example.com/feeds/{profile.feed_token}.xml".encode(), response.data)
@@ -1446,7 +1446,7 @@ class AppTestCase(unittest.TestCase):
             ):
                 refresh_profile(db_path, profile.id)
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.post(f"/profiles/{profile.id}/purge")
 
             self.assertEqual(302, response.status_code)
@@ -1491,7 +1491,7 @@ class AppTestCase(unittest.TestCase):
                     )
                 ],
             ):
-                client = app.test_client()
+                client = authenticated_client(app)
                 response = client.get(
                     f"/profiles/{profile.id}",
                     query_string={
@@ -1549,7 +1549,7 @@ class AppTestCase(unittest.TestCase):
                     )
                 ],
             ):
-                client = app.test_client()
+                client = authenticated_client(app)
                 response = client.post(
                     f"/profiles/{profile.id}/preview",
                     data={
@@ -1597,7 +1597,7 @@ class AppTestCase(unittest.TestCase):
                 ]
 
             with patch("rss_site_bridge.app.extract_feed_entries", side_effect=fake_extract):
-                client = app.test_client()
+                client = authenticated_client(app)
                 response = client.get(
                     "/preview/stream",
                     query_string={
@@ -1661,7 +1661,7 @@ class AppTestCase(unittest.TestCase):
                 ]
 
             with patch("rss_site_bridge.app.extract_feed_entries", side_effect=fake_extract):
-                client = app.test_client()
+                client = authenticated_client(app)
                 response = client.get(
                     f"/profiles/{profile.id}/preview/stream",
                     query_string={
@@ -1696,7 +1696,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get("/compose")
 
             self.assertEqual(200, response.status_code)
@@ -1714,7 +1714,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             with patch("rss_site_bridge.app.extract_feed_entries") as mocked_extract:
                 response = client.post(
                     "/profiles",
@@ -1765,7 +1765,7 @@ class AppTestCase(unittest.TestCase):
                     )
                 ],
             ):
-                client = app.test_client()
+                client = authenticated_client(app)
                 response = client.post(
                     "/preview",
                     data={
@@ -1814,7 +1814,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             redirect_response = client.get(f"/profiles/{profile.id}/clone")
             self.assertEqual(302, redirect_response.status_code)
 
@@ -1879,7 +1879,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get(f"/profiles/{profile.id}/clone", follow_redirects=True)
 
             self.assertEqual(200, response.status_code)
@@ -1897,7 +1897,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.post(
                 "/settings",
                 data={
@@ -1939,7 +1939,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.post(
                 "/settings",
                 data={
@@ -1963,7 +1963,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.post(
                 "/settings",
                 data={
@@ -1992,7 +1992,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get("/compose")
 
             self.assertEqual(200, response.status_code)
@@ -2022,7 +2022,7 @@ class AppTestCase(unittest.TestCase):
                 )
                 conn.commit()
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get("/compose")
 
             self.assertEqual(200, response.status_code)
@@ -2041,7 +2041,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             with patch("rss_site_bridge.app.send_test_email") as mocked_send:
                 response = client.post(
                     "/settings/test-email",
@@ -2078,7 +2078,7 @@ class AppTestCase(unittest.TestCase):
                 }
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             with patch(
                 "rss_site_bridge.app.send_test_email",
                 side_effect=smtplib.SMTPAuthenticationError(535, b"bad credentials"),
@@ -2132,7 +2132,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             client.post(
                 "/settings",
                 data={
@@ -2185,7 +2185,7 @@ class AppTestCase(unittest.TestCase):
                     )
                 ],
             ):
-                client = app.test_client()
+                client = authenticated_client(app)
                 response = client.post(
                     f"/profiles/{profile.id}/refresh",
                     headers={"X-Requested-With": "XMLHttpRequest"},
@@ -2220,7 +2220,7 @@ class AppTestCase(unittest.TestCase):
                 source_url="https://example.com/forum",
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.get("/notifications")
             self.assertEqual(200, response.status_code)
             self.assertIn(b"Refresh failed", response.data)
@@ -2267,7 +2267,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             disable_response = client.post(
                 f"/profiles/{profile.id}/toggle-active",
                 headers={"X-Requested-With": "XMLHttpRequest"},
@@ -2310,7 +2310,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.post(
                 f"/profiles/{profile.id}/edit",
                 data={
@@ -2356,7 +2356,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.post(f"/profiles/{profile.id}/delete")
 
             self.assertEqual(302, response.status_code)
@@ -2422,7 +2422,7 @@ class AppTestCase(unittest.TestCase):
                     return None
 
             safe_session = FakeSafeSession()
-            client = app.test_client()
+            client = authenticated_client(app)
             detail = client.get(f"/profiles/{profile.id}")
             with patch("rss_site_bridge.app.create_safe_browser_session", return_value=safe_session):
                 response = client.get(f"/profiles/{profile.id}/items/{item_id}/safe")
@@ -2502,7 +2502,7 @@ class AppTestCase(unittest.TestCase):
                 ),
             )
 
-            client = app.test_client()
+            client = authenticated_client(app)
             response = client.post(
                 f"/profiles/{profile.id}/delete",
                 headers={"X-Requested-With": "XMLHttpRequest"},

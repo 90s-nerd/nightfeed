@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% block title %}Security · Nightfeed{% endblock %}
+{% block content %}<div class="account-page security-page"><section class="surface section"><h1>Security and sign in</h1>
+<div class="button-row"><a class="btn btn-secondary" href="{{ url_for('auth.profile') }}">Profile</a><a class="btn btn-secondary" href="{{ url_for('auth.password_page') }}">Change password</a><a class="btn btn-secondary" href="{{ url_for('auth.api_keys') }}">API keys</a><a class="btn btn-secondary" href="/settings">Back to settings</a></div>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}{% if saved %}<p role="status">Security settings saved. Other sessions have been signed out.</p>{% endif %}
+{% if request.args.get('password_changed') %}<p role="status">Password changed. Other sessions have been signed out.</p>{% endif %}
+{% if request.args.get('oidc_linked') %}<p role="status">Your SSO identity is linked. Other sessions have been signed out.</p>{% endif %}
+{% if force_form %}<p>Local sign in is forced by server configuration. Automatic SSO redirects are paused.</p>{% endif %}
+<form method="post" class="security-form" autocomplete="off" data-dirty-form>
+<input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
+<fieldset><legend>Sessions</legend>
+<label>Maximum session duration (minutes)<input type="number" name="session_minutes" min="5" max="43200" value="{{ config.session_minutes }}" required></label>
+<label>Sign out after inactivity (minutes)<input type="number" name="idle_minutes" min="1" max="1440" value="{{ config.idle_minutes }}" required></label>
+</fieldset>
+<fieldset><legend>Password lockout</legend>
+<label>Failed attempts before lockout<input type="number" name="lockout_attempts" min="3" max="100" value="{{ config.lockout_attempts }}" required></label>
+<label>Lockout duration / failure window (minutes)<input type="number" name="lockout_minutes" min="1" max="10080" value="{{ config.lockout_minutes }}" required></label>
+<label><input type="checkbox" name="auto_unlock" {% if config.auto_unlock %}checked{% endif %}>Unlock automatically after the lockout period</label>
+<label>Excluded IP addresses and networks<input name="lockout_exclusions" value="{{ config.lockout_exclusions }}" placeholder="192.168.1.0/24, 127.0.0.1/32" maxlength="2048"></label>
+<small>Exclusions bypass password lockout, including the account lock. Use only networks you control. No networks are excluded by default. With automatic unlock disabled, use an active owner session or the offline recovery command.</small>
+</fieldset>
+<fieldset><legend>Trusted reverse proxy</legend>
+<label>Trusted proxy IP addresses and networks<input name="trusted_proxies" value="{{ config.trusted_proxies }}" placeholder="172.20.0.2/32" maxlength="2048"></label>
+<label>Forwarded proxy hops<input type="number" name="proxy_hops" min="0" max="5" value="{{ config.proxy_hops }}" required></label>
+<small>Use 0 for direct connections. Forwarded client IP and HTTPS headers are accepted only when the direct connection comes from a listed proxy. Your proxy must overwrite incoming forwarded headers. Server environment overrides take precedence. Forwarded host headers are never trusted.</small>
+</fieldset>
+<fieldset><legend>OpenID Connect</legend>
+<label><input type="checkbox" name="oidc_enabled" {% if config.oidc_enabled %}checked{% endif %}>Enable SSO</label>
+<label>Issuer URL<input name="issuer" type="url" value="{{ config.issuer }}" placeholder="https://auth.example.com"></label>
+<label>Client ID<input type="text" id="oidc-client-id" name="client_id" value="{{ config.client_id }}" autocomplete="off" data-lpignore="true" data-1p-ignore autocapitalize="none" spellcheck="false" maxlength="255"></label>
+<label>Client secret<input name="client_secret" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="{{ 'Saved · leave blank to keep' if config.has_secret else 'Required for SSO' }}" maxlength="4096"></label>
+<label>Owner subject (sub, optional until linked)<input name="subject" value="{{ config.subject }}" maxlength="255"></label>
+<small>After saving SSO settings, use “Link owner SSO identity” below to securely capture your provider subject, or enter its exact value here. Other provider users cannot sign in. Use your provider's MFA policy to protect SSO.</small>
+<label>Callback URL<input name="redirect_uri" type="url" value="{{ config.redirect_uri }}" placeholder="https://nightfeed.example.com/auth/oidc/callback"></label>
+<small>Register this exact URL with the provider. Use authorization code flow, PKCE S256 and a confidential client.</small>
+<label><input type="checkbox" name="discovery" {% if config.discovery %}checked{% endif %}>Discover endpoints automatically from the issuer</label>
+<label>Authorization endpoint (manual mode)<input name="authorization_endpoint" type="url" value="{{ config.authorization_endpoint }}"></label>
+<label>Token endpoint (manual mode)<input name="token_endpoint" type="url" value="{{ config.token_endpoint }}"></label>
+<label>JWKS URL (manual mode)<input name="jwks_uri" type="url" value="{{ config.jwks_uri }}"></label>
+<label>Logout endpoint (optional)<input name="logout_endpoint" type="url" value="{{ config.logout_endpoint }}"></label>
+<small>Nightfeed always revokes its session first, then redirects here after an SSO logout. Configure the provider URL and any required return parameters. Provider logout behavior varies.</small>
+<label>Login button text<input name="button_text" value="{{ config.button_text }}" maxlength="255"></label>
+<label><input type="checkbox" name="auto_login" {% if config.auto_login %}checked{% endif %}>Automatically redirect to SSO</label>
+<label><input type="checkbox" name="disable_form" {% if config.disable_form %}checked{% endif %}>Disable local login form</label>
+<small>Keep your local password for recovery and security changes. To restore local sign in, set NIGHTFEED_FORCE_LOGIN_FORM=1 in Docker and restart Nightfeed.</small>
+</fieldset>
+<label>Current password to confirm changes<input type="password" name="current_password" required autocomplete="new-password" data-lpignore="true" data-1p-ignore maxlength="256"></label>
+<button class="btn btn-primary">Save security settings</button>
+</form>
+{% if config.oidc_enabled %}<h2>Link owner SSO identity</h2><p>Sign in to your own provider account to link it to this Nightfeed owner. This replaces the previous SSO identity and signs out other sessions.</p><form method="post" action="{{ url_for('auth.oidc_link') }}" class="security-form"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><label>Current Nightfeed password<input type="password" name="current_password" required autocomplete="new-password" data-lpignore="true" data-1p-ignore maxlength="256"></label><button class="btn btn-secondary">Link owner SSO identity</button></form>{% endif %}</section>
+<section class="surface section"><h2>Active lockouts</h2>{% for lock in locks %}<p>{{ lock.key }} · {{ 'Manual unlock required' if lock.locked_until == -1 else 'Timed lockout' }}</p>{% else %}<p>No active lockouts.</p>{% endfor %}
+<form method="post" action="{{ url_for('auth.unlock') }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-secondary">Unlock password sign in</button></form></section>
+<section class="surface section"><h2>Recent security activity</h2><table class="security-events"><thead><tr><th>Time (UTC)</th><th>Event</th><th>Client IP</th></tr></thead><tbody>{% for event in events %}<tr><td>{{ event.at|auth_datetime }}</td><td>{{ event.event }}</td><td>{{ event.ip }}</td></tr>{% endfor %}</tbody></table></section>
+{% include 'components/unsaved_dialog.html' %}
+</div>{% endblock %}

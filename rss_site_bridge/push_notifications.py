@@ -184,6 +184,8 @@ def dispatch(db, now=None):
             conn.commit()
         if not events:
             continue
+        # Device opt-in permits these summaries while signed out. Full reports
+        # remain behind the application authentication gate.
         feeds = list(dict.fromkeys(event['feed_title'] for event in events))
         new = sum(event['new_count'] for event in events)
         updated = sum(event['updated_count'] for event in events)
@@ -223,6 +225,7 @@ def register(app):
 
     @bp.before_request
     def protect():
+        from .auth import same_origin
         if request.method == 'POST':
             if request.content_length is None or request.content_length > 16384:
                 return jsonify(error='Invalid notification request size.'), 413
@@ -231,7 +234,7 @@ def register(app):
                     raise BadSignature('Invalid token')
             except BadSignature:
                 return jsonify(error='Reload Settings and try again.'), 403
-            if request.headers.get('Origin') and request.headers['Origin'] != request.host_url.rstrip('/'):
+            if not same_origin():
                 return jsonify(error='Cross-origin requests are not allowed.'), 403
 
     @bp.after_request

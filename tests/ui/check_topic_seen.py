@@ -9,10 +9,11 @@ sys.path.insert(0, str(ROOT))
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest, connect_db
+from ui_auth_support import create_ui_app, authenticate_page
 
 with TemporaryDirectory() as temp:
     db = Path(temp) / 'seen.db'
-    app = create_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
+    app = create_ui_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
     profile = create_profile(db, FeedRequest('News', 'https://example.com', 'article', 'a', 'a', '', 100, 0, 'http'))
     with closing(connect_db(db)) as conn:
         for i in range(60):
@@ -30,7 +31,7 @@ with TemporaryDirectory() as temp:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(channel='chrome', headless=True)
             context = browser.new_context(viewport={'width': 390, 'height': 700})
-            page = context.new_page()
+            page = context.new_page(); authenticate_page(page, app, origin)
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(origin)
             page.bring_to_front()

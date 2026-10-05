@@ -20,6 +20,7 @@ python tests/ui/check_topic_seen.py
 python tests/ui/check_topic_features.py
 python tests/ui/check_notices.py
 python tests/ui/check_push_notifications.py
+python tests/ui/check_auth.py
 ```
 
 The checks cover responsive layouts and themes, feed creation/editing and
@@ -27,3 +28,10 @@ preview, search timing, browser-local timestamps, download submission states,
 hint alignment, and notification menus. Screenshots and reports are written to
 the ignored `.test-preview/` directory. The regular backend suite remains
 `python -m unittest discover -s tests -q`.
+
+Feature fixtures complete real owner onboarding and supply an authenticated session
+to each browser context. Authentication is never disabled. `check_auth.py` exercises
+the unauthenticated boundary, onboarding, login/logout, security settings, session
+CSRF and scoped API-key creation in desktop and mobile layouts. It also checks
+profile edits, read-only SSO-managed names, account menus, card spacing and compact
+form widths, including the profile editor in the dark theme.

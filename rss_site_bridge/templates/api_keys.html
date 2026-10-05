@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block title %}API keys · Nightfeed{% endblock %}
+{% block content %}<div class="account-page keys-page"><section class="surface section"><h1>API keys</h1><a class="btn btn-secondary" href="{{ url_for('auth.security') }}">Back to security</a>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+{% if new_key %}<div role="status"><h2>Save your new key</h2><p>This secret is shown only once. Store it in your reader's password manager or secret store.</p><code style="overflow-wrap:anywhere">{{ new_key }}</code></div>{% endif %}
+<details class="key-usage"><summary>How to use an API key</summary><p>Send <code>Authorization: Bearer YOUR_KEY</code> or <code>X-API-Key: YOUR_KEY</code>. RSS readers can use HTTP Basic authentication with username <code>apikey</code> and the key as their password. Keys in URL query strings are not accepted.</p></details>
+<form method="post" class="security-form" autocomplete="off"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
+<label>Key name<input type="text" id="api-key-label" name="key_label" autocomplete="off" data-lpignore="true" data-1p-ignore required maxlength="100" placeholder="RSS reader"></label>
+<fieldset><legend>Permissions</legend>{% for scope,label in scopes.items() %}<label><input type="checkbox" name="scopes" value="{{ scope }}"><span>{{ label }}</span></label>{% endfor %}</fieldset>
+<fieldset><legend>Feed restrictions</legend>{% for feed in feeds %}<label><input type="checkbox" name="feed_ids" value="{{ feed.id }}">{{ feed.feed_title }}</label>{% endfor %}<small>Leave all unchecked to permit all current and future feeds. Choose specific feeds for the narrowest access. Restrictions apply to every selected permission; notifications without a feed are excluded.</small></fieldset>
+<label>Expiry (UTC, optional)<input type="datetime-local" name="expires"></label><small>Leave blank for a key that remains valid until revoked.</small>
+<label>Current password<input type="password" name="current_password" required autocomplete="new-password" data-lpignore="true" data-1p-ignore maxlength="256"></label><button class="btn btn-primary">Create API key</button>
+</form></section>
+<section class="surface section"><h2>Your keys</h2>{% for key in keys %}<article class="key-card"><h3>{{ key.name }}</h3><p><code>{{ key.prefix }}…</code> · {{ 'Revoked' if key.revoked else 'Active' }} · Permissions: {{ key.scopes }}</p><p>Expiry: {{ key.expires|auth_datetime if key.expires else 'No expiry' }} · Last used: {{ key.last_used|auth_datetime }} · Feed IDs: {{ key.feed_ids if key.feed_ids != '[]' else 'All current and future feeds' }}</p>{% if not key.revoked %}<form method="post" action="{{ url_for('auth.revoke_api_key', key_id=key.id) }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-danger">Revoke key</button></form>{% endif %}</article>{% else %}<p>No keys created yet.</p>{% endfor %}</section></div>{% endblock %}

@@ -9,10 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest, connect_db, create_notification
+from ui_auth_support import create_ui_app, authenticate_page
 
 with TemporaryDirectory() as temp:
     db=Path(temp)/'dates.db'
-    app=create_app({'TESTING':True,'START_SCHEDULER':False,'DATABASE_PATH':db})
+    app=create_ui_app({'TESTING':True,'START_SCHEDULER':False,'DATABASE_PATH':db})
     feed=create_profile(db,FeedRequest('Example feed','https://example.com','article','a','a','',25,60,'http'))
     title='A long topic title with enough words to test truncation ' * 6
     with closing(connect_db(db)) as conn:
@@ -28,7 +29,7 @@ with TemporaryDirectory() as temp:
             browser=pw.chromium.launch(channel='chrome',headless=True)
             for zone,locale,expected in [('America/Chicago','en-US','Today 01:56 PM'),('Asia/Tokyo','en-US','Tomorrow 03:56 AM'),('America/Chicago','en-GB','Today 13:56')]:
                 ctx=browser.new_context(timezone_id=zone,locale=locale)
-                page=ctx.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+                page=ctx.new_page(); authenticate_page(page, app, origin);page.on('pageerror',lambda e:errors.append(str(e)))
                 page.clock.set_fixed_time(datetime(2026,10,1,12,0,tzinfo=timezone.utc))
                 page.goto(origin+'/')
                 expect(page.locator('.topic-time')).to_have_text(expected)
@@ -39,7 +40,7 @@ with TemporaryDirectory() as temp:
                 page.evaluate("window.dispatchEvent(new Event('focus'))")
                 expect(page.locator('.topic-time')).to_contain_text('Oct')
                 ctx.close()
-            page=browser.new_page(locale='en-US',timezone_id='America/Chicago')
+            page=browser.new_page(locale='en-US',timezone_id='America/Chicago'); authenticate_page(page, app, origin)
             page.clock.set_fixed_time(datetime(2026,10,1,20,0,tzinfo=timezone.utc))
             for theme in ['light','dark']:
                 page.goto(origin+'/settings');page.locator('[data-appearance]').select_option(theme)

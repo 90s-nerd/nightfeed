@@ -3,7 +3,7 @@
 {% block page_header %}
 <header class="topbar detail-column">
   <div class="page-title"><h1>{{ profile.feed_title }}</h1><p><a class="link-text" href="{{ profile.source_url }}" target="_blank" rel="noreferrer" aria-label="Source page (opens in a new tab)">{{ profile.source_url }}</a></p></div>
-  <div class="topbar-actions"><a class="btn btn-secondary" href="/feeds">Back to feeds</a>{% if profile.active %}<form class="inline-form" action="/profiles/{{ profile.id }}/refresh" method="post" data-async-refresh><button class="btn btn-primary" type="submit">Refresh now</button></form>{% endif %}</div>
+  <div class="topbar-actions"><a class="btn btn-secondary" href="/feeds">Back to feeds</a>{% if profile.active %}<form class="inline-form" action="/profiles/{{ profile.id }}/refresh" method="post" data-async-refresh><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-primary" type="submit">Refresh now</button></form>{% endif %}</div>
 </header>
 {% endblock %}
 {% block content %}
@@ -16,7 +16,7 @@
   <nav class="detail-views" aria-label="Feed views">{% for key, label in [('items', 'Items'), ('configuration', 'Configuration'), ('rss', 'RSS')] %}<a href="/profiles/{{ profile.id }}?view={{ key }}" {% if view == key %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
   <div data-feed-content>
   {% if view == 'configuration' %}
-  <form id="feed-settings-form" class="surface section feed-editor" action="/profiles/{{ profile.id }}/edit" method="post" data-feed-editor="edit" data-returned-draft="{{ 'true' if edit_form else 'false' }}" data-initial-preview="{{ 'ready' if preview and not preview_error else 'none' }}">
+  <form id="feed-settings-form" class="surface section feed-editor" action="/profiles/{{ profile.id }}/edit" method="post" data-feed-editor="edit" data-returned-draft="{{ 'true' if edit_form else 'false' }}" data-initial-preview="{{ 'ready' if preview and not preview_error else 'none' }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
     <input type="hidden" name="preview" value="1">
     <div class="editor-errors error-text" data-editor-errors tabindex="-1" {% if not edit_error %}hidden{% endif %}><strong>⚠ Check your feed settings</strong><p>{{ edit_error or '' }}</p></div>
     {% set editor_kind = 'edit' %}{% set field_prefix = 'edit_' %}{% set preview_target = 'detail-preview' %}{% set preview_page = '/profiles/' ~ profile.id %}{% set preview_url = '/profiles/' ~ profile.id ~ '/preview' %}{% set preview_stream = '/profiles/' ~ profile.id ~ '/preview/stream' %}
@@ -41,7 +41,7 @@
   </section>
   {% endif %}
   </div>
-  <details class="detail-actions"><summary>Manage feed</summary><div class="button-row"><form class="inline-form" action="/profiles/{{ profile.id }}/toggle-active" method="post"><button class="btn btn-secondary" type="submit">{{ 'Disable feed' if profile.active else 'Enable feed' }}</button></form><a class="btn btn-secondary" href="/profiles/{{ profile.id }}/clone">Duplicate feed</a><form class="inline-form" action="/profiles/{{ profile.id }}/purge" method="post" data-confirm='Clear all stored items from “{{ profile.feed_title }}”? This cannot be undone. The feed settings and URL will be kept.'><button class="btn btn-danger" type="submit">Clear stored items</button></form><form class="inline-form" action="/profiles/{{ profile.id }}/delete" method="post" data-confirm='Delete “{{ profile.feed_title }}” and all stored items? This cannot be undone.'><button class="btn btn-danger" type="submit">Delete feed</button></form></div></details>
+  <details class="detail-actions"><summary>Manage feed</summary><div class="button-row"><form class="inline-form" action="/profiles/{{ profile.id }}/toggle-active" method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-secondary" type="submit">{{ 'Disable feed' if profile.active else 'Enable feed' }}</button></form><a class="btn btn-secondary" href="/profiles/{{ profile.id }}/clone">Duplicate feed</a><form class="inline-form" action="/profiles/{{ profile.id }}/purge" method="post" data-confirm='Clear all stored items from “{{ profile.feed_title }}”? This cannot be undone. The feed settings and URL will be kept.'><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-danger" type="submit">Clear stored items</button></form><form class="inline-form" action="/profiles/{{ profile.id }}/delete" method="post" data-confirm='Delete “{{ profile.feed_title }}” and all stored items? This cannot be undone.'><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-danger" type="submit">Delete feed</button></form></div></details>
 </div>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='nightfeed-feed-editor.js') }}"></script>{% endblock %}

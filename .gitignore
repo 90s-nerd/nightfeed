@@ -34,3 +34,4 @@ data/*.sqlite3
 # Local UI verification fixtures and downloader encryption keys
 .test-preview/
 *.downloaders.key
+*.setup-token

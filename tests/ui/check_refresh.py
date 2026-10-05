@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from playwright.sync_api import sync_playwright
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest, connect_db
+from ui_auth_support import create_ui_app, authenticate_page
 
 
 def run():
@@ -24,7 +25,7 @@ def run():
     checks, errors = [], []
     with TemporaryDirectory() as temp:
         db = Path(temp) / 'ui.db'
-        app = create_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
+        app = create_ui_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
         profile = create_profile(db, FeedRequest('Design & technology', 'https://example.com/topics', 'article', 'a', 'a', '', 25, 0, 'http'))
         with closing(connect_db(db)) as conn:
             for index in range(30):
@@ -39,7 +40,7 @@ def run():
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(channel='chrome', headless=True)
-                page = browser.new_page()
+                page = browser.new_page(); authenticate_page(page, app, origin)
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 routes = {'timeline': '/', 'feeds': '/feeds', 'settings': '/settings', 'compose': '/compose',
                           'detail': f'/profiles/{profile.id}', 'notifications': '/notifications',
@@ -132,7 +133,7 @@ def run():
                 assert page.locator('[data-appearance]').input_value() == 'dark'
                 denied = browser.new_context()
                 denied.add_init_script("Object.defineProperty(window, 'localStorage', {get() {throw new Error('Storage denied')}})")
-                denied_page = denied.new_page()
+                denied_page = denied.new_page(); authenticate_page(denied_page, app, origin)
                 denied_page.on('pageerror', lambda error: errors.append(str(error)))
                 denied_page.goto(origin + '/settings?preview_debug=1')
                 denied_page.locator('[data-appearance]').select_option('light')

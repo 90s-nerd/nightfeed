@@ -1,3 +1,4 @@
+from auth_support import authenticated_client
 """Persistence and validation contracts for the refreshed feed editor."""
 from contextlib import closing
 from pathlib import Path
@@ -15,7 +16,7 @@ class RefreshEditorTests(unittest.TestCase):
         self.temp = TemporaryDirectory()
         self.db = Path(self.temp.name) / 'app.db'
         self.app = create_app({'TESTING': True, 'START_SCHEDULER': False, 'DATABASE_PATH': self.db})
-        self.client = self.app.test_client()
+        self.client = authenticated_client(self.app)
         self.profile = create_profile(self.db, FeedRequest('Original', 'https://example.com/topics', 'article', 'a', 'a', '', 25, 60, 'http', notify_on_success=True))
         with closing(connect_db(self.db)) as conn:
             conn.execute('INSERT INTO feed_items (profile_id,title,link,summary,discovered_at) VALUES (?,?,?,?,?)',

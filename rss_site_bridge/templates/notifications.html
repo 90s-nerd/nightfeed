@@ -11,10 +11,10 @@
   <div class="topbar-actions">
     <a class="btn btn-secondary" href="/notifications?status=unread" {% if status_filter == 'unread' %}aria-current="page"{% endif %}>Unread</a>
     <a class="btn btn-secondary" href="/notifications?status=all" {% if status_filter == 'all' %}aria-current="page"{% endif %}>All</a>
-    <form class="inline-form" action="/notifications/read-all" method="post">
+    <form class="inline-form" action="/notifications/read-all" method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
       <button class="btn btn-primary" type="submit">Mark all read</button>
     </form>
-    <form class="inline-form" action="/notifications/delete-read" method="post" data-confirm="Delete all read notifications? This cannot be undone.">
+    <form class="inline-form" action="/notifications/delete-read" method="post" data-confirm="Delete all read notifications? This cannot be undone."><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
       <input type="hidden" name="status" value="{{ status_filter }}">
       <button class="btn btn-danger" type="submit">Delete read</button>
     </form>
@@ -45,12 +45,12 @@
         <summary aria-label="Actions for {{ notification.title }}"><span class="ellipsis-icon" aria-hidden="true">⋮</span></summary>
         <div class="row-menu-content" role="group" aria-label="Notification actions">
         {% if not notification.read_at %}
-        <form class="inline-form" action="/notifications/{{ notification.id }}/read" method="post">
+        <form class="inline-form" action="/notifications/{{ notification.id }}/read" method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
           <input type="hidden" name="status" value="{{ status_filter }}">
           <button class="notification-link-button" type="submit">Mark read</button>
         </form>
         {% endif %}
-        <form class="inline-form" action="/notifications/{{ notification.id }}/delete" method="post" data-confirm="Delete this notification? This cannot be undone.">
+        <form class="inline-form" action="/notifications/{{ notification.id }}/delete" method="post" data-confirm="Delete this notification? This cannot be undone."><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
           <input type="hidden" name="status" value="{{ status_filter }}">
           <button class="notification-link-button danger-link" type="submit">Delete</button>
         </form>

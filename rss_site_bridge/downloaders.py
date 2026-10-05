@@ -216,6 +216,7 @@ def register(app, safe_session_lookup):
 
     @bp.before_request
     def protect_mutations():
+        from .auth import same_origin
         if request.method != 'POST':
             return
         try:
@@ -224,8 +225,7 @@ def register(app, safe_session_lookup):
                 raise BadSignature('Invalid token')
         except (BadSignature, SignatureExpired):
             return jsonify(error='Page token expired or invalid. Reload the page and retry.'), 403
-        origin = request.headers.get('Origin')
-        if origin and origin != request.host_url.rstrip('/'):
+        if not same_origin():
             return jsonify(error='Cross-origin requests are not allowed.'), 403
 
     @bp.errorhandler(ValueError)

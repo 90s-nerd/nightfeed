@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <meta name="auth-csrf" content="{{ auth_csrf }}">
+    <script src="{{ url_for('static', filename='nightfeed-auth.js') }}"></script>
     <meta name="downloader-csrf" content="{{ downloader_csrf }}">
     <meta name="topic-csrf" content="{{ topic_csrf }}">
     <meta name="push-csrf" content="{{ push_csrf }}">
@@ -17,6 +19,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-legacy.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-ui.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-auth.css') }}">
   </head>
   <body class="{% block body_class %}{% endblock %}">
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -40,6 +43,12 @@
             </a>
             {% endfor %}
           </nav>
+          {% if auth_user %}
+          <details class="account-menu">
+            <summary aria-label="Account menu"><span class="account-avatar" aria-hidden="true">{{ auth_user.name[:1]|upper }}</span><span class="account-identity"><strong>{{ auth_user.name }}</strong><small>Account</small></span><svg class="account-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg></summary>
+            <div class="account-dropdown"><a href="{{ url_for('auth.profile') }}">Manage profile</a><a href="{{ url_for('auth.security') }}">Security settings</a><form method="post" action="{{ url_for('auth.logout') }}" data-auth-logout><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button type="submit">Log out</button></form></div>
+          </details>
+          {% endif %}
         </div>
       </aside>
 

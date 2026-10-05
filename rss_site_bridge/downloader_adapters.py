@@ -187,7 +187,8 @@ def file_identity(data):
         if b'pieces' in info:
             if not isinstance(info[b'pieces'], bytes) or len(info[b'pieces']) % 20 or not (b'length' in info or b'files' in info):
                 raise ValueError('Invalid v1 download metadata.')
-            hashes.append(sha1(raw_info).hexdigest())
+            # BitTorrent v1 defines this identifier as SHA-1; it is not an authentication primitive.
+            hashes.append(sha1(raw_info, usedforsecurity=False).hexdigest())
         if info.get(b'meta version') == 2 and isinstance(info.get(b'file tree'), dict):
             hashes.extend([sha256(raw_info).hexdigest()[:40], sha256(raw_info).hexdigest()])
         if not hashes:

@@ -13,6 +13,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest, connect_db
+from ui_auth_support import create_ui_app, authenticate_page
 from rss_site_bridge import downloaders as d
 from test_downloaders import FakeDownloader, metadata_file
 
@@ -38,7 +39,7 @@ def run():
         db = Path(temp) / 'fixture.db'
         fixture = BrowserFixture()
         stack.enter_context(patch('rss_site_bridge.app.get_safe_browser_session', return_value=fixture))
-        app = create_app({'DATABASE_PATH':db,'START_SCHEDULER':False,'TESTING':True})
+        app = create_ui_app({'DATABASE_PATH':db,'START_SCHEDULER':False,'TESTING':True})
         profile = create_profile(db, FeedRequest('Sample feed','https://example.com/topics','article','a','a','',25,60,'http'))
         with closing(connect_db(db)) as conn:
             conn.execute("UPDATE app_settings SET timezone_name='Asia/Tokyo'")
@@ -58,7 +59,7 @@ def run():
                 browser=pw.chromium.launch(channel='chrome',headless=True)
                 for timezone, expected in [('America/Chicago','07:00 AM'),('Asia/Tokyo','09:00 PM')]:
                     ctx=browser.new_context(timezone_id=timezone,locale='en-US',viewport={'width':1440,'height':1000})
-                    page=ctx.new_page(); page.on('pageerror',lambda e: errors.append(str(e)))
+                    page=ctx.new_page(); authenticate_page(page, app, origin); page.on('pageerror',lambda e: errors.append(str(e)))
                     page.goto(origin+'/')
                     expect(page.locator('time').first).to_contain_text(expected)
                     assert not page.get_by_role('link',name='Create feed',exact=True).count()
@@ -104,7 +105,7 @@ def run():
                     assert page.get_by_role('link',name='Open raw XML').get_attribute('target')=='_blank'
                     report.append({'timezone':timezone,'displayed':expected,'hover':'stable','search':'automatic','rss':'links only'})
                     ctx.close()
-                ctx=browser.new_context(locale='en-US',viewport={'width':1440,'height':1000}); page=ctx.new_page()
+                ctx=browser.new_context(locale='en-US',viewport={'width':1440,'height':1000}); page=ctx.new_page(); authenticate_page(page, app, origin)
                 cdp=ctx.new_cdp_session(page); cdp.send('Emulation.setTimezoneOverride', {'timezoneId':'America/Chicago'})
                 page.goto(origin+'/'); expect(page.locator('time').first).to_contain_text('07:00 AM')
                 cdp.send('Emulation.setTimezoneOverride', {'timezoneId':''})

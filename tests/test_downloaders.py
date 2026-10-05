@@ -1,3 +1,4 @@
+from auth_support import authenticated_client
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -68,7 +69,7 @@ class DownloaderTests(unittest.TestCase):
         self.lookup = lookup.start()
         self.addCleanup(lookup.stop)
         self.app = create_app({'TESTING': True, 'START_SCHEDULER': False, 'DATABASE_PATH': self.db})
-        self.client = self.app.test_client()
+        self.client = authenticated_client(self.app)
         html = self.client.get('/settings/downloaders').get_data(as_text=True)
         self.token = re.search(r'name="downloader-csrf" content="([^"]+)"', html).group(1)
         self.headers = {'X-CSRF-Token': self.token}

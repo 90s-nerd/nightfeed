@@ -8,6 +8,8 @@ services:
     environment:
       NIGHTFEED_DATABASE_PATH: /app/data/rss_site_bridge.db
       NIGHTFEED_START_SCHEDULER: "1"
+      NIGHTFEED_SECURE_COOKIES: "${NIGHTFEED_SECURE_COOKIES:-1}"
+      NIGHTFEED_FORCE_LOGIN_FORM: "${NIGHTFEED_FORCE_LOGIN_FORM:-0}"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
