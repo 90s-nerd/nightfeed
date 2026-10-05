@@ -81,6 +81,20 @@ with TemporaryDirectory() as temp:
                     guide.get_by_role('button', name='Back', exact=True).click()
                     page.keyboard.press('Escape')
                     expect(guide).not_to_be_visible()
+                    # Loading settings during an outage must not lose the device token.
+                    saved_token = page.evaluate("localStorage.getItem('nightfeed.push.device')")
+                    page.route('**/api/push/device', lambda route: route.fulfill(status=503, content_type='application/json', body='{"error":"Temporary server outage"}'))
+                    page.reload()
+                    expect(panel.locator('[data-push-error]')).to_have_text('Temporary server outage')
+                    assert page.evaluate("localStorage.getItem('nightfeed.push.device')") == saved_token
+                    page.unroute('**/api/push/device')
+                    # The browser stub has no subscription after navigation, even
+                    # though the server still considers this device enabled.
+                    page.reload()
+                    expect(panel.locator('[data-push-error]')).to_contain_text('subscription is missing')
+                    expect(panel.locator('[data-push-enable]')).to_be_visible()
+                    panel.get_by_role('button', name='Enable on this device').click()
+                    expect(panel.locator('[data-push-preferences]')).to_be_visible()
                     panel.get_by_role('button', name='Turn off', exact=True).click()
                     expect(panel.locator('[data-push-preferences]')).not_to_be_visible()
                     page.reload()

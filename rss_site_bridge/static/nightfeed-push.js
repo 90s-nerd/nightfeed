@@ -16,7 +16,11 @@
     const response = await fetch(`/api/push/${path}`, data === undefined ? {} : {method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}, body: JSON.stringify(data)});
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Notification settings are unavailable.');
+    if (!response.ok) {
+      const failure = new Error(result.error || 'Notification settings are unavailable.');
+      failure.status = response.status;
+      throw failure;
+    }
     return result;
   };
   const showError = message => { error.textContent = message; error.hidden = !message; };
@@ -134,12 +138,17 @@
       if (token) {
         try {
           const result = await api('device', {device_token: token});
-          fill(result.preferences); subscribed(result.enabled && Notification.permission === 'granted');
+          await navigator.serviceWorker.ready;
+          const subscription = await registration.pushManager.getSubscription();
+          fill(result.preferences); subscribed(result.enabled && Notification.permission === 'granted' && !!subscription);
           renewSubscription = !result.enabled && !!result.error;
           disable.hidden = !result.enabled;
           if (result.error) showError(result.error);
+          else if (result.enabled && !subscription) showError('This browser’s notification subscription is missing. Enable on this device to restore notifications.');
         } catch (failure) {
-          token = ''; localStorage.removeItem('nightfeed.push.device'); subscribed(false); showError(failure.message);
+          // A temporary network, server, or login failure must retain device identity.
+          if (failure.status === 400) { token = ''; localStorage.removeItem('nightfeed.push.device'); }
+          subscribed(false); showError(failure.message);
         }
       } else subscribed(false);
       enable.disabled = false;
