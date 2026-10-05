@@ -19,6 +19,7 @@ python tests/ui/check_notification_reports.py
 python tests/ui/check_topic_seen.py
 python tests/ui/check_topic_features.py
 python tests/ui/check_notices.py
+python tests/ui/check_push_notifications.py
 ```
 
 The checks cover responsive layouts and themes, feed creation/editing and

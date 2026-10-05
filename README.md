@@ -10,6 +10,7 @@
 - Filter the timeline to new topics or saved bookmarks, and mark all topics seen to catch up. Saving a topic keeps it available after it is seen. Previously seen topics show UPDATED when their title or summary changes, with a before/after summary accumulated until the update is seen. Bookmarks are shared across the instance.
 - Refreshes sources on demand and on a background timer.
 - Opens refresh notifications as saved reports showing new entries, before/after updates, and failure diagnostics. Opening a report marks it as read; changed entries include Open safely links. Reports created before this feature retain their existing summary; entry-level history is recorded for subsequent refreshes.
+- Sends optional Web Push summaries to individual devices, with feed selection, quiet hours, and daily limits. Includes a short Home Screen installation guide in Settings.
 - Uses HTTP-only fetching by default.
 - Offers an optional hardened browser mode for JavaScript-rendered pages.
 - Opens stored topics in an optional interactive, isolated browser with popup and ad-request controls.
@@ -19,6 +20,18 @@
 The default mode is the safest path for noisy sites because it never opens a browser. If a site renders the topic list with JavaScript, browser mode uses Playwright in a locked-down context that blocks popups, third-party requests, downloads, and off-site navigations.
 
 ## Run
+
+### Mobile notifications
+
+Serve Nightfeed over HTTPS with a certificate trusted by your phone. Open **Settings → Mobile notifications** on each device. On iPhone/iPad (iOS/iPadOS 16.4 or later), first use **Add to Home Screen** for the short Safari guide, then open the installed app to enable notifications. Android and desktop browsers can enable push directly; the guide also explains installing Nightfeed as an app.
+
+Permission is requested only when you press **Enable on this device**. The default sends new-topic summaries at most every 15 minutes, with a maximum of 12 automatic notifications per device per local day. Choose new topics, updated topics, refresh failures, selected feeds, a 5/15/60-minute interval, a daily limit of 1–24, and optional quiet hours. Preferences and quiet hours use the timezone of the device when saved. Unchanged refreshes never alert; a failing feed alerts once until it recovers. Changes are grouped across feeds. During quiet hours or after the daily limit, pending events are held for up to 24 hours; older events expire rather than creating a backlog of alerts. **Send test** is an explicit exception to these preferences and is limited to once a minute. **Turn off** stops delivery for this device.
+
+The server needs outbound HTTPS access to the browser's push provider (Apple, Google, or Mozilla); your phone needs internet to receive the summary. Opening the app or its refresh report requires access to your Nightfeed address, depending on how you host it. Summaries include feed names and counts, which may appear on your lock screen and are encrypted for delivery. The service worker does not cache private pages or fetch the server to display notifications.
+
+Optionally set `NIGHTFEED_PUSH_CONTACT=mailto:you@example.com` to provide an administrator contact for VAPID authentication. Otherwise Nightfeed uses its HTTPS hostname. Persist and back up the database **and** its existing `rss_site_bridge.downloaders.key` file together: the encrypted push signing key uses the same installation encryption key as downloader credentials. Losing that key requires restoring it and re-enabling notifications. Expired subscriptions are disabled; Settings lets the affected device enable them again. There is no external push account to configure, and no incoming public port is required for delivery.
+
+### Starting the app
 
 macOS/Linux:
 

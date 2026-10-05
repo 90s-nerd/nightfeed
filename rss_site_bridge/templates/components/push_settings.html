@@ -1,0 +1,19 @@
+<section class="surface section push-settings" data-push-settings aria-labelledby="push-heading">
+  <div class="section-head"><div class="help-heading"><h2 id="push-heading">Mobile notifications</h2><details class="ui-hint"><summary aria-label="Help with mobile notifications">?</summary><div class="ui-hint-content">Preferences apply to this device. Open a notification to view its refresh report. Unchanged refreshes never alert. Repeated failures alert once until the feed recovers. Daily limits and quiet hours use this device's timezone.</div></details></div><button type="button" class="feed-name-link push-guide-link" data-push-guide>Add to Home Screen</button></div>
+  <p class="meta" data-push-state role="status">Checking this device…</p><p class="error-text" data-push-error role="alert" hidden></p>
+  <div class="button-row"><button type="button" class="btn btn-primary" data-push-enable disabled>Enable on this device</button><button type="button" class="btn btn-secondary" data-push-test hidden>Send test</button><button type="button" class="danger-link push-link" data-push-disable hidden>Turn off</button></div>
+  <form data-push-preferences hidden>
+    <fieldset class="push-group"><legend>Notify me about</legend><div class="push-choices"><label class="check-option"><input type="checkbox" name="new" checked><span>New topics</span></label><label class="check-option"><input type="checkbox" name="updated"><span>Updated topics</span></label><label class="check-option"><input type="checkbox" name="failures"><span>Refresh failures</span></label></div></fieldset>
+    <div class="settings-fields-two"><div class="field"><label for="push-interval">Summary frequency</label><select id="push-interval" name="interval"><option value="5">At most every 5 minutes</option><option value="15" selected>At most every 15 minutes</option><option value="60">At most once an hour</option></select></div><div class="field"><label for="push-limit">Daily limit</label><select id="push-limit" name="daily_limit">{% for count in [1,3,6,12,24] %}<option value="{{ count }}" {% if count == 12 %}selected{% endif %}>{{ count }} {{ 'notification' if count == 1 else 'notifications' }}</option>{% endfor %}</select></div></div>
+    <fieldset class="push-group"><legend>Feeds</legend><label class="check-option"><input type="checkbox" data-push-all-feeds checked><span>All feeds</span></label><div class="push-feed-options" data-push-feeds hidden></div></fieldset>
+    <label class="check-option"><input type="checkbox" name="quiet"><span>Quiet hours</span></label><div class="settings-fields-two" data-push-quiet hidden><div class="field"><label for="push-quiet-start">From</label><input id="push-quiet-start" name="quiet_start" type="time" value="22:00" required></div><div class="field"><label for="push-quiet-end">Until</label><input id="push-quiet-end" name="quiet_end" type="time" value="08:00" required></div></div>
+    <div class="button-row"><button type="submit" class="btn btn-secondary">Save notification preferences</button><span class="meta" data-push-feedback role="status" hidden></span></div>
+  </form>
+</section>
+<dialog class="push-guide-dialog" data-push-guide-dialog aria-labelledby="push-guide-title">
+  <div class="section-head"><h2 id="push-guide-title">Nightfeed on your Home Screen</h2><button type="button" class="search-settings-close" data-push-guide-close aria-label="Close setup guide">×</button></div>
+  <p class="meta" data-push-guide-counter></p><h3 data-push-guide-step-title></h3><p data-push-guide-step-text></p>
+  <button type="button" class="btn btn-secondary" data-push-install hidden>Install Nightfeed</button>
+  <div class="button-row"><button type="button" class="btn btn-secondary" data-push-guide-back>Back</button><button type="button" class="btn btn-primary" data-push-guide-next>Next</button></div>
+</dialog>
+<script src="{{ url_for('static', filename='nightfeed-push.js') }}" defer></script>

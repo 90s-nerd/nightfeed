@@ -432,3 +432,33 @@ body .settings-toggle-control { appearance: auto; width: 20px; height: 20px; fle
 .submission-meta dt::after { content: ' —'; }
 [data-submission-state][data-status=added], [data-submission-state][data-status=already_present] { color: var(--nf-success); }
 [data-submission-state][data-status=error], [data-submission-state][data-status=unknown] { color: var(--nf-danger); }
+
+.push-settings { margin-bottom: 24px; }
+.push-settings > .section-head { flex-wrap: wrap; gap: 8px 16px; margin-bottom: 16px; }
+.push-settings > .meta { margin: 12px 0; }
+.push-guide-link, .push-link { border: 0; padding: 0; background: transparent; font: inherit; cursor: pointer; }
+.push-settings form { margin-top: 16px; display: grid; gap: 16px; }
+.push-settings .field { margin: 0; }
+.push-settings .check-option { align-items: center; }
+.push-settings .button-row { align-items: center; }
+.push-settings form[hidden], .push-settings [hidden], .push-guide-dialog [hidden] { display: none; }
+.push-group { margin: 0; padding: 0; border: 0; min-width: 0; }
+.push-group legend { padding: 0; margin-bottom: 4px; color: var(--nf-secondary); font-size: 13px; }
+.push-choices { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.push-feed-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; margin-top: 4px; max-height: 240px; overflow: auto; }
+.push-feed-options .check-option { min-width: 0; }
+.push-feed-options span { overflow-wrap: anywhere; }
+.push-guide-dialog { width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 24px; border: 1px solid var(--nf-border); border-radius: 18px; color: var(--nf-text); background: var(--nf-surface); }
+.push-guide-dialog::backdrop { background: #0008; }
+.push-guide-dialog .section-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 12px; }
+.push-guide-dialog h2 { font-size: 20px; margin: 0; }
+.push-guide-dialog h3 { font-size: 18px; margin: 12px 0 8px; }
+.push-guide-dialog p { overflow-wrap: anywhere; margin: 0; }
+.push-guide-dialog .section-head { margin-bottom: 12px; }
+.push-guide-dialog .button-row { justify-content: flex-end; margin-top: 16px; }
+@media(max-width:767px) {
+  .push-choices { flex-direction: column; gap: 4px; }
+  .push-feed-options { grid-template-columns: 1fr; }
+  .push-settings .push-guide-link { align-self: flex-start; }
+  .push-guide-dialog { padding: 20px; }
+}

@@ -78,7 +78,7 @@ with TemporaryDirectory() as temp:
                             expect(content).to_be_hidden()
                             expect(summary).to_be_focused()
                             summary.click()
-                            page.locator('h1').click()
+                            page.locator('h1:not(.sr-only), .surface h2').first.click()
                             expect(content).to_be_hidden()
                             checks += 1
                         assert not page.evaluate('document.documentElement.scrollWidth > innerWidth + 1')
