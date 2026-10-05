@@ -6,3 +6,11 @@ __pycache__/
 .mypy_cache
 .DS_Store
 data
+.test-deps
+.test-preview
+design
+REFRESH_STATUS.md
+AGENTS.md
+MEMORY.md
+.agents
+.codex

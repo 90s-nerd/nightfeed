@@ -8,10 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest, connect_db
+from ui_auth_support import create_ui_app, authenticate_page
 
 with TemporaryDirectory() as temp:
     db = Path(temp) / 'hints.db'
-    app = create_app({'TESTING': True, 'START_SCHEDULER': False, 'DATABASE_PATH': db})
+    app = create_ui_app({'TESTING': True, 'START_SCHEDULER': False, 'DATABASE_PATH': db})
     feed = create_profile(db, FeedRequest('Example feed', 'https://example.com', 'article', 'a', 'a', '', 25, 60, 'http'))
     with closing(connect_db(db)) as conn:
         conn.execute('UPDATE app_settings SET smtp_enabled=1')
@@ -24,7 +25,7 @@ with TemporaryDirectory() as temp:
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(channel='chrome', headless=True)
-            page = browser.new_page()
+            page = browser.new_page(); authenticate_page(page, app, origin)
             page.on('pageerror', lambda e: errors.append(str(e)))
             for theme in ['light', 'dark']:
                 page.goto(origin + '/settings')
@@ -99,7 +100,7 @@ with TemporaryDirectory() as temp:
                                 tls.screenshot(path=f'.test-preview/refreshed-ui/repaired-starttls-{width}-{theme}.png')
             # Native disclosures work without JavaScript too.
             context = browser.new_context(java_script_enabled=False)
-            plain = context.new_page()
+            plain = context.new_page(); authenticate_page(plain, app, origin)
             plain.goto(origin + '/settings')
             expect(plain.locator('#appearance-help')).to_be_hidden()
             plain.locator('.ui-hint > summary').first.click()

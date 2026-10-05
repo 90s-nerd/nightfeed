@@ -1,3 +1,4 @@
+from auth_support import authenticated_client
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +16,7 @@ class TopicSeenTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.db = Path(self.temp.name) / 'seen.db'
         self.app = create_app({'DATABASE_PATH': self.db, 'START_SCHEDULER': False, 'TESTING': True})
-        self.client = self.app.test_client()
+        self.client = authenticated_client(self.app)
         self.profile = create_profile(self.db, FeedRequest('News', 'https://example.com', 'article', 'a', 'a', '', 100, 0, 'http'))
         with closing(connect_db(self.db)) as conn:
             for i in range(40):

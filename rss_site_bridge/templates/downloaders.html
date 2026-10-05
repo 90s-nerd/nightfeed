@@ -6,7 +6,7 @@
 <section class="surface section"><h2>Configured destinations</h2><div class="list-stack" style="margin-top:16px">
 {% for downloader in downloaders %}
 <article class="item-card"><h3>{{ downloader.name }}</h3><p class="meta">{{ 'Enabled' if downloader.enabled else 'Disabled' }} · {{ downloader.base_url }}</p><p>Button: {{ downloader.button_label or ('Send to ' + downloader.name) }}</p>
-<div class="button-row"><a class="btn btn-secondary" href="?edit={{ downloader.id }}">Edit</a><button class="btn btn-secondary" type="button" data-test-downloader="{{ downloader.id }}">Test / refresh categories</button><form method="post" action="/settings/downloaders/{{ downloader.id }}/delete" data-confirm="Delete {{ downloader.name }}? Its routing and saved credentials will be removed. Existing downloads are unaffected."><input type="hidden" name="csrf_token" value="{{ downloader_csrf }}"><button class="btn btn-danger">Delete</button></form></div><p class="meta" role="status" data-test-result="{{ downloader.id }}"></p>
+<div class="button-row"><a class="btn btn-secondary" href="?edit={{ downloader.id }}">Edit</a><button class="btn btn-secondary" type="button" data-test-downloader="{{ downloader.id }}">Test / refresh categories</button><form method="post" action="/settings/downloaders/{{ downloader.id }}/delete" data-confirm="Delete {{ downloader.name }}? Its routing and saved credentials will be removed. Existing downloads are unaffected."><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="csrf_token" value="{{ downloader_csrf }}"><button class="btn btn-danger">Delete</button></form></div><p class="meta" role="status" data-test-result="{{ downloader.id }}"></p>
 </article>{% else %}<div class="empty-state">No downloaders configured.</div>{% endfor %}
 </div></section>
 <details class="surface section downloader-editor" {% if editing or error or not downloaders %}open{% endif %}>
@@ -14,7 +14,7 @@
 <section class="downloader-editor-body">
   {% if error %}<p class="editor-errors" role="alert" tabindex="-1" data-form-error>{{ error }}</p>{% endif %}
   {% set form = editing or {} %}
-  <form method="post" action="/settings/downloaders/save" data-dirty-form data-returned-draft="{{ 'true' if error else 'false' }}">
+  <form method="post" action="/settings/downloaders/save" data-dirty-form data-returned-draft="{{ 'true' if error else 'false' }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
     <input type="hidden" name="csrf_token" value="{{ downloader_csrf }}">
     <input type="hidden" name="id" value="{{ form.get('id', '') }}">
     <fieldset class="downloader-group"><legend>Connection</legend>

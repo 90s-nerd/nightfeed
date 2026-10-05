@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block title %}Profile · Nightfeed{% endblock %}
+{% block content %}
+<div class="account-page compact-page">
+<section class="surface section">
+<div class="account-page-heading"><h1>Your profile</h1><a href="/settings">Back to settings</a></div>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+{% if saved %}<p role="status">Profile saved.</p>{% endif %}
+<form method="post" class="security-form" data-profile-form>
+<input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
+<label>Username<input value="{{ auth_user.username }}" readonly autocomplete="off"><small>Your local sign-in username.</small></label>
+<label><input type="checkbox" name="oidc_use_name" data-provider-name {% if config.oidc_use_name %}checked{% endif %} {% if not config.oidc_enabled or not config.subject %}disabled{% endif %}>Use name from SSO provider</label>
+{% if not config.oidc_enabled or not config.subject %}<small>Enable SSO and link your owner identity in <a href="{{ url_for('auth.security') }}">security settings</a> to use the provider name.</small>{% endif %}
+<label>Display name<input name="display_name" data-display-name data-local-name="{{ local_name }}" data-sso-name="{{ sso_name or local_name }}" value="{{ (sso_name or local_name) if config.oidc_use_name and config.oidc_enabled else local_name }}" autocomplete="nickname" required maxlength="100" {% if config.oidc_use_name and config.oidc_enabled %}readonly{% endif %}></label>
+<small data-name-help {% if not config.oidc_use_name %}hidden{% endif %}>The name is managed by your SSO provider and refreshes on SSO sign-in. {% if not sso_name %}Your provider has not supplied a name yet; your local name is shown until it does.{% endif %}</small>
+<button class="btn btn-primary">Save profile</button>
+</form>
+</section>
+<section class="surface section"><div class="account-page-heading"><h2>Password</h2><a class="btn btn-secondary" href="{{ url_for('auth.password_page') }}">Change password</a></div><p>Keep a local password available for account recovery and security changes.</p></section>
+</div>
+{% endblock %}

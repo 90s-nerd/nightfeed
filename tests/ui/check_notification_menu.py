@@ -7,10 +7,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_notification
+from ui_auth_support import create_ui_app, authenticate_page
 
 with TemporaryDirectory() as temp:
     db=Path(temp)/'notifications.db'
-    app=create_app({'TESTING':True,'START_SCHEDULER':False,'DATABASE_PATH':db})
+    app=create_ui_app({'TESTING':True,'START_SCHEDULER':False,'DATABASE_PATH':db})
     for index in range(8):
         create_notification(db,profile_id=None,event_type='refresh',severity='info',category='success',title=f'Refresh complete {index}',message='No new entries. This feed is up to date.',source_url='https://example.com')
     server=make_server('127.0.0.1',0,app)
@@ -20,7 +21,7 @@ with TemporaryDirectory() as temp:
     try:
         with sync_playwright() as pw:
             browser=pw.chromium.launch(channel='chrome',headless=True)
-            page=browser.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+            page=browser.new_page(); authenticate_page(page, app, origin);page.on('pageerror',lambda e:errors.append(str(e)))
             for theme in ['light','dark']:
                 page.goto(origin+'/settings');page.locator('[data-appearance]').select_option(theme)
                 for width in [320,390,1440]:
@@ -57,7 +58,7 @@ with TemporaryDirectory() as temp:
             row.get_by_role('button',name='Delete',exact=True).click()
             expect(row).to_have_count(0)
             context=browser.new_context(java_script_enabled=False)
-            plain=context.new_page();plain.goto(origin+'/notifications?status=all')
+            plain=context.new_page(); authenticate_page(plain, app, origin);plain.goto(origin+'/notifications?status=all')
             plain.locator('.notification-card summary').first.click()
             expect(plain.locator('.notification-card').first.get_by_role('button',name='Delete',exact=True)).to_be_visible()
             context.close();assert not errors,errors;browser.close()

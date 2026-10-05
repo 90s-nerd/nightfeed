@@ -11,10 +11,11 @@ sys.path.insert(0, str(ROOT))
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest, FeedEntry, connect_db, refresh_profile, mark_topics_seen
+from ui_auth_support import create_ui_app, authenticate_page
 
 with TemporaryDirectory() as temp:
     db = Path(temp) / 'topics.db'
-    app = create_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
+    app = create_ui_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
     profile = create_profile(db, FeedRequest('News', 'https://example.com', 'article', 'a', 'a', '', 100, 0, 'http'))
     server = make_server('127.0.0.1', 0, app, threaded=True)
     Thread(target=server.serve_forever, daemon=True).start()
@@ -29,7 +30,7 @@ with TemporaryDirectory() as temp:
                         conn.execute('INSERT INTO feed_items(id,profile_id,title,link,summary,discovered_at) VALUES(?,?,?,?,?,?)',
                                      (i+1, profile.id, f'Topic {i:02}', f'https://example.com/{i}', '', '2026-10-01T12:00:00+00:00'))
                     conn.commit()
-                page = browser.new_page(viewport={'width': width, 'height': 850})
+                page = browser.new_page(viewport={'width': width, 'height': 850}); authenticate_page(page, app, origin)
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 # Control seen acknowledgements independently of browser-action latency.

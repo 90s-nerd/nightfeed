@@ -54,12 +54,6 @@ except ModuleNotFoundError:
     stream_with_context = None
     url_for = None
 
-try:
-    from werkzeug.middleware.proxy_fix import ProxyFix
-except ModuleNotFoundError:
-    ProxyFix = None
-
-
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_USER_AGENT = "rss-site-bridge/0.2 (+https://localhost)"
 SCHEDULER_INTERVAL_SECONDS = 30
@@ -770,8 +764,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         raise RuntimeError("Flask is required to run the web application.")
 
     app = Flask(__name__)
-    if ProxyFix is not None:
-        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 
     db_path = Path(os.environ.get("NIGHTFEED_DATABASE_PATH", "data/rss_site_bridge.db"))
     start_scheduler = os.environ.get("NIGHTFEED_START_SCHEDULER", "1").strip().lower() not in {
@@ -789,6 +781,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         app.config.update(test_config)
 
     init_db(Path(app.config["DATABASE_PATH"]))
+    from .auth import register as register_auth, same_origin
+    register_auth(app)
     register_downloaders(app, get_safe_browser_session)
     register_push(app)
     topic_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-topic-seen")
@@ -805,7 +799,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 raise BadSignature("Invalid token")
         except BadSignature:
             return jsonify(error="Reload the page to update topic visibility."), 403
-        if request.headers.get("Origin") and request.headers["Origin"] != request.host_url.rstrip("/"):
+        if not same_origin():
             return jsonify(error="Cross-origin requests are not allowed."), 403
         payload = request.get_json(silent=True)
         ids = payload.get("ids") if isinstance(payload, dict) else None
@@ -825,7 +819,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 raise BadSignature("Invalid token")
         except BadSignature:
             return jsonify(error="Reload the page to save topics."), 403
-        if request.headers.get("Origin") and request.headers["Origin"] != request.host_url.rstrip("/"):
+        if not same_origin():
             return jsonify(error="Cross-origin requests are not allowed."), 403
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict) or type(payload.get("saved")) is not bool:
@@ -850,7 +844,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             view = view_signer.loads(token, max_age=7200)
         except BadSignature:
             return jsonify(error="Reload the timeline to mark topics seen."), 403
-        if request.headers.get("Origin") and request.headers["Origin"] != request.host_url.rstrip("/"):
+        if not same_origin():
             return jsonify(error="Cross-origin requests are not allowed."), 403
         with closing(connect_db(Path(app.config["DATABASE_PATH"]))) as conn:
             count = conn.execute("UPDATE feed_items SET seen_at = ? WHERE seen_at IS NULL AND id <= ?", (utcnow_text(), view["ceiling"])).rowcount

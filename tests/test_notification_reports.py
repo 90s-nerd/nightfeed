@@ -1,3 +1,4 @@
+from auth_support import authenticated_client
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ class NotificationReportTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.db = Path(self.temp.name) / 'reports.db'
         self.app = create_app({'DATABASE_PATH': self.db, 'START_SCHEDULER': False, 'TESTING': True})
-        self.client = self.app.test_client()
+        self.client = authenticated_client(self.app)
         self.profile = create_profile(self.db, FeedRequest('News', 'https://example.com', 'article', 'a', 'a', '', 25, 0, 'http'))
 
     def entry(self, title, summary='', link='https://example.com/one'):

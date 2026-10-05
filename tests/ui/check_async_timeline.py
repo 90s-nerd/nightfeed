@@ -10,12 +10,13 @@ sys.path.insert(0, str(ROOT))
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest, connect_db
+from ui_auth_support import create_ui_app, authenticate_page
 
 
 def run():
     with TemporaryDirectory() as temp:
         db = Path(temp) / 'timeline.db'
-        app = create_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
+        app = create_ui_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
         profile = create_profile(db, FeedRequest('Sample feed', 'https://example.com', 'article', 'a', 'a', '', 25, 0, 'http'))
         with closing(connect_db(db)) as conn:
             for i in range(30):
@@ -29,7 +30,7 @@ def run():
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(channel='chrome', headless=True)
                 for width in (390, 1440):
-                    page = browser.new_page(viewport={'width': width, 'height': 900})
+                    page = browser.new_page(viewport={'width': width, 'height': 900}); authenticate_page(page, app, origin)
                     errors = []
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     page.goto(origin)
@@ -141,7 +142,7 @@ def run():
                     page.close()
                 # Native submission remains available without JavaScript.
                 context = browser.new_context(java_script_enabled=False)
-                page = context.new_page()
+                page = context.new_page(); authenticate_page(page, app, origin)
                 page.goto(origin)
                 page.locator('#search').fill('Story 0')
                 page.get_by_role('button', name='Search', exact=True).click()

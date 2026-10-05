@@ -12,6 +12,7 @@
 {% endblock %}
 
 {% block content %}
+<section class="surface section settings-account"><h2>Account and security</h2><p>Manage your profile, password, sign in and connected applications.</p><div class="button-row"><a class="btn btn-secondary" href="{{ url_for('auth.profile') }}">Manage profile</a><a class="btn btn-secondary" href="{{ url_for('auth.security') }}">Security settings</a> <a class="btn btn-secondary" href="{{ url_for('auth.api_keys') }}">API keys</a></div></section>
 
 
 
@@ -22,7 +23,7 @@
   <noscript>Enable JavaScript to save an appearance preference. Nightfeed follows your device appearance by default.</noscript>
 </section>
 {% include 'components/push_settings.html' %}
-<form action="/settings" method="post" class="settings-shell" data-dirty-form data-returned-draft="{{ 'true' if error or test_error or test_sent else 'false' }}">
+<form action="/settings" method="post" class="settings-shell" data-dirty-form data-returned-draft="{{ 'true' if error or test_error or test_sent else 'false' }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
   <section class="surface settings-frame">
     {% if error or test_error %}<div class="editor-errors" data-form-error tabindex="-1" role="alert"><h2>Check your settings</h2><p>{{ error or test_error }}</p></div>{% endif %}
     <div class="settings-sections">

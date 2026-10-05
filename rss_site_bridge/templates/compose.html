@@ -3,7 +3,7 @@
 {% block page_header %}<header class="topbar editor-column"><div class="page-title"><h1>Create Feed</h1></div><a class="btn btn-secondary" href="/feeds">Cancel</a></header>{% endblock %}
 {% block content %}
 <div class="editor-column">
-<form class="surface section feed-editor" action="/profiles" method="post" data-feed-editor="create" data-returned-draft="{{ 'true' if error else 'false' }}" data-initial-preview="{{ 'ready' if preview and not error else 'none' }}">
+<form class="surface section feed-editor" action="/profiles" method="post" data-feed-editor="create" data-returned-draft="{{ 'true' if error else 'false' }}" data-initial-preview="{{ 'ready' if preview and not error else 'none' }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
   <input type="hidden" name="preview" value="1">
   <nav class="editor-steps" aria-label="Creation steps" hidden><button type="button" data-editor-go="0">1. Source</button><button type="button" data-editor-go="1">2. Extraction</button><button type="button" data-editor-go="2">3. Schedule &amp; save</button></nav>
   <div class="editor-errors error-text" data-editor-errors tabindex="-1" {% if not error %}hidden{% endif %}><strong>⚠ Check your feed settings</strong><p>{{ error or '' }}</p></div>

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ 'Set up' if mode == 'setup' else 'Sign in' }} · Nightfeed</title>
+<link rel="icon" href="{{ url_for('static', filename='nightfeed-mark.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-tokens.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-ui.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-auth.css') }}"></head>
+<body class="auth-page"><main class="auth-card">
+<img src="{{ url_for('static', filename='nightfeed-mark.svg') }}" width="48" height="48" alt="Nightfeed">
+<h1>{{ 'Welcome to Nightfeed' if mode == 'setup' else 'Sign in to Nightfeed' }}</h1>
+{% if error %}<p class="auth-error" role="alert">{{ error }}</p>{% endif %}
+{% if mode == 'setup' %}
+<p>Create the owner account to secure this instance. Existing feeds and settings will be kept.</p>
+<p>Read the setup token from the <code>.setup-token</code> file next to your database on the server, or use the token configured by your administrator.</p>
+<form method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
+<label>Setup token<input name="setup_token" type="password" required autocomplete="off"></label>
+<label>Name<input name="name" required maxlength="100" autocomplete="name"></label>
+<label>Username<input name="username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" autocomplete="username"></label>
+<label>Password<input name="password" type="password" required minlength="15" maxlength="256" autocomplete="new-password"></label>
+<label>Confirm password<input name="confirm_password" type="password" required minlength="15" maxlength="256" autocomplete="new-password"></label>
+<p>Use a unique passphrase of at least 15 characters.</p><button class="btn btn-primary">Create account</button></form>
+{% elif mode == 'login' %}
+{% if show_form %}<form method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="next" value="{{ next }}">
+<label>Username<input name="username" required maxlength="64" autocomplete="username" autofocus></label>
+<label>Password<input name="password" type="password" required maxlength="256" autocomplete="current-password"></label>
+<button class="btn btn-primary">Sign in</button></form>{% endif %}
+{% if config.oidc_enabled %}<a class="btn btn-secondary" href="{{ url_for('auth.oidc_start', next=next) }}">{{ config.button_text }}</a>{% endif %}
+{% else %}<a class="btn btn-secondary" href="{{ url_for('auth.login', sso='off') }}">Return to sign in</a>{% endif %}
+</main></body></html>

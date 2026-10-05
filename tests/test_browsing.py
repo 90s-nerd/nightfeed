@@ -1,3 +1,4 @@
+from auth_support import authenticated_client
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ class BrowsingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.db = Path(self.tmp.name) / "feed.db"
         self.app = create_app({"TESTING": True, "DATABASE_PATH": str(self.db), "START_SCHEDULER": False})
-        self.client = self.app.test_client()
+        self.client = authenticated_client(self.app)
         self.client.post("/settings", data={"timezone_name": "America/Chicago"})
         self.config = FeedRequest("Alpha", "https://example.com", "article", "a", "a", "", 1, 60, "http", cron_expression="0 9 * * mon-fri", schedule_timezone="America/Chicago", priority=80)
         self.profile = create_profile(self.db, self.config)

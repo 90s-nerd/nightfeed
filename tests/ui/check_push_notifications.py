@@ -13,12 +13,13 @@ sys.path.insert(0, str(ROOT / 'tests'))
 from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, FeedRequest
+from ui_auth_support import create_ui_app, authenticate_page
 from rss_site_bridge import push_notifications as push
 from test_push_notifications import sample_subscription
 
 with TemporaryDirectory() as temp:
     db = Path(temp) / 'app.db'
-    app = create_app(dict(TESTING=True, START_SCHEDULER=False, DATABASE_PATH=db))
+    app = create_ui_app(dict(TESTING=True, START_SCHEDULER=False, DATABASE_PATH=db))
     profile = create_profile(db, FeedRequest('News', 'https://example.com', 'article', 'a', 'a', '', 100, 0, 'http'))
     server = make_server('127.0.0.1', 0, app, threaded=True)
     Thread(target=server.serve_forever, daemon=True).start()
@@ -30,7 +31,7 @@ with TemporaryDirectory() as temp:
             browser = pw.chromium.launch(channel='chrome', headless=True)
             for width in (390, 1440):
                 for theme in ('light', 'dark'):
-                    page = browser.new_page(viewport=dict(width=width, height=900))
+                    page = browser.new_page(viewport=dict(width=width, height=900)); authenticate_page(page, app, origin)
                     errors = []
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     sub = sample_subscription(f'{width}-{theme}')
@@ -89,7 +90,7 @@ with TemporaryDirectory() as temp:
                     page.close()
             # Safari users receive installation guidance before any permission request.
             context = browser.new_context(viewport=dict(width=390, height=844), user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1')
-            page = context.new_page()
+            page = context.new_page(); authenticate_page(page, app, origin)
             page.add_init_script("window.permissionCalls = 0; Notification.requestPermission = async () => {window.permissionCalls++; return 'granted'}")
             page.goto(origin + '/settings')
             page.get_by_role('button', name='Enable on this device').click()
@@ -104,7 +105,7 @@ with TemporaryDirectory() as temp:
             context.close()
             # Run the real worker in a controlled JS scope: displaying an alert
             # needs no private-server fetch, and clicks cannot leave this origin.
-            page = browser.new_page()
+            page = browser.new_page(); authenticate_page(page, app, origin)
             page.evaluate("""source => {
               const handlers = {}; const shown = []; const opened = [];
               const scope = {location: {origin: 'https://nightfeed.example.com'},
@@ -114,9 +115,9 @@ with TemporaryDirectory() as temp:
               new Function('self', 'fetch', source)(scope, () => {throw Error('Worker fetched private server')});
               window.workerCheck = async () => {
                 let work; const waitUntil = promise => {work = promise};
-                handlers.push({data: {json: () => ({title:'Nightfeed',body:'3 new topics',url:'/notifications/7'})},waitUntil});
+                handlers.push({data: {json: () => ({title:'Nightfeed · News',body:'3 new topics, 2 updated topics',url:'/notifications/7'})},waitUntil});
                 await work;
-                if (shown[0].options.body !== '3 new topics') throw Error('Missing push summary');
+                if (shown[0].title !== 'Nightfeed · News' || shown[0].options.body !== '3 new topics, 2 updated topics') throw Error('Push summary was not displayed');
                 handlers.notificationclick({notification:{close(){},data:{url:'/notifications/7'}},waitUntil});
                 await work;
                 if (opened[0] !== 'https://nightfeed.example.com/notifications/7') throw Error('Wrong report target');

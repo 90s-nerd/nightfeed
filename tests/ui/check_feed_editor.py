@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 from playwright.sync_api import sync_playwright
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, connect_db, FeedRequest, FeedEntry, get_profile_by_id, list_profiles
+from ui_auth_support import create_ui_app, authenticate_page
 
 
 def fixture_extract(config, progress=None):
@@ -31,7 +32,7 @@ def run():
     checks, errors = [], []
     with TemporaryDirectory() as temp:
         db = Path(temp) / 'ui.db'
-        app = create_app({'TESTING': True, 'START_SCHEDULER': False, 'DATABASE_PATH': db})
+        app = create_ui_app({'TESTING': True, 'START_SCHEDULER': False, 'DATABASE_PATH': db})
         original = create_profile(db, FeedRequest('Original feed', 'https://example.com/topics', 'article', 'a', 'a', '', 25, 0, 'http'))
         with closing(connect_db(db)) as conn:
             conn.execute('UPDATE app_settings SET smtp_enabled=1')
@@ -47,7 +48,7 @@ def run():
                 browser = pw.chromium.launch(channel='chrome', headless=True)
                 for theme in ['light', 'dark']:
                     for width in [390, 1440]:
-                        page = browser.new_page(viewport={'width': width, 'height': 1000})
+                        page = browser.new_page(viewport={'width': width, 'height': 1000}); authenticate_page(page, app, origin)
                         page.on('pageerror', lambda error: errors.append(str(error)))
                         page.goto(origin + '/settings')
                         page.locator('[data-appearance]').select_option(theme)
@@ -177,7 +178,7 @@ def run():
                         checks.append({'theme': theme, 'width': width, 'flows': 'validation, preview success/zero/error/stale, draft steps, schedule modes, save acknowledgment, edit discard/save, copy fallback, inline refresh'})
                         page.close()
                 # A current successful preview saves directly without a confirmation.
-                page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+                page = browser.new_page(viewport={'width': 1440, 'height': 1000}); authenticate_page(page, app, origin)
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(origin + '/compose')
                 page.locator('[name=feed_title]').fill('Previewed calendar feed')

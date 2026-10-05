@@ -14,11 +14,12 @@ from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import (create_app, create_profile, FeedRequest, FeedEntry, refresh_profile,
                                 list_notifications, create_notification)
+from ui_auth_support import create_ui_app, authenticate_page
 
 
 with TemporaryDirectory() as temp:
     db = Path(temp) / 'reports.db'
-    app = create_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
+    app = create_ui_app({'DATABASE_PATH': db, 'START_SCHEDULER': False, 'TESTING': True})
     profile = create_profile(db, FeedRequest('Sample news', 'https://example.com', 'article', 'a', 'a', '', 25, 0, 'http'))
     now = datetime.now(timezone.utc)
     with patch('rss_site_bridge.app.extract_feed_entries', return_value=[FeedEntry('Original title', 'https://example.com/one', 'Original summary', now)]):
@@ -51,7 +52,7 @@ with TemporaryDirectory() as temp:
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(channel='chrome', headless=True)
-            page = browser.new_page()
+            page = browser.new_page(); authenticate_page(page, app, origin)
             page.on('pageerror', lambda error: errors.append(str(error)))
             for theme in ('light', 'dark'):
                 page.goto(origin + '/settings')
