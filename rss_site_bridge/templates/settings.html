@@ -21,6 +21,7 @@
   <div class="field"><div class="field-label"><label for="appearance">Color theme</label><details class="ui-hint"><summary aria-label="Help">?</summary><div class="ui-hint-content" id="appearance-help">System follows your device appearance. This preference applies on this device.</div></details></div><select id="appearance" data-appearance aria-describedby="appearance-help"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
   <noscript>Enable JavaScript to save an appearance preference. Nightfeed follows your device appearance by default.</noscript>
 </section>
+{% include 'components/push_settings.html' %}
 <form action="/settings" method="post" class="settings-shell" data-dirty-form data-returned-draft="{{ 'true' if error or test_error or test_sent else 'false' }}">
   <section class="surface settings-frame">
     {% if error or test_error %}<div class="editor-errors" data-form-error tabindex="-1" role="alert"><h2>Check your settings</h2><p>{{ error or test_error }}</p></div>{% endif %}

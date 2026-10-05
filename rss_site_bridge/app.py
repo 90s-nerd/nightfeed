@@ -3,6 +3,7 @@ from __future__ import annotations
 from markupsafe import Markup
 
 from .downloaders import register as register_downloaders, eligible_profiles, MAX_SUBMISSION_BYTES, encryption_key
+from .push_notifications import register as register_push, initialize as initialize_push, enqueue as enqueue_push
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from croniter import croniter
 from contextlib import closing
@@ -789,6 +790,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     init_db(Path(app.config["DATABASE_PATH"]))
     register_downloaders(app, get_safe_browser_session)
+    register_push(app)
     topic_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-topic-seen")
     view_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-timeline-view")
 
@@ -2967,6 +2969,9 @@ def init_db(db_path: Path) -> None:
         conn.commit()
 
 
+    initialize_push(db_path)
+
+
 def connect_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -4065,6 +4070,10 @@ def maybe_send_refresh_notification(
         source_url=source_url,
         metadata={**(report or {}), "entry_count": entry_count, "new_items": new_items, "updated_items": updated_items, "refreshed_at": refreshed_at},
     )
+    try:
+        enqueue_push(db_path, profile, notification, status, new_items, updated_items)
+    except Exception:
+        log_event(logging.ERROR, "push_queue_failed", profile_id=profile.id)
     maybe_send_notification_email(db_path, profile, notification)
 
 
