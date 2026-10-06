@@ -5,7 +5,9 @@
   const original = window.fetch.bind(window);
   const statusUrl = document.querySelector('meta[name="auth-session-status"]')?.content;
   let redirecting = false, checking = false, deadline;
+  let restoreFocus;
   const mask = () => {
+    if (!document.documentElement.classList.contains('auth-checking') && document.activeElement !== document.body) restoreFocus=document.activeElement;
     document.documentElement.classList.add('auth-checking');
     if (!document.body || document.getElementById('auth-session-check')) return;
     const notice = document.createElement('div');notice.id='auth-session-check';notice.setAttribute('role','status');
@@ -41,9 +43,13 @@
         if (!response.ok) throw new Error('Session check unavailable');
         const state=await response.json();
         if (!state.authenticated || !Number.isFinite(state.expires_in)) throw new Error('Invalid session check');
-        if (!redirecting && !document.hidden) { document.documentElement.classList.remove('auth-checking');document.getElementById('auth-session-check')?.remove(); }
+        if (!redirecting && !document.hidden) {
+          document.documentElement.classList.remove('auth-checking');document.getElementById('auth-session-check')?.remove();
+          if (restoreFocus?.isConnected) restoreFocus.focus({preventScroll:true});
+          restoreFocus=null;
+        }
         clearTimeout(deadline);
-        deadline=setTimeout(()=>check(),Math.min(2147483647,Math.max(250,state.expires_in*1000+100)));
+        deadline=setTimeout(()=>check(true),Math.min(2147483647,Math.max(250,state.expires_in*1000+100)));
       } catch (_) {
         const notice=document.getElementById('auth-session-check');
         if (notice) notice.textContent='Reconnect to check your session.';

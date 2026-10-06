@@ -80,7 +80,7 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.get_by_label('Connection name', exact=True).fill('Home model')
                 page.get_by_label('API base URL', exact=True).fill('http://ollama:11434/v1')
                 page.get_by_label('Model', exact=True).fill('fixture-model')
-                page.get_by_text('Voice input and conversation', exact=True).click()
+                page.get_by_text('Voice input', exact=True).click()
                 page.get_by_label('Transcription API base URL',exact=True).fill('https://speech.example/v1')
                 page.get_by_label('Transcription model',exact=True).fill('fixture-speech')
                 page.get_by_role('button', name='Test and activate', exact=True).click()
@@ -142,7 +142,7 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 expect(page.locator('[data-assistant-conversations]')).to_have_value(selected_conversation)
                 page.get_by_label('Message', exact=True).fill('Search my saved Linux content')
                 page.get_by_role('button', name='Send message', exact=True).click()
-                expect(page.get_by_role('heading', name='3 saved matches')).to_be_visible()
+                expect(page.get_by_role('heading', name='3 matching items')).to_be_visible()
                 expect(page.get_by_role('button', name='New chat', exact=True)).to_be_enabled()
                 page.get_by_label('Context usage',exact=True).click()
                 expect(page.locator('[data-context-usage]')).to_contain_text('1,200 input')
@@ -165,26 +165,32 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.get_by_label('Context usage',exact=True).click()
 
                 page.get_by_label('Context usage',exact=True).click()
+                expect(page.locator('[data-assistant-voice]')).to_have_count(0)
                 page.evaluate('''() => {
-                  window.voiceStarts=0;
                   navigator.mediaDevices.getUserMedia=async () => {
-                    const context=new AudioContext(), destination=context.createMediaStreamDestination(), oscillator=context.createOscillator(), gain=context.createGain();
-                    oscillator.connect(gain); gain.connect(destination); gain.gain.value=0;
-                    const first=++window.voiceStarts===1;
-                    oscillator.start(); await context.resume(); if(first){setTimeout(()=>gain.gain.value=.15,300);setTimeout(()=>gain.gain.value=0,1800);}
-                    destination.stream.getTracks().forEach(track=>track.addEventListener('ended',()=>{oscillator.stop();context.close();}));
+                    const context=new AudioContext(), destination=context.createMediaStreamDestination();
+                    destination.stream.getTracks().forEach(track=>track.addEventListener('ended',()=>context.close()));
                     return destination.stream;
                   };
-                  Object.defineProperty(window,'speechSynthesis',{value:{cancel(){},speak(utterance){setTimeout(()=>utterance.onend?.(),50);}}});
                 }''')
-                page.get_by_role('button', name='Start voice conversation',exact=True).click()
-                try:
-                    page.wait_for_function('window.voiceStarts >= 2',timeout=20000)
-                except Exception:
-                    print(page.evaluate('({starts:window.voiceStarts,status:document.querySelector("[data-assistant-status]").textContent,pressed:document.querySelector("[data-assistant-voice]").getAttribute("aria-pressed")})'))
-                    raise
-                page.get_by_role('button',name='Stop voice conversation',exact=True).click()
-                expect(page.locator('[data-assistant-status]')).to_have_text('Voice conversation stopped.')
+                page.get_by_role('button', name='Dictate message',exact=True).click()
+                expect(page.get_by_role('button',name='Finish dictation',exact=True)).to_be_visible()
+                page.wait_for_timeout(500)
+                page.get_by_role('button',name='Finish dictation',exact=True).click()
+                expect(page.get_by_role('button',name='Dictate message',exact=True)).to_be_visible()
+                expect(page.locator('[data-assistant-status]')).to_have_text('',timeout=20000)
+                composer=page.get_by_label('Message',exact=True)
+                composer.fill('How many items added today?')
+                composer.press('Enter')
+                expect(page.locator('[data-assistant-messages]')).to_contain_text('3 items were added today')
+                expect(page.locator('[data-assistant-status]')).to_have_text('')
+                composer.fill('Who is the US president?')
+                composer.press('Enter')
+                expect(page.locator('[data-assistant-status]')).to_have_text('')
+                composer.fill('Which are those newly added items?')
+                composer.press('Enter')
+                expect(page.get_by_role('heading',name='3 matching items').last).to_be_visible()
+                expect(page.locator('[data-assistant-messages]')).to_contain_text('Added ')
                 page.set_viewport_size({'width':390,'height':844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.locator('[data-assistant-messages]').evaluate('(el) => el.scrollTop = el.scrollHeight')
@@ -206,7 +212,7 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.screenshot(path=str(ROOT / '.test-preview/assistant-settings-mobile-dark.png'), full_page=True)
                 page.get_by_text('Usage and cost estimates',exact=True).click()
                 expect(page.get_by_label('Input USD / million tokens',exact=True)).to_be_visible()
-                page.get_by_text('Voice input and conversation',exact=True).click()
+                page.get_by_text('Voice input',exact=True).click()
                 expect(page.get_by_label('Transcription model',exact=True)).to_be_visible()
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.screenshot(path=str(ROOT / '.test-preview/assistant-settings-expanded-mobile-dark.png'),full_page=True)

@@ -8,7 +8,6 @@
   const input = form.elements.message;
   const mic = panel.querySelector('[data-assistant-mic]');
   const speak = panel.querySelector('[data-assistant-speak]');
-  const voice = panel.querySelector('[data-assistant-voice]');
   const send = panel.querySelector('[data-assistant-send]');
   const stop = panel.querySelector('[data-assistant-stop]');
   let turnController, stopRequested = false;
@@ -17,7 +16,7 @@
   let images = [], readingImages = false;
   const launcher = document.querySelector('[data-assistant-toggle]');
   let conversation = '', busy = false, recorder, media, recordTimer, streamingMessage, pendingNavigation = '', turnError = false, activeStream = false, reloadTimer;
-  let voiceMode = false, audioContext, analyserTimer, voiceTimer, speaking = false, recordingCancelled = false, startingRecording = false;
+  let recordingCancelled = false, startingRecording = false;
   const stored = key => { try { return sessionStorage.getItem('nightfeed-assistant:' + key); } catch (_) { return null; } };
   const remember = (key, value) => { try { sessionStorage.setItem('nightfeed-assistant:' + key, value); } catch (_) {} };
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text) el.textContent = text; if (cls) el.className = cls; return el; };
@@ -34,8 +33,6 @@
     panel.querySelector('[data-assistant-new]').disabled = value;
     panel.querySelector('[data-assistant-delete]').disabled = value || !conversation;
     select.disabled = value;
-    voice.disabled = !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !window.AudioContext;
-    if (!value && voiceMode && !speaking) scheduleListening();
     panel.querySelectorAll('[data-apply-draft]').forEach(button => { if (!button.dataset.applied) button.disabled = value; });
     messages.querySelectorAll('.task-setup button').forEach(button => { button.disabled=value; });
   };
@@ -173,7 +170,9 @@
     if (kind === 'tasks') {
       const box=node('section','','assistant-card');box.append(node('h3','Tasks'));const list=node('div');box.append(list);
       const openTask=task=>location.assign('/tasks?task='+task.id),refreshTasks=async()=>{const result=await api('/api/tasks');window.nightfeedTasks.renderList(list,result.tasks,openTask,refreshTasks);};
-      window.nightfeedTasks.renderList(list,data.tasks,openTask,refreshTasks);messages.append(box);bottom();return;
+      window.nightfeedTasks.renderList(list,data.tasks,openTask,refreshTasks);
+      if (data.has_more) box.append(node('small',`Showing ${data.returned_count} of ${data.total_count} tasks. Ask “show more results” for the next page.`));
+      messages.append(box);bottom();return;
     }
     if (kind === 'navigation') {
       if (!replay) pendingNavigation = data.navigate;
@@ -185,16 +184,26 @@
     if (kind === 'preview') {
       box.append(node('h3', `${data.matched_count} source matches`)); previews(box, data.items);
     } else if (kind === 'search') {
-      box.append(node('h3', data.total_count === undefined ? 'Saved content' : `${data.total_count} saved matches`));
-      if (data.truncated) box.append(node('p', `Showing ${data.returned_count} of ${data.total_count} matching saved items.`));
-      if (!data.items.length) box.append(node('p', 'No matching saved items.'));
+      box.append(node('h3', data.total_count === undefined ? 'Stored content' : `${data.total_count} matching items`));
+      if (data.added_on) box.append(node('small', `Added ${data.added_on} · ${data.timezone}`));
+      else if (data.added_from || data.added_until) box.append(node('small', `Added ${data.added_from || 'earlier'} to ${data.added_until || 'now'} · ${data.timezone}`));
+      if (data.truncated) box.append(node('p', `Showing ${data.returned_count} of ${data.total_count} matching items.`));
+      if (!data.items.length) box.append(node('p', 'No matching items.'));
       for (const item of data.items) {
         const row = node('p'); row.append(link(item.title, item.url), node('small', ` · ${item.feed_title}`)); box.append(row);
       }
+      if (data.has_more) box.append(node('small', 'Ask “show more items” for the next page.'));
+    } else if (kind === 'feeds') {
+      box.append(node('h3', `${data.total_count ?? data.feeds.length} feeds`));
+      for (const feed of data.feeds) {
+        const row=node('p');row.append(link(feed.feed_title || feed.config.feed_title,feed.url),node('small',` · ${feed.active ? feed.last_status : 'paused'} · ${feed.stored_item_count} items`));box.append(row);
+      }
+      if (data.has_more) box.append(node('small','Ask “show more results” for the next page.'));
     } else if (kind === 'notifications') {
       box.append(node('h3', `${data.unread_count} unread notifications`));
       if (data.truncated) box.append(node('p', `Showing ${data.returned_count} of ${data.total_count} ${data.status} notifications.`));
       for (const item of data.items) { const row=node('p'); row.append(link(item.title, item.url), node('small', item.read ? ' · Read' : ' · Unread')); box.append(row); }
+      if (data.has_more) box.append(node('small','Ask “show more results” for the next page.'));
     } else if (kind === 'result') {
       if (data.draft_id) panel.querySelectorAll('[data-apply-draft]').forEach(button => { if (button.dataset.applyDraft === data.draft_id) { button.dataset.applied='1'; button.disabled=true; button.textContent='Applied'; } });
       if (!replay && ['system','light','dark'].includes(data.browser_action?.appearance)) document.dispatchEvent(new CustomEvent('nightfeed:appearance',{detail:data.browser_action.appearance}));
@@ -214,7 +223,7 @@
             const saved=action.topic_action==='save'; button.setAttribute('aria-pressed', String(saved)); button.setAttribute('aria-label', saved ? 'Remove from saved' : 'Save for later');
             const label=button.querySelector('span'); if (label) label.textContent=saved ? 'Saved' : 'Save for later';
           });
-          else row.querySelector('.topic-new')?.remove();
+          else { row.querySelector('.topic-new')?.remove(); row.querySelector('.topic-updated')?.remove(); }
         });
       }
       box.append(node('h3', 'Nightfeed'), node('p', data.message));
@@ -233,6 +242,8 @@
         const cfg=payload.config;box.append(node('p',cfg.name),node('p',`Match: ${cfg.terms.join(', ')} · ${cfg.feed_ids?.length?'Selected feeds':'All feeds'} · ${cfg.mode==='once'?'Once':'Every new match'}`),node('p',`Delivery: ${cfg.channels.join(' + ')} · ${cfg.expires_at?'Expires '+window.nightfeedTasks.date(Number(cfg.expires_at)): 'No expiry'}`));
       } else if (data.kind === 'task_state') {
         box.append(node('p',`${payload.action[0].toUpperCase()+payload.action.slice(1)} “${payload.name}”?`));
+      } else if (data.kind === 'feed_maintenance') {
+        box.append(node('p',`${payload.action[0].toUpperCase()+payload.action.slice(1)} “${payload.feed_title}”?`),node('p',payload.impact));
       } else if (data.kind === 'feed') {
         const config = payload.config;
         box.append(node('p', config.feed_title));
@@ -297,6 +308,7 @@
     select.value = conversation;
   };
   const load = async id => {
+    if (id !== conversation) stopVoice();
     clearTimeout(reloadTimer);
     conversation = id; select.value = id; remember('conversation', id); messages.replaceChildren();
     showUsage(null); status.textContent = '';
@@ -391,10 +403,9 @@
           if (value.card_only) { streamingMessage?.closest('.assistant-message')?.remove(); streamingMessage = null; }
           else { streamingMessage ||= message('assistant', ''); renderReply(streamingMessage, value.content); }
           bottom();
-          if ((speak.checked || voiceMode) && window.speechSynthesis) {
-            speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(value.content); speaking = true;
-            const finished = () => { speaking = false; if (voiceMode) scheduleListening(); };
-            utterance.onend = finished; utterance.onerror = finished; speechSynthesis.speak(utterance);
+          if (speak.checked && window.speechSynthesis) {
+            speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(value.content);
+            speechSynthesis.speak(utterance);
           }
         }
         if (type === 'error') { turnError = true; status.textContent = value.error; message('assistant', value.error); }
@@ -438,34 +449,26 @@
     output.textContent = text + ' (latest provider request)';
     panel.querySelector('[data-context-ring]').setAttribute('stroke-dasharray', `${value.context_window ? Math.min(63,63*value.input_tokens/value.context_window) : 0} 63`);
   };
-  const scheduleListening = () => {
-    clearTimeout(voiceTimer);
-    if (!voiceMode || busy || speaking || panel.hidden || recorder?.state === 'recording') return;
-    voiceTimer = setTimeout(() => { if (voiceMode && !busy && !speaking) startRecording(true); }, 500);
-  };
   const stopVoice = () => {
-    voiceMode = false; clearTimeout(voiceTimer); clearInterval(analyserTimer); recordingCancelled = true;
+    recordingCancelled = true; clearTimeout(recordTimer);
     if (recorder?.state === 'recording') recorder.stop();
-    media?.getTracks().forEach(track => track.stop()); audioContext?.close().catch(() => {}); audioContext = null;
-    speaking = false; window.speechSynthesis?.cancel(); voice.setAttribute('aria-pressed', 'false'); voice.setAttribute('aria-label','Start voice conversation');
-    panel.querySelector('.assistant-input-shell').classList.remove('voice-active');
+    media?.getTracks().forEach(track => track.stop());
+    window.speechSynthesis?.cancel();
   };
-  const startRecording = async continuous => {
+  const startRecording = async () => {
     if (busy || startingRecording || recorder?.state === 'recording') return;
     stopRequested = false;
     if (panel.dataset.voiceConfigured !== 'true') { status.textContent = 'Configure a transcription endpoint in AI settings to use voice input.'; stopVoice(); return; }
     try {
       startingRecording = true;
       recordingCancelled = false; window.speechSynthesis?.cancel(); media = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true, noiseSuppression:true, autoGainControl:true}});
-      if (panel.hidden || (continuous && !voiceMode)) { media.getTracks().forEach(track => track.stop()); return; }
+      if (panel.hidden || recordingCancelled) { media.getTracks().forEach(track => track.stop()); return; }
       const recording = new MediaRecorder(media), tracks = media.getTracks(), chunks = []; recorder = recording;
-      let detected = !continuous, speechSince = 0, lastSpeech = 0;
       recording.addEventListener('dataavailable', event => { if (event.data.size) chunks.push(event.data); });
       recording.addEventListener('stop', async () => {
-        clearTimeout(recordTimer); clearInterval(analyserTimer); tracks.forEach(track => track.stop());
-        if (audioContext) { await audioContext.close().catch(() => {}); audioContext = null; }
+        clearTimeout(recordTimer); tracks.forEach(track => track.stop());
         mic.setAttribute('aria-pressed', 'false'); mic.setAttribute('aria-label','Dictate message');
-        if (panel.hidden || recordingCancelled || !detected || (continuous && !voiceMode)) { if (voiceMode) scheduleListening(); return; }
+        if (panel.hidden || recordingCancelled) return;
         setBusy(true); status.textContent = 'Transcribing…';
         const mime = recording.mimeType, data = new FormData(); data.append('audio', new Blob(chunks, {type:mime}), mime.includes('mp4') ? 'recording.m4a' : 'recording.webm');
         try {
@@ -475,29 +478,14 @@
         }
         catch (error) { stopVoice(); status.textContent = error.message; setBusy(false); }
       });
-      recording.start(); mic.setAttribute('aria-pressed', 'true'); mic.setAttribute('aria-label','Finish dictation'); status.textContent = continuous ? 'Listening… speak, then pause to send. Tap the voice icon to stop.' : 'Dictating… tap the microphone when finished.';
-      if (continuous) {
-        audioContext = new AudioContext(); await audioContext.resume();
-        const analyser = audioContext.createAnalyser(); analyser.fftSize = 512; audioContext.createMediaStreamSource(media).connect(analyser); const samples = new Float32Array(analyser.fftSize);
-        analyserTimer = setInterval(() => {
-          if (recording.state !== 'recording') return;
-          analyser.getFloatTimeDomainData(samples); const energy = Math.sqrt(samples.reduce((sum,v)=>sum+v*v,0)/samples.length), now=Date.now();
-          if (energy > .025) { speechSince ||= now; lastSpeech = now; if (now-speechSince>300) detected = true; }
-          else if (!detected) speechSince = 0;
-          if (detected && lastSpeech && now-lastSpeech>1100) recording.stop();
-        }, 80);
-      }
+      recording.start(); mic.setAttribute('aria-pressed', 'true'); mic.setAttribute('aria-label','Finish dictation'); status.textContent = 'Dictating… tap the microphone when finished.';
       recordTimer = setTimeout(() => { if (recording.state === 'recording') recording.stop(); }, 60000);
     } catch (_) { stopVoice(); status.textContent = 'Microphone unavailable. Check browser permission and use HTTPS.'; }
     finally { startingRecording = false; }
   };
-  voice.addEventListener('click', () => {
-    if (voiceMode) { stopVoice(); status.textContent='Voice conversation stopped.'; return; }
-    voiceMode = true; voice.setAttribute('aria-pressed','true'); voice.setAttribute('aria-label','Stop voice conversation'); panel.querySelector('.assistant-input-shell').classList.add('voice-active'); scheduleListening();
-  });
   mic.addEventListener('click', async () => {
     if (recorder?.state === 'recording') { recorder.stop(); return; }
-    startRecording(false);
+    startRecording();
   });
   window.addEventListener('pagehide', () => { stopVoice(); clearTimeout(recordTimer); });
   // Quick, irregular blinks keep the companion alive without constant motion.

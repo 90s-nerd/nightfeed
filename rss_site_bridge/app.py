@@ -3227,6 +3227,8 @@ def delete_profile(db_path: Path, profile_id: int) -> None:
         raise ValueError("Profile not found.")
 
     with closing(connect_db(db_path)) as conn:
+        from . import tasks
+        tasks.remove_feed(conn, profile_id)
         conn.execute("DELETE FROM feed_items WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM notifications WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
