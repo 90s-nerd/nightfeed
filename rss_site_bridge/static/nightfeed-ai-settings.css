@@ -1,0 +1,39 @@
+/* AI settings share the account page, field, button and theme primitives. */
+.ai-settings,.ai-audit { min-width:0; }
+.ai-form,.ai-options-body { display:grid; gap:16px; min-width:0; }
+.ai-form > button { justify-self:start; }
+.ai-form .field { margin:0; min-width:0; }
+.ai-form .field > label { display:grid; gap:8px; }
+.ai-form .check-option { margin:0; font-size:14px; }
+.ai-check-field { display:grid;gap:4px; }
+.ai-form .ui-hint-content { overflow-wrap:anywhere; }
+.ai-form small { color:var(--nf-secondary); font-size:13px; line-height:18px; overflow-wrap:anywhere; }
+.ai-form-actions { padding-top:8px; }
+.ai-options { border:1px solid var(--nf-border); border-radius:12px; }
+.ai-options > summary { padding:14px 16px; font-size:14px; font-weight:600; cursor:pointer; }
+.ai-options-body { padding:0 16px 16px; }
+.ai-options-body > p { font-size:14px; line-height:20px; color:var(--nf-secondary); }
+.ai-connection-actions { padding-top:16px; border-top:1px solid var(--nf-border); }
+.ai-endpoint { display:block; padding:12px 16px; border:1px solid var(--nf-border); border-radius:12px; background:var(--nf-subtle); font-size:13px; overflow-wrap:anywhere; }
+.ai-audit .audit-filters { display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap; }
+.audit-filters .field { margin:0; width:240px; max-width:100%; }
+.audit-filters .audit-export { margin-left:auto; }
+.audit-events { display:grid; }
+.audit-event { border-top:1px solid var(--nf-border); padding:16px 0; min-width:0; }
+.audit-event > summary { cursor:pointer; display:grid; grid-template-columns:minmax(0,1fr) auto 16px; align-items:center; gap:12px; list-style:none; font-size:14px; }
+.audit-event > summary::-webkit-details-marker { display:none; }
+.audit-event > summary::after { content:'+'; font-size:20px; color:var(--nf-secondary); }
+.audit-event[open] > summary::after { content:'−'; }
+.audit-event-title { display:grid; gap:4px; min-width:0; overflow-wrap:anywhere; }
+.audit-event-title small { color:var(--nf-secondary); font-size:12px; font-weight:400; }
+.audit-latency { white-space:nowrap; }
+.audit-event-body { display:grid; gap:12px; padding-top:16px; }
+.audit-event-body p { font-size:13px; line-height:20px; overflow-wrap:anywhere; }
+.audit-event pre { margin:0; padding:12px; border-radius:12px; background:var(--nf-subtle); border:1px solid var(--nf-border); white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
+.ai-audit .empty-state { padding:24px 16px; border:1px dashed var(--nf-border); border-radius:12px; text-align:center; font-size:14px; }
+@media(max-width:600px) {
+  .ai-settings .account-page-heading,.ai-audit .account-page-heading { align-items:flex-start; }
+  .ai-settings .account-page-heading > .button-row { width:100%; }
+  .audit-filters .field { width:100%; }
+  .audit-filters .audit-export { margin-left:0; }
+}

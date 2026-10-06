@@ -21,6 +21,127 @@ The default mode is the safest path for noisy sites because it never opens a bro
 
 ## Run
 
+### AI assistant and MCP
+
+Open **Settings → AI assistant and MCP → Manage AI and MCP** to add a named AI
+connection. Choose **OpenAI Responses API** with `https://api.openai.com/v1`, or
+**OpenAI-compatible chat API** for another service. Examples include
+`http://ollama:11434/v1` and `http://openwebui:8080/api`; use hostnames reachable
+from the Nightfeed server. In Docker, `localhost` refers to the Nightfeed container.
+Native **Anthropic Messages** (`https://api.anthropic.com/v1`) and **Google Gemini**
+(`https://generativelanguage.googleapis.com/v1beta`) adapters are also available.
+Enter the provider's model identifier and any required API key, then choose
+**Test and activate**. The test makes one request to verify tool calling. Chat
+is available only for a tested active connection; editing a connection requires
+a fresh test. Multiple named connections can be saved and switched by testing
+and activating the desired connection. Local endpoints may omit authentication.
+
+**Ask Nightfeed** opens a persistent chat panel. Supply a listing URL and explain
+which titles you want to follow. The assistant inspects the page, tests selectors
+with Nightfeed's real extractor, and displays up to three actual items. It can
+prepare feed creation/edits, pause/resume, immediate refreshes, and global schedule
+timezone, public feed URL and non-secret SMTP settings changes. Saved passwords
+are preserved; configure credentials in Settings. Review the complete proposal and choose **Approve**, or
+explicitly say **create it** / **apply changes**. Proposals expire after one hour,
+reject intervening changes, and cannot create duplicate feeds when retried. Saved
+feeds use ordinary extraction and scheduling without AI calls. The manual editor
+remains available.
+Chat can also propose a color theme change on this device and edit registered
+browser-push preferences (notification types, feed selection, digest interval,
+daily limit and quiet hours). Register/enable push in Settings first. These device
+tools are only exposed to built-in chat, and approval is bound to that device.
+
+The assistant reads live app counts, including unread notifications, separately from
+unread timeline topics. Ask it to list notifications, read notification details, mark
+one or all read, or delete a notification/read notifications. It can also save or
+unsave a topic and mark one or all unread topics seen. An explicit chat request to
+refresh an existing feed runs immediately; it does not require a second approval.
+Other changes use review proposals; confirm a single pending proposal with “yes” or
+“go ahead” in chat, or click Approve. Bulk proposals cover only the items
+captured before approval, excluding later arrivals.
+
+Search covers **saved Nightfeed feeds and stored topic content only**. The assistant
+can explain settings and open an explicitly requested saved item in the existing
+isolated browser. There is no general web search or arbitrary-URL safe browsing.
+Source inspection for feed setup is limited to public HTTP/HTTPS destinations on
+ports 80/443 and validates DNS and redirects. Browser inspection requires the
+browser extra and Chromium and blocks WebSockets, downloads and private network
+requests; sites needing login, POST requests, or unsupported interactions may
+need manual setup.
+
+**Image attachments:** choose **+ → Add images**, paste a clipboard image into
+the message field, or drop images onto the composer. Preview and remove attachments
+before sending; a message may contain images without text. PNG, JPEG and WebP are
+supported, up to four images at 2 MB each. Your selected model must support vision.
+Images are sent to the configured provider and retained with their conversation
+until it is deleted; audit events retain attachment metadata, not image data.
+
+For **voice input**, configure a separate compatible audio-transcription API base
+URL, model and optional key under the connection's Voice input options. The microphone
+icon records dictation (up to 60 seconds). The waveform icon starts continuous voice
+conversation: speech is submitted after a pause, replies are read aloud, then listening
+resumes. Tap the waveform again or close chat to stop. Microphone access requires
+HTTPS or localhost. Spoken replies use your device's speech synthesis voices.
+This uses transcription, chat and speech synthesis in sequence, so latency depends
+on your configured services. The shortcut menu also includes a read-replies option.
+
+While a reply is running, the send arrow becomes a Stop button. Stop releases the
+conversation so another message can be sent, including after a page reload. It
+prevents further assistant steps; actions already committed remain completed.
+
+The composer context gauge displays usage from the latest provider request.
+Set your model's context window in AI settings to show its percentage. Configure
+optional USD prices per million input, output, cached and cache-write tokens for
+cost estimates. Estimates exclude audio, search, and other non-token fees and are
+not provider invoices. Missing usage or pricing is shown as unavailable.
+
+**Settings → AI and MCP → Audit history** lists messages, provider calls, connection
+tests, transcription, tool calls and approvals, including failed operations. Expand
+an event for usage, timings and action details; filter by type and export a page as
+JSON. Provider usage includes cached/reasoning tokens when returned. Request sizes
+are captured when token usage is unavailable. Credentials and raw source HTML are
+redacted; audio is not retained. Audit records survive conversation deletion and
+are included in database backups. Only the signed-in owner can view/export audits;
+MCP keys cannot read them.
+
+Chat messages, attached images and relevant source HTML are sent to the selected AI provider.
+Recordings are sent only to the configured transcription endpoint. Conversations
+are stored in the installation's database; delete a conversation in the panel to
+remove its messages and proposals. Provider keys are encrypted with the existing
+installation key (`*.downloaders.key` or `NIGHTFEED_DOWNLOADER_KEY`); back up that
+key with the database. Provider errors never expose response bodies or credentials.
+Configure model/token limits and provider-side spending controls as needed.
+
+**MCP works independently of AI configuration.** Enable it in the same settings
+page and create a dedicated API key under **Settings → API keys**. Use:
+
+- Transport: **Streamable HTTP** (stateless, JSON responses)
+- Endpoint: `https://YOUR_NIGHTFEED_HOST/mcp`
+- Header: `Authorization: Bearer YOUR_API_KEY`
+- Permissions: **MCP read**, optionally **MCP write**, **Refresh feeds**, and/or
+  **MCP settings** for non-secret global app settings.
+
+Clients must support custom Bearer headers; automatic OAuth discovery and the
+legacy HTTP+SSE transport are not provided. Send `Accept: application/json,
+text/event-stream`, and the negotiated `MCP-Protocol-Version` on subsequent
+requests. The server supports initialization, ping, tool discovery and calls.
+MCP exposes the same validated feed, preview, internal-search and help services,
+but **does not expose safe-browser opening**. Write workflows return a draft;
+the external agent must obtain user approval before calling `apply_draft`.
+
+Feed-restricted keys can read/search/edit their permitted feeds and preview their
+existing source URLs. Creating feeds, inspecting arbitrary source pages and
+changing source URLs require unrestricted feed access. Global settings cannot be
+combined with feed restrictions. Scope checks also run when drafts are applied.
+Disable MCP or revoke its API key to remove external access. Use HTTPS outside a
+trusted local network.
+
+Streaming chat keeps an HTTP connection open while provider/tool work runs. Reverse
+proxies should allow a several-minute request timeout and disable response buffering
+for `/api/assistant/`. Interrupted connections do not discard completed replies;
+reopen the panel to reload the persisted conversation. A server restart may leave
+a conversation busy until its 15-minute work lease expires.
+
 ### Authentication and upgrading
 
 Nightfeed requires authentication for all private pages, RSS XML, downloads, previews,

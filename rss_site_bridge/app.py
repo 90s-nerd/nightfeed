@@ -785,6 +785,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     register_auth(app)
     register_downloaders(app, get_safe_browser_session)
     register_push(app)
+    from .assistant import register as register_assistant
+    register_assistant(app)
     topic_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-topic-seen")
     view_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-timeline-view")
 
@@ -893,7 +895,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             path=sanitize_request_path(request.path),
             status_code=response.status_code,
             duration_ms=get_elapsed_ms(getattr(g, "request_started_at", None)),
-            response_bytes=response.calculate_content_length(),
+            response_bytes=None if response.is_streamed else response.calculate_content_length(),
         )
         return response
 
@@ -2078,6 +2080,7 @@ def extract_feed_entries(
     config: FeedRequest,
     *,
     progress: Callable[[str, str], None] | None = None,
+    document: FetchedDocument | None = None,
 ) -> list[FeedEntry]:
     try:
         from bs4 import BeautifulSoup
@@ -2094,7 +2097,7 @@ def extract_feed_entries(
         exclude_filter_count=len(parse_filter_rule_lines(config.exclude_filter_rules)),
     )
     emit_progress(progress, "Accessing website", "Opening the source page.")
-    fetched_document = fetch_html(config.source_url, config.fetch_mode, progress=progress)
+    fetched_document = document if document is not None else fetch_html(config.source_url, config.fetch_mode, progress=progress)
     if isinstance(fetched_document, FetchedDocument):
         html = fetched_document.html
         if fetched_document.final_url != config.source_url:
@@ -3170,42 +3173,9 @@ def update_settings_route_from_form(db_path: Path, form: Any) -> AppSettings:
 
 
 def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
-    now = utcnow_text()
-    token = secrets.token_urlsafe(18)
+    config.schedule_timezone = get_app_settings(db_path).timezone_name
     with closing(connect_db(db_path)) as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO profiles (
-                feed_token, feed_title, source_url, item_selector, title_selector, link_selector,
-                summary_selector, filter_rules, exclude_filter_rules, max_items, refresh_interval_minutes, fetch_mode,
-                notify_on_success, notify_on_failure, notify_failure_categories, active,
-                last_status, last_error, last_refreshed_at, refresh_anchor_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'idle', '', '', ?, ?, ?)
-            """,
-            (
-                token,
-                config.feed_title,
-                config.source_url,
-                config.item_selector,
-                config.title_selector,
-                config.link_selector,
-                config.summary_selector,
-                config.filter_rules,
-                config.exclude_filter_rules,
-                config.max_items,
-                config.refresh_interval_minutes,
-                config.fetch_mode,
-                int(config.notify_on_success),
-                int(bool(config.notify_failure_categories)),
-                encode_failure_categories(config.notify_failure_categories),
-                now,
-                now,
-                now,
-            ),
-        )
-        conn.commit()
-        profile_id = int(cursor.lastrowid)
-        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, get_app_settings(db_path).timezone_name, config.priority, profile_id))
+        profile_id = write_profile_config(conn, config)
         conn.commit()
     profile = get_profile_by_id(db_path, profile_id)
     if profile is None:
@@ -3213,43 +3183,33 @@ def create_profile(db_path: Path, config: FeedRequest) -> StoredProfile:
     return profile
 
 
-def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> StoredProfile:
-    if get_profile_by_id(db_path, profile_id) is None:
-        raise ValueError("Profile not found.")
-
+def write_profile_config(conn: sqlite3.Connection, config: FeedRequest, profile_id: int | None = None) -> int:
+    """Shared transactional save for assistant drafts; caller owns the transaction."""
+    from dataclasses import asdict
+    values = asdict(config)
+    values['notify_on_success'] = int(config.notify_on_success)
+    values['notify_on_failure'] = int(config.notify_on_failure)
+    values['notify_failure_categories'] = encode_failure_categories(config.notify_failure_categories)
     now = utcnow_text()
-    with closing(connect_db(db_path)) as conn:
-        conn.execute(
-            """
-            UPDATE profiles
-            SET feed_title = ?, source_url = ?, item_selector = ?, title_selector = ?, link_selector = ?,
-                summary_selector = ?, filter_rules = ?, exclude_filter_rules = ?, max_items = ?, refresh_interval_minutes = ?, fetch_mode = ?,
-                notify_on_success = ?, notify_on_failure = ?, notify_failure_categories = ?,
-                last_status = 'idle', last_error = '', updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                config.feed_title,
-                config.source_url,
-                config.item_selector,
-                config.title_selector,
-                config.link_selector,
-                config.summary_selector,
-                config.filter_rules,
-                config.exclude_filter_rules,
-                config.max_items,
-                config.refresh_interval_minutes,
-                config.fetch_mode,
-                int(config.notify_on_success),
-                int(bool(config.notify_failure_categories)),
-                encode_failure_categories(config.notify_failure_categories),
-                now,
-                profile_id,
-            ),
-        )
-        conn.execute("UPDATE profiles SET cron_expression = ?, schedule_timezone = ?, priority = ? WHERE id = ?", (config.cron_expression, get_app_settings(db_path).timezone_name, config.priority, profile_id))
-        conn.commit()
+    if profile_id is None:
+        values.update(feed_token=secrets.token_urlsafe(18), active=1, last_status='idle', last_error='',
+                      last_refreshed_at='', refresh_anchor_at=now, created_at=now, updated_at=now)
+        columns = list(values)
+        cursor = conn.execute('INSERT INTO profiles (' + ','.join(columns) + ') VALUES (' + ','.join('?' for _ in columns) + ')', tuple(values.values()))
+        return int(cursor.lastrowid)
+    values.update(last_status='idle', last_error='', updated_at=now)
+    cursor = conn.execute('UPDATE profiles SET ' + ','.join(column + '=?' for column in values) + ' WHERE id=?',
+                          (*values.values(), profile_id))
+    if not cursor.rowcount:
+        raise ValueError('Feed not found.')
+    return profile_id
 
+
+def update_profile(db_path: Path, profile_id: int, config: FeedRequest) -> StoredProfile:
+    config.schedule_timezone = get_app_settings(db_path).timezone_name
+    with closing(connect_db(db_path)) as conn:
+        write_profile_config(conn, config, profile_id)
+        conn.commit()
     profile = get_profile_by_id(db_path, profile_id)
     if profile is None:
         raise RuntimeError("Failed to load the updated profile.")
@@ -3427,7 +3387,7 @@ def get_next_refresh_at(profile: StoredProfile) -> datetime | None:
     return due_base + timedelta(minutes=profile.refresh_interval_minutes)
 
 
-def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
+def refresh_profile(db_path: Path, profile_id: int, *, document: FetchedDocument | None = None) -> dict[str, int]:
     profile = get_profile_by_id(db_path, profile_id)
     if profile is None:
         raise ValueError("Profile not found.")
@@ -3453,7 +3413,7 @@ def refresh_profile(db_path: Path, profile_id: int) -> dict[str, int]:
                "summary_selector": profile.summary_selector, "filter_rules": profile.filter_rules,
                "exclude_filter_rules": profile.exclude_filter_rules, "max_items": profile.max_items}
     try:
-        entries = extract_feed_entries(request_config, progress=record_stage)
+        entries = extract_feed_entries(request_config, progress=record_stage, **({'document': document} if document is not None else {}))
     except Exception as exc:
         with closing(connect_db(db_path)) as conn:
             conn.execute(

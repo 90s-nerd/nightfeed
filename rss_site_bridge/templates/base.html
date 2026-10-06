@@ -20,6 +20,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-ui.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-auth.css') }}">
+    {% if request.path.startswith('/settings/ai') %}<link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-ai-settings.css') }}">{% endif %}
   </head>
   <body class="{% block body_class %}{% endblock %}">
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -57,6 +58,7 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    {% include 'components/assistant_panel.html' %}
     <div class="refresh-toast" data-refresh-toast hidden>
       <span class="refresh-toast-message" role="status" aria-live="polite" aria-atomic="true"></span>
       <button type="button" aria-label="Dismiss notification">×</button>

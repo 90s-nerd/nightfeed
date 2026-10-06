@@ -46,6 +46,11 @@
     document.querySelectorAll('[data-appearance]').forEach(select => { select.value = value; });
   };
   apply(appearance);
+  document.addEventListener('nightfeed:appearance', event => {
+    if (!choices.includes(event.detail)) return;
+    apply(event.detail);
+    try { localStorage.setItem(key, appearance); } catch (_) { /* Keep in-memory appearance. */ }
+  });
   document.addEventListener('DOMContentLoaded', () => {
     apply(appearance);
     document.querySelectorAll('[data-appearance]').forEach(select => {

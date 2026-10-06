@@ -21,7 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelector('[data-auth-logout]')?.addEventListener('submit', () => {
     try {
       for (const key of Object.keys(sessionStorage)) {
-        if (key.startsWith('nightfeed-submissions:')) sessionStorage.removeItem(key);
+        if (key.startsWith('nightfeed-submissions:') || key.startsWith('nightfeed-assistant:')) sessionStorage.removeItem(key);
       }
     } catch (_) { /* Server-side session revocation does not depend on storage. */ }
   });
