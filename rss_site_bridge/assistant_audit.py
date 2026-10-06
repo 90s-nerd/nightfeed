@@ -29,6 +29,43 @@ def record(db, principal, kind, *, conversation=None, status='ok', **details):
         conn.commit()
 
 
+def grouped_page(db, page, kind, conversation=None):
+    """Page conversations independently; a selected conversation pages events."""
+    with closing(core.connect_db(db)) as conn:
+        if conversation is None:
+            heads=conn.execute('''SELECT COALESCE(conversation,'') AS conversation, COUNT(*) AS event_count,
+                MAX(created) AS latest, SUM(status='error') AS errors FROM assistant_audit
+                WHERE (?='' OR kind=?) GROUP BY COALESCE(conversation,'') ORDER BY MAX(id) DESC LIMIT 21 OFFSET ?''',
+                (kind,kind,(page-1)*20)).fetchall()
+            more=len(heads)>20;heads=heads[:20]
+        else:
+            heads=conn.execute('''SELECT COALESCE(conversation,'') AS conversation,COUNT(*) AS event_count,
+                MAX(created) AS latest,SUM(status='error') AS errors FROM assistant_audit
+                WHERE COALESCE(conversation,'')=? AND (?='' OR kind=?) GROUP BY COALESCE(conversation,'')''',(conversation,kind,kind)).fetchall()
+            more=False
+        groups=[];events=[]
+        for head in heads:
+            key=head['conversation']
+            rows=conn.execute("SELECT * FROM assistant_audit WHERE COALESCE(conversation,'')=? AND (?='' OR kind=?) ORDER BY id DESC LIMIT ? OFFSET ?",
+                              (key,kind,kind,101 if conversation is not None else 5,(page-1)*100 if conversation is not None else 0)).fetchall()
+            if conversation is not None: more=len(rows)>100;rows=rows[:100]
+            entries=[dict(row,details=json.loads(row['details'])) for row in reversed(rows)]
+            saved=conn.execute('SELECT title FROM assistant_conversations WHERE id=?',(key,)).fetchone() if key else None
+            first=conn.execute("SELECT details FROM assistant_audit WHERE conversation=? AND kind='user_message' ORDER BY id LIMIT 1",(key,)).fetchone() if key else None
+            title=saved['title'] if saved else (json.loads(first['details']).get('message') or 'Deleted conversation')[:100] if first else 'Deleted conversation' if key else 'Outside conversations'
+            title=redact(title)
+            totals=dict(conn.execute('''SELECT COUNT(*) AS requests,
+                COALESCE(SUM(json_extract(details,'$.usage.available')=1),0) AS measured,
+                COALESCE(SUM(CASE WHEN json_extract(details,'$.usage.available')=1 THEN json_extract(details,'$.usage.input_tokens') ELSE 0 END),0) AS input_tokens,
+                COALESCE(SUM(CASE WHEN json_extract(details,'$.usage.available')=1 THEN json_extract(details,'$.usage.output_tokens') ELSE 0 END),0) AS output_tokens,
+                COALESCE(SUM(json_extract(details,'$.usage.available')=1 AND json_extract(details,'$.usage.estimated_usd') IS NOT NULL),0) AS priced,
+                COALESCE(SUM(CASE WHEN json_extract(details,'$.usage.available')=1 THEN json_extract(details,'$.usage.estimated_usd') ELSE 0 END),0) AS estimated_usd
+                FROM assistant_audit WHERE COALESCE(conversation,'')=? AND (?='' OR kind=?) AND kind IN ('provider_request','connection_test')''',(key,kind,kind)).fetchone())
+            groups.append(dict(head,title=title,deleted=bool(key and not saved),events=entries,usage=totals,partial=len(entries)<head['event_count']))
+            events.extend(entries)
+    return groups,events,more
+
+
 def usage(config, raw):
     """Normalize billable categories without inventing unavailable token counts."""
     if not raw:

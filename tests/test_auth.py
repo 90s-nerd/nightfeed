@@ -224,6 +224,21 @@ class AuthTests(unittest.TestCase):
                 conn.commit()
             self.assertEqual(self.client.get('/').status_code, 302)
 
+    def test_passive_session_check_does_not_extend_idle_timeout(self):
+        self.onboard();token=fingerprint(self.client.get_cookie(COOKIE).value)
+        before=time.time()-100
+        with closing(connect(self.db)) as conn:
+            conn.execute('UPDATE auth_sessions SET last_seen=? WHERE token_hash=?',(before,token));conn.commit()
+        response=self.client.get('/api/auth/session')
+        self.assertEqual(response.status_code,200);self.assertTrue(response.json['authenticated'])
+        self.assertGreater(response.json['expires_in'],0)
+        self.assertIn('no-store',response.headers['Cache-Control'])
+        with closing(connect(self.db)) as conn:
+            self.assertEqual(conn.execute('SELECT last_seen FROM auth_sessions WHERE token_hash=?',(token,)).fetchone()[0],before)
+            conn.execute('UPDATE auth_sessions SET last_seen=? WHERE token_hash=?',(time.time()-1900,token));conn.commit()
+        self.assertEqual(self.client.get('/api/auth/session').status_code,401)
+        self.assertEqual(self.app.test_client().get('/api/auth/session').status_code,401)
+
     def test_logout_revokes_replayed_cookie_and_csrf(self):
         self.onboard()
         old = self.client.get_cookie(COOKIE).value

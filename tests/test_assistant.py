@@ -9,6 +9,7 @@ import io
 import socket
 import time
 import unittest
+from datetime import datetime, timezone
 from threading import Event
 
 from auth_support import authenticated_client
@@ -273,6 +274,61 @@ class AssistantTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             restricted.call('count_topics', dict(feed_id=other.id))
 
+    def test_added_day_queries_use_discovery_time_timezone_and_feed_permissions(self):
+        feed=self.create_feed();other=self.create_feed(feed_title='Other')
+        with closing(core.connect_db(self.db)) as conn:
+            conn.execute("UPDATE app_settings SET timezone_name='America/New_York'")
+            for index,stamp in enumerate(['2026-03-08T04:59:59+00:00','2026-03-08T05:00:00+00:00','2026-03-09T03:59:59+00:00','2026-03-09T04:00:00+00:00']):
+                conn.execute('INSERT INTO feed_items(profile_id,title,link,summary,discovered_at) VALUES(?,?,?,?,?)',(feed.id,'Linux',f'https://example.com/{index}','',stamp))
+            conn.execute('INSERT INTO feed_items(profile_id,title,link,summary,discovered_at) VALUES(?,?,?,?,?)',(other.id,'Linux','https://example.com/private','','2026-03-08T12:00:00+00:00'));conn.commit()
+        restricted=Services(self.db,Access('key:1',('mcp:read',),(feed.id,)))
+        counted=restricted.call('count_topics',dict(added_on='2026-03-08'))
+        found=restricted.call('search_topics',dict(query='',added_on='2026-03-08'))
+        self.assertEqual(counted['total_count'],2);self.assertEqual(found['total_count'],2)
+        self.assertEqual(counted['timezone'],'America/New_York')
+        self.assertEqual(counted['time_field'],'discovered_at')
+        self.assertEqual({item['feed_id'] for item in found['items']},{feed.id})
+        self.assertEqual(self.services.call('count_topics',dict(added_on='2026-03-08'))['total_count'],3)
+        with self.assertRaises(ValueError):restricted.call('count_topics',dict(added_on='2026-03-08',feed_id=other.id))
+        with self.assertRaises(ValueError):restricted.call('count_topics',dict(added_on='not-a-date'))
+
+    def test_audit_conversation_groups_keep_complete_usage_and_deleted_history(self):
+        from rss_site_bridge.assistant_audit import record, grouped_page
+        with closing(core.connect_db(self.db)) as conn:
+            conn.execute("INSERT INTO assistant_conversations(id,principal,title,created,updated) VALUES('chat-a','user:1','Movie watch',?,?)",(time.time(),time.time()));conn.commit()
+        for index in range(105):
+            record(self.db,'user:1','provider_request',conversation='chat-a',usage=dict(available=True,input_tokens=2,output_tokens=1,estimated_usd=.0001))
+        record(self.db,'user:1','user_message',conversation='deleted-chat',message='Old feed setup')
+        record(self.db,'user:1','turn_error',conversation='deleted-chat',status='error')
+        record(self.db,'user:1','connection_test')
+        groups,events,more=grouped_page(self.db,1,'')
+        self.assertFalse(more);self.assertEqual(len(groups),3)
+        chat=next(g for g in groups if g['conversation']=='chat-a')
+        self.assertEqual(chat['title'],'Movie watch');self.assertEqual(chat['event_count'],105)
+        self.assertEqual(len(chat['events']),5);self.assertEqual(chat['usage']['input_tokens'],210)
+        self.assertEqual(chat['usage']['requests'],105);self.assertAlmostEqual(chat['usage']['estimated_usd'],.0105)
+        deleted=next(g for g in groups if g['conversation']=='deleted-chat')
+        self.assertTrue(deleted['deleted']);self.assertEqual(deleted['title'],'Old feed setup')
+        self.assertEqual(deleted['errors'],1)
+        with closing(core.connect_db(self.db)) as conn:
+            conn.execute("UPDATE assistant_conversations SET title=? WHERE id='chat-a'",('Movie watch sk-'+('s'*20),));conn.commit()
+        response=self.client.get('/settings/ai/audit')
+        self.assertEqual(response.status_code,200);self.assertIn(b'Movie watch',response.data)
+        self.assertNotIn(('sk-'+('s'*20)).encode(),response.data)
+        first=self.client.get('/settings/ai/audit?conversation=chat-a&export=1').json
+        second=self.client.get('/settings/ai/audit?conversation=chat-a&page=2&export=1').json
+        self.assertEqual(len(first),100);self.assertEqual(len(second),5)
+        self.assertEqual(len({e['id'] for e in first+second}),105)
+        selected=self.client.get('/settings/ai/audit?conversation=chat-a')
+        self.assertEqual(selected.status_code,200);self.assertIn(b'name="conversation" value="chat-a"',selected.data)
+        self.assertIn(b'Older events',selected.data)
+        filtered=self.client.get('/settings/ai/audit?kind=turn_error&export=1').json
+        self.assertEqual([e['conversation'] for e in filtered],['deleted-chat'])
+        for index in range(18):record(self.db,'user:1','local_reply',conversation=f'new-chat-{index}')
+        newer,_,more=grouped_page(self.db,1,'');older,_,last_more=grouped_page(self.db,2,'')
+        self.assertEqual(len(newer),20);self.assertTrue(more);self.assertFalse(last_more)
+        self.assertEqual(len({g['conversation'] for g in newer+older}),21)
+
     def test_internal_search_honors_feed_restrictions(self):
         first = self.create_feed()
         second = self.create_feed(feed_title='Private')
@@ -534,7 +590,11 @@ class AssistantTests(unittest.TestCase):
         config.update(speech_url='http://speech.local/v1', speech_model='whisper', speech_key='speech-secret')
         ai.save_connection(self.db, config, existing, tested=True)
         with patch.object(provider, 'transcribe', return_value='Find Linux topics') as call:
-            response = self.client.post('/api/assistant/transcribe', data={'audio': (io.BytesIO(b'fixture audio'), 'recording.m4a')})
+            response = self.client.post('/api/assistant/transcribe', data={'audio': (io.BytesIO(b'fixture audio'), 'recording.m4a'), 'conversation':token})
+            with closing(core.connect_db(self.db)) as conn:
+                self.assertEqual(conn.execute("SELECT conversation FROM assistant_audit WHERE kind='transcription' ORDER BY id DESC LIMIT 1").fetchone()[0],token)
+            denied=self.client.post('/api/assistant/transcribe',data={'audio':(io.BytesIO(b'fixture audio'),'recording.m4a'),'conversation':'another-users-chat'})
+            self.assertEqual(denied.status_code,404);self.assertEqual(call.call_count,1)
         self.assertEqual(response.json['text'], 'Find Linux topics')
         self.assertEqual(call.call_args.args[0]['base_url'], 'http://speech.local/v1')
         self.assertEqual(call.call_args.args[0]['api_key'], 'speech-secret')

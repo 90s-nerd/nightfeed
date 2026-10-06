@@ -421,14 +421,18 @@ def register(app):
         token = request.cookies.get(COOKIE, '')
         if token and len(token) <= 100:
             with closing(connect(db)) as conn:
-                row = conn.execute('''SELECT u.*, s.method FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id
+                row = conn.execute('''SELECT u.*, s.method, s.created AS session_created, s.expires AS session_expires, s.last_seen AS session_seen FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id
                     WHERE s.token_hash=? AND s.expires>? AND s.created>? AND s.last_seen>?''',
                     (fingerprint(token), now, now - g.auth_settings['session_minutes'] * 60,
                      now - g.auth_settings['idle_minutes'] * 60)).fetchone()
                 if row:
                     g.auth_user = dict(row)
-                    conn.execute('UPDATE auth_sessions SET last_seen=? WHERE token_hash=?', (now, fingerprint(token)))
-                    conn.commit()
+                    passive = request.endpoint == 'auth.session_status'
+                    g.auth_expires_at = min(row['session_expires'], row['session_created'] + g.auth_settings['session_minutes']*60,
+                                            (row['session_seen'] if passive else now) + g.auth_settings['idle_minutes']*60)
+                    if not passive:
+                        conn.execute('UPDATE auth_sessions SET last_seen=? WHERE token_hash=?', (now, fingerprint(token)))
+                        conn.commit()
         if request.endpoint not in PUBLIC and not g.auth_user and not g.api_key:
             if request.path.startswith('/api/') or request.path == '/mcp' or request.method not in ('GET', 'HEAD') or request.path.endswith('.xml'):
                 return jsonify(error='Authentication required.'), 401
@@ -472,6 +476,11 @@ def register(app):
             if g.auth_settings['oidc_enabled'] and g.auth_settings['oidc_use_name'] and user['oidc_name']:
                 user['name'] = user['oidc_name']
         return dict(auth_csrf=csrf(), auth_user=user)
+
+    @bp.get('/api/auth/session')
+    def session_status():
+        # This passive check must never keep an otherwise idle session alive.
+        return jsonify(authenticated=True, expires_in=max(0,g.auth_expires_at-time.time()))
 
     @bp.route('/settings/profile', methods=['GET', 'POST'])
     def profile():

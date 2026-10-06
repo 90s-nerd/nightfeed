@@ -19,6 +19,15 @@
 .audit-filters .field { margin:0; width:240px; max-width:100%; }
 .audit-filters .audit-export { margin-left:auto; }
 .audit-events { display:grid; }
+.audit-groups { display:grid; gap:16px; }
+.audit-conversation { border:1px solid var(--nf-border); border-radius:12px; padding:16px; min-width:0; }
+.audit-conversation > summary { cursor:pointer; display:flex; align-items:center; gap:12px; list-style:none; }
+.audit-conversation > summary::-webkit-details-marker { display:none; }
+.audit-conversation > summary .audit-event-title { flex:1; }
+.audit-conversation > summary::after { content:'+'; font-size:20px; color:var(--nf-secondary); }
+.audit-conversation[open] > summary::after { content:'−'; }
+.audit-conversation-body { padding-top:16px; display:grid; gap:12px; min-width:0; }
+.audit-conversation-body > p { margin:0; overflow-wrap:anywhere; }
 .audit-event { border-top:1px solid var(--nf-border); padding:16px 0; min-width:0; }
 .audit-event > summary { cursor:pointer; display:grid; grid-template-columns:minmax(0,1fr) auto 16px; align-items:center; gap:12px; list-style:none; font-size:14px; }
 .audit-event > summary::-webkit-details-marker { display:none; }

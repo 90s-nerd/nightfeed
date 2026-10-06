@@ -468,7 +468,11 @@
         if (panel.hidden || recordingCancelled || !detected || (continuous && !voiceMode)) { if (voiceMode) scheduleListening(); return; }
         setBusy(true); status.textContent = 'Transcribing…';
         const mime = recording.mimeType, data = new FormData(); data.append('audio', new Blob(chunks, {type:mime}), mime.includes('mp4') ? 'recording.m4a' : 'recording.webm');
-        try { const result = await api('/api/assistant/transcribe', {method:'POST', body:data}); if (stopRequested) return; input.value = result.text; resize(); setBusy(false); form.requestSubmit(); }
+        try {
+          if (!conversation) { const result=await api('/api/assistant/conversations',{method:'POST'});conversation=result.id;remember('conversation',conversation); }
+          data.append('conversation',conversation);
+          const result = await api('/api/assistant/transcribe', {method:'POST', body:data}); if (stopRequested) return; input.value = result.text; resize(); setBusy(false); form.requestSubmit();
+        }
         catch (error) { stopVoice(); status.textContent = error.message; setBusy(false); }
       });
       recording.start(); mic.setAttribute('aria-pressed', 'true'); mic.setAttribute('aria-label','Finish dictation'); status.textContent = continuous ? 'Listening… speak, then pause to send. Tap the voice icon to stop.' : 'Dictating… tap the microphone when finished.';
