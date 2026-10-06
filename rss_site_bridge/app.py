@@ -787,6 +787,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     register_push(app)
     from .assistant import register as register_assistant
     register_assistant(app)
+    from .tasks import register as register_tasks
+    register_tasks(app)
     topic_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-topic-seen")
     view_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-timeline-view")
 
@@ -1885,6 +1887,8 @@ def run_scheduler_loop(db_path: Path, stop_event: Event) -> None:
     while not stop_event.is_set():
         try:
             refresh_due_profiles(db_path)
+            from .tasks import dispatch as dispatch_tasks
+            dispatch_tasks(db_path)
         except Exception as exc:
             log_event(
                 logging.ERROR,
@@ -2967,6 +2971,8 @@ def init_db(db_path: Path) -> None:
 
 
     initialize_push(db_path)
+    from .tasks import initialize as initialize_tasks
+    initialize_tasks(db_path)
 
 
 def connect_db(db_path: Path) -> sqlite3.Connection:
@@ -3449,6 +3455,7 @@ def refresh_profile(db_path: Path, profile_id: int, *, document: FetchedDocument
 
     changes = {"new_items": 0, "updated_items": 0}
     changed_entries = []
+    task_items = []
     with closing(connect_db(db_path)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         for entry in entries:
@@ -3489,6 +3496,9 @@ def refresh_profile(db_path: Path, profile_id: int, *, document: FetchedDocument
                     entry.published_at.isoformat(),
                 ),
             )
+            if existing is None:
+                item_id = conn.execute('SELECT id FROM feed_items WHERE profile_id=? AND link=?', (profile_id, entry.link)).fetchone()[0]
+                task_items.append(dict(id=item_id,title=entry.title,link=entry.link,summary=entry.summary))
         conn.execute(
             """
             UPDATE profiles
@@ -3497,6 +3507,8 @@ def refresh_profile(db_path: Path, profile_id: int, *, document: FetchedDocument
             """,
             (request_config.source_url, now, now, now, profile_id),
         )
+        from .tasks import process_refresh
+        process_refresh(conn, profile_id, task_items, time.time())
         conn.commit()
     refreshed_profile = get_profile_by_id(db_path, profile_id) or profile
     maybe_send_refresh_notification(

@@ -366,7 +366,7 @@ def register(app):
 
     @app.before_request
     def protect():
-        if request.path.startswith('/api/assistant/') or request.path in ('/mcp', '/settings/ai'):
+        if request.path.startswith(('/api/assistant/','/api/tasks')) or request.path in ('/mcp', '/settings/ai'):
             if request.path == '/api/assistant/transcribe':
                 limit = 11 * 1024 * 1024
             elif request.method == 'POST' and re.fullmatch(r'/api/assistant/conversations/[A-Za-z0-9_-]+/messages', request.path):
@@ -524,6 +524,8 @@ def register(app):
                         if conn.execute('SELECT 1 FROM auth_users').fetchone():
                             abort(409)
                         identity = conn.execute('INSERT INTO auth_users(username,name,password_hash) VALUES(?,?,?)', (username, name, hashed)).lastrowid
+                        from .push_notifications import claim_legacy_devices
+                        claim_legacy_devices(conn)
                         audit(conn, 'owner_created', identity)
                         conn.commit()
                     Path(db).with_suffix('.setup-token').unlink(missing_ok=True)

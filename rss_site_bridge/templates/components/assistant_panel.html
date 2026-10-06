@@ -2,6 +2,7 @@
 <button class="assistant-launcher" data-assistant-toggle aria-controls="nightfeed-assistant" aria-expanded="false" aria-label="Open Nightfeed assistant"><span class="assistant-companion" data-companion><img src="{{ url_for('static', filename='nightfeed-companion.png') }}" width="76" height="84" alt=""><img class="assistant-companion-closed" src="{{ url_for('static', filename='nightfeed-companion-blink.png') }}" width="76" height="84" alt="" aria-hidden="true"></span><span class="assistant-companion-greeting" aria-hidden="true">Need a hand?</span></button>
 <aside id="nightfeed-assistant" class="assistant-panel" data-assistant-panel data-voice-configured="{{ 'true' if assistant_voice_enabled else 'false' }}" hidden aria-label="Nightfeed assistant">
   <header class="assistant-header"><div class="assistant-identity"><span class="assistant-companion assistant-header-companion" data-companion><img src="{{ url_for('static', filename='nightfeed-companion.png') }}" width="36" height="40" alt=""><img class="assistant-companion-closed" src="{{ url_for('static', filename='nightfeed-companion-blink.png') }}" width="36" height="40" alt="" aria-hidden="true"></span><div><strong>Nightfeed assistant</strong><small>Feeds, saved content and help</small></div></div><button class="assistant-icon" data-assistant-close aria-label="Close assistant" title="Close assistant"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+  <div class="assistant-tabs" role="tablist" aria-label="Assistant view"><button type="button" role="tab" id="assistant-chat-tab" aria-controls="assistant-chat-view" aria-selected="true" data-assistant-view="chat">Chat</button><button type="button" role="tab" id="assistant-tasks-tab" aria-controls="assistant-tasks-view" aria-selected="false" tabindex="-1" data-assistant-view="tasks">Tasks</button></div><div id="assistant-chat-view" class="assistant-chat-view" role="tabpanel" aria-labelledby="assistant-chat-tab">
   <div class="assistant-toolbar"><div class="field"><select data-assistant-conversations aria-label="Conversation history"><option value="">New chat</option></select></div><button class="assistant-icon" data-assistant-new aria-label="New chat" title="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5H5v14h14v-7M14 4l6 6M10 14l2-6 6-6 4 4-6 6Z"/></svg></button><details class="assistant-chat-menu"><summary class="assistant-icon" aria-label="Conversation options" title="Conversation options"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></summary><div class="assistant-popover"><button type="button" data-assistant-delete aria-label="Delete conversation">Delete conversation</button></div></details></div>
   <div class="assistant-messages" data-assistant-messages role="log" aria-live="polite" aria-label="Conversation messages"><p class="meta">Paste a listing URL to create a feed, search saved topics, or ask how Nightfeed works.</p></div>
   <p class="assistant-status meta" data-assistant-status role="status"></p>
@@ -9,7 +10,7 @@
     <input type="file" data-assistant-upload accept="image/png,image/jpeg,image/webp" multiple hidden>
     <div class="assistant-input-shell">
       <div class="assistant-attachments" data-assistant-attachments hidden></div>
-      <label class="sr-only" for="assistant-message">Message</label><textarea id="assistant-message" name="message" placeholder="Ask Nightfeed anything…" rows="1" maxlength="8000"></textarea>
+      <label class="sr-only" for="assistant-message">Message</label><textarea id="assistant-message" name="message" placeholder="Manage feeds, tasks, or saved content…" rows="1" maxlength="8000"></textarea>
       <div class="assistant-input-tools">
         <details class="assistant-shortcuts"><summary class="assistant-icon" aria-label="Chat shortcuts" title="Chat shortcuts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></summary><div class="assistant-popover"><button type="button" data-assistant-add-image>Add images</button><button type="button" data-prompt="Help me create a feed from a listing URL.">Create a feed</button><button type="button" data-prompt="Search my saved content for ">Search saved content</button><button type="button" data-prompt="Help me with Nightfeed settings.">Settings help</button><label class="assistant-speak"><input type="checkbox" data-assistant-speak>Read replies aloud</label><a href="/settings/ai">AI settings</a></div></details>
         <span class="assistant-tools-spacer"></span>
@@ -21,8 +22,8 @@
       </div>
     </div>
     <small class="assistant-composer-note">Enter to send · Shift + Enter for a new line</small>
-  </form>
+  </form></div><div id="assistant-tasks-view" class="assistant-task-pane" role="tabpanel" aria-labelledby="assistant-tasks-tab" hidden></div>
 </aside>
-<link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-assistant.css', v='blink-3') }}">
-<script src="{{ url_for('static', filename='nightfeed-assistant.js', v='blink-3') }}" defer></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-assistant.css', v='tasks-1') }}">
+<script src="{{ url_for('static', filename='nightfeed-assistant.js', v='tasks-1') }}" defer></script>
 {% endif %}

@@ -38,6 +38,10 @@ def fake_complete(config, history, tools, system, on_delta=None):
     return dict(role='assistant', content='', tool_calls=[dict(id='fixture-' + str(len(history)), type='function', function=dict(name=name, arguments=json.dumps(args)))])
 
 
+def fake_scope(config, history, context):
+    return dict(decision='redirect' if history[-1]['content']=='Who is the US president?' else 'allow',usage={})
+
+
 with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
     db = Path(temp) / 'ui.db'
     app = core.create_app(dict(TESTING=True, DATABASE_PATH=db, START_SCHEDULER=False))
@@ -46,7 +50,7 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
     Thread(target=server.serve_forever, daemon=True).start()
     address = f'http://127.0.0.1:{server.server_port}'
     try:
-        with patch('rss_site_bridge.assistant_provider.test_connection', return_value=True), patch('rss_site_bridge.assistant_provider.complete', side_effect=fake_complete), patch('rss_site_bridge.assistant_provider.transcribe', return_value='Search my saved Linux content'), patch('rss_site_bridge.assistant_services.fetch_document', return_value=core.FetchedDocument(HTML, CONFIG['source_url'])):
+        with patch('rss_site_bridge.assistant_scope.classify', side_effect=fake_scope), patch('rss_site_bridge.assistant_provider.test_connection', return_value=True), patch('rss_site_bridge.assistant_provider.complete', side_effect=fake_complete), patch('rss_site_bridge.assistant_provider.transcribe', return_value='Search my saved Linux content'), patch('rss_site_bridge.assistant_services.fetch_document', return_value=core.FetchedDocument(HTML, CONFIG['source_url'])):
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(channel='chrome')
                 context = browser.new_context(viewport={'width':1440,'height':1000})
@@ -86,6 +90,10 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.goto(address + '/')
                 page.get_by_role('button', name='Open Nightfeed assistant').click()
                 expect(page.locator('[data-assistant-panel]')).to_be_visible()
+                for question in ['how are you',"what's your name",'what is a feed']:
+                    page.get_by_label('Message',exact=True).fill(question);page.get_by_role('button',name='Send message').click()
+                    expect(page.get_by_text(ai.scope.local_reply(dict(content=question)),exact=True)).to_be_visible()
+                page.get_by_role('button',name='New chat',exact=True).click()
                 image_bytes = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS8sAAAAASUVORK5CYII=')
                 page.get_by_label('Chat shortcuts',exact=True).click()
                 with page.expect_file_chooser() as chooser:
@@ -139,6 +147,14 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.get_by_label('Context usage',exact=True).click()
                 expect(page.locator('[data-context-usage]')).to_contain_text('1,200 input')
                 expect(page.locator('[data-context-usage]')).to_contain_text('Estimated $0.001000')
+                page.get_by_label('Context usage',exact=True).click()
+                page.get_by_label('Message',exact=True).fill('Who is the US president?');page.get_by_role('button',name='Send message').click()
+                expect(page.get_by_text(ai.scope.REDIRECT,exact=True)).to_be_visible()
+                expect(page.locator('.assistant-proposal')).to_have_count(0)
+                page.get_by_label('Message',exact=True).fill('Search my saved Linux content');page.get_by_role('button',name='Send message').click()
+                expect(page.locator('[data-assistant-stop]')).to_be_hidden()
+                page.get_by_label('Context usage',exact=True).click()
+                expect(page.locator('[data-context-usage]')).to_contain_text('1,200 input')
                 previous_chat=page.locator('[data-assistant-conversations]').input_value()
                 page.get_by_role('button',name='New chat',exact=True).click()
                 expect(page.locator('[data-assistant-conversations]')).to_have_value('')

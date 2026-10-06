@@ -112,6 +112,50 @@ installation key (`*.downloaders.key` or `NIGHTFEED_DOWNLOADER_KEY`); back up th
 key with the database. Provider errors never expose response bodies or credentials.
 Configure model/token limits and provider-side spending controls as needed.
 
+The built-in assistant is limited to Nightfeed workflows and retrieved stored
+content. It redirects general knowledge, unrelated advice and standalone image
+identification. Unclear uploads ask for their Nightfeed purpose. A small, text-only
+scope check runs before answers or tools; its provider usage and configured cost
+estimate are logged separately under `request_scope` in audit request details.
+It uses the selected provider/model and adds one short request per chat turn,
+except for common persona questions and feed/RSS definitions answered locally.
+These friendly product replies are audited and make no provider calls. Broader
+questions about the assistant's identity and Nightfeed concepts are also in scope.
+Short preference answers to a pending app setup question continue that workflow
+without another scope request. Complex answers include the pending question and
+original workflow in the scope check; independent general questions remain restricted.
+Missing or invalid scope decisions do not authorize actions. Scope decisions
+depend on the configured model; tool permissions and approval checks remain
+enforced by Nightfeed independently.
+
+### Topic watch tasks
+
+Ask the assistant “Notify me when Spider Man appears.” The setup asks for all or
+selected feeds, every new match or once, delivery channels, and optional expiry
+(7 days, 30 days, or a custom date/time in the app's schedule timezone). Refine the
+rule with required/excluded phrases, exact wording, or title-and-summary matching.
+Flexible matching covers `Spider Man`, `Spider-Man`, and `Spiderman`. Preview
+existing matches before selecting **Create task**; existing items do not send alerts.
+
+Nightfeed notifications are always included. Select push to notify all enabled
+devices registered to your account, including devices registered later, and/or
+email when SMTP is configured. Watches check newly stored items after
+successful feed refreshes using local rules, with no background AI requests.
+Matches are grouped per refresh and the same stored URL is not alerted twice by
+one task, even across feeds. A once-only task completes on its first matching batch.
+Manual or paused feeds need a refresh before they can produce matches.
+
+Use the assistant's **Tasks** tab or **Settings → Tasks** to see rules, matches,
+delivery history and expiry, or edit, pause, reactivate and archive tasks. The full
+Tasks page works without an AI provider. Expired tasks archive automatically and
+retain their history. Previously queued deliveries continue retrying independently;
+push respects each device's quiet hours and its daily allowance shared with digests.
+Each device has an independent delivery and retry status. External delivery
+uses durable retries, so a provider acceptance followed by a server interruption
+can result in a repeated delivery. Task events also appear in AI audit history.
+
+### External agents
+
 **MCP works independently of AI configuration.** Enable it in the same settings
 page and create a dedicated API key under **Settings → API keys**. Use:
 
@@ -125,7 +169,7 @@ Clients must support custom Bearer headers; automatic OAuth discovery and the
 legacy HTTP+SSE transport are not provided. Send `Accept: application/json,
 text/event-stream`, and the negotiated `MCP-Protocol-Version` on subsequent
 requests. The server supports initialization, ping, tool discovery and calls.
-MCP exposes the same validated feed, preview, internal-search and help services,
+MCP exposes the same validated feed, preview, internal-search, task and help services,
 but **does not expose safe-browser opening**. Write workflows return a draft;
 the external agent must obtain user approval before calling `apply_draft`.
 

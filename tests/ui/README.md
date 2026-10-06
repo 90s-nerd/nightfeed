@@ -22,6 +22,7 @@ python tests/ui/check_notices.py
 python tests/ui/check_push_notifications.py
 python tests/ui/check_auth.py
 python tests/ui/check_assistant.py
+python tests/ui/check_tasks.py
 ```
 
 The checks cover responsive layouts and themes, feed creation/editing and
@@ -42,3 +43,10 @@ creation, persistent conversation history, internal search, context/cost display
 audit access, MCP settings and the composer on mobile and desktop. Synthetic audio
 exercises speech-pause detection, transcription, resumed listening and stopping
 continuous voice without requiring physical microphone access or a live AI key.
+It also verifies the fixed redirect for unrelated questions and recovery to
+stored-content search. Scope decisions use fixtures; no paid calls are made.
+
+`check_tasks.py` covers topic-watch follow-up selections, multiple delivery channels,
+expiry, preview, persistent creation, pause/resume, editing, archiving, delivery
+history, responsive dark layouts and management without an AI provider. Provider
+and delivery fixtures prevent live AI, SMTP or push requests.

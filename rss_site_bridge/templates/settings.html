@@ -12,6 +12,7 @@
 {% endblock %}
 
 {% block content %}
+<section class="surface section settings-account"><h2>Tasks</h2><p>Watch for topics, choose delivery channels, and manage expiry.</p><div class="button-row"><a class="btn btn-secondary" href="/tasks">Manage tasks</a></div></section>
 <section class="surface section settings-account"><h2>AI assistant and MCP</h2><p>Configure chat, voice input, and access for external agents.</p><div class="button-row"><a class="btn btn-secondary" href="/settings/ai">Manage AI and MCP</a></div></section>
 <section class="surface section settings-account"><h2>Account and security</h2><p>Manage your profile, password, sign in and connected applications.</p><div class="button-row"><a class="btn btn-secondary" href="{{ url_for('auth.profile') }}">Manage profile</a><a class="btn btn-secondary" href="{{ url_for('auth.security') }}">Security settings</a> <a class="btn btn-secondary" href="{{ url_for('auth.api_keys') }}">API keys</a></div></section>
 

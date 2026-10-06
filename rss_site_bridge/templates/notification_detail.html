@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Refresh report · Nightfeed{% endblock %}
+{% block title %}{{ 'Topic alert' if notification.event_type == 'topic_match' else 'Refresh report' }} · Nightfeed{% endblock %}
 {% block page_header %}
 <header class="topbar">
-  <div class="page-title"><a class="feed-name-link" href="{{ url_for('notifications_route', status=status_filter) }}">← Notifications</a><h1>Refresh report</h1></div>
+  <div class="page-title"><a class="feed-name-link" href="{{ url_for('notifications_route', status=status_filter) }}">← Notifications</a><h1>{{ 'Topic alert' if notification.event_type == 'topic_match' else 'Refresh report' }}</h1></div>
 </header>
 {% endblock %}
 {% block content %}
@@ -21,6 +21,7 @@
   {% if notification.severity == 'error' and report.stages %}<div><dt>Last stage</dt><dd>{{ report.stages[-1].title }} — {{ report.stages[-1].detail }}</dd></div>{% endif %}
   <div><dt>Email</dt><dd>{% if notification.emailed_at %}Sent {{ notification.emailed_at | human_datetime }}{% else %}Not sent{% endif %}</dd></div>
   </dl>
+  {% if report.task_id %}<p><a class="feed-name-link" href="/tasks?task={{ report.task_id }}">View watch task</a></p>{% endif %}
   <div class="report-actions">{% if profile %}<a class="feed-name-link" href="/profiles/{{ profile.id }}">View feed</a><a class="feed-name-link" href="/profiles/{{ profile.id }}?view=configuration">Feed settings</a>{% endif %}
   </div>
 </section>

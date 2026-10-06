@@ -58,6 +58,7 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    {% if auth_user %}<link rel="stylesheet" href="{{ url_for('static',filename='nightfeed-tasks.css') }}"><script src="{{ url_for('static',filename='nightfeed-tasks.js') }}" defer></script>{% endif %}
     {% include 'components/assistant_panel.html' %}
     <div class="refresh-toast" data-refresh-toast hidden>
       <span class="refresh-toast-message" role="status" aria-live="polite" aria-atomic="true"></span>

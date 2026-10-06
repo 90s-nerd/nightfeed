@@ -35,6 +35,8 @@ class AssistantTests(unittest.TestCase):
         self.fetch = patch('rss_site_bridge.assistant_services.fetch_document', return_value=core.FetchedDocument(HTML, CONFIG['source_url']))
         self.fetch.start()
         self.addCleanup(self.fetch.stop)
+        self.scope = patch('rss_site_bridge.assistant_scope.classify', return_value=dict(decision='allow', usage={}))
+        self.scope.start(); self.addCleanup(self.scope.stop)
 
     def activate(self):
         config = dict(name='Fixture', api_type='compatible', base_url='https://provider.example/v1', model='fixture', api_key='secret-fixture',
@@ -104,7 +106,7 @@ class AssistantTests(unittest.TestCase):
     def test_device_preferences_are_bound_to_registered_device_and_chat(self):
         from rss_site_bridge import push_notifications as push
         with closing(core.connect_db(self.db)) as conn:
-            conn.execute('INSERT INTO push_devices(id,secret_hash,endpoint_hash,subscription,preferences) VALUES(?,?,?,?,?)', ('device1','hash1','endpoint1','{}',json.dumps(push.DEFAULTS))); conn.commit()
+            conn.execute('INSERT INTO push_devices(id,secret_hash,endpoint_hash,subscription,preferences,user_id) VALUES(?,?,?,?,?,?)', ('device1','hash1','endpoint1','{}',json.dumps(push.DEFAULTS),1)); conn.commit()
         self.access.device_id='device1'
         draft=self.services.call('propose_push_preferences',dict(preferences=dict(updated=True, interval=60)))
         wrong=Services(self.db,Access('user:1',chat=True,conversation='test',device_id='other'))

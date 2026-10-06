@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import asdict, dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import hashlib
 import json
 import math
@@ -17,6 +19,8 @@ from .assistant_audit import record
 from . import push_notifications as push
 
 HELP = [
+    dict(title='Feeds and RSS', url='/feeds', text='A Nightfeed feed is a saved extraction setup for a website listing page. On refresh, it extracts titles, links and optional summaries using selectors and title filters, stores items in the timeline and publishes RSS for feed readers. RSS is a standard format for following updates. Refresh intervals or cron determine when automatic checks happen; manual-only feeds refresh when requested.'),
+    dict(title='Topic watch tasks', url='/tasks', text='Ask the assistant to notify you when a topic arrives, or create a task in Settings → Tasks. Choose title phrases, all or selected feeds, every new match or once, and optional expiry. Flexible matching covers spacing and punctuation variants. Nightfeed alerts are always included; push notifies all enabled devices registered to your account, including devices added later, respecting per-device quiet hours and daily limits; email requires SMTP. Watches check newly stored items on successful refresh, not old items or external web searches. Pause, edit, archive and inspect matching and delivery history in the assistant Tasks tab or /tasks. Expired watches archive automatically; queued deliveries from earlier matches still retry independently. No background AI calls are used.'),
     dict(title='Timezone', url='/settings#timezone_name', text='Settings → Scheduling and feed URLs → Refresh schedule timezone. This changes calendar schedules across ALL feeds. Displayed dates follow your device timezone. Use an IANA name such as America/Chicago.'),
     dict(title='Creating and editing feeds', url='/compose', text='Provide a listing-page URL and a feed name. Select repeating items, titles and links, then preview. :scope selects the item itself; >> parent walks to its parent. HTTP fetching is the default; browser fetching requires Playwright and Chromium.'),
     dict(title='Filters', url='/feeds', text='Include and exclude rules match extracted titles. One rule per line; AND, OR, parentheses, quoted phrases and * / ? wildcards are supported. Exclusions apply after inclusions. Filters run during extraction, not as AI calls.'),
@@ -47,6 +51,12 @@ FIELDS.update(max_items=dict(type='integer', minimum=1, maximum=100),
               notify_on_success=dict(type='boolean'), notify_on_failure=dict(type='boolean'),
               notify_failure_categories=dict(type='array', items=dict(type='string', enum=list(core.FAILURE_NOTIFICATION_CATEGORIES)), maxItems=9))
 CONFIG_SCHEMA = dict(type='object', properties=FIELDS, additionalProperties=False)
+TASK_FIELDS = dict(name=dict(type='string',maxLength=120), terms=dict(type='array',items=dict(type='string',maxLength=160),maxItems=12),
+                   exclude_terms=dict(type='array',items=dict(type='string',maxLength=160),maxItems=12),feed_ids=dict(type='array',items=ID,maxItems=100),
+                   mode=dict(type='string',enum=['every','once']),match_mode=dict(type='string',enum=['flexible','exact']),fields=dict(type='string',enum=['title','title_summary']),
+                   channels=dict(type='array',items=dict(type='string',enum=['nightfeed','push','email']),maxItems=3),expires_at=dict(type='string',maxLength=60))
+TASK_SCHEMA=dict(type='object',properties=TASK_FIELDS,additionalProperties=False)
+TASK_FIELDS['required_terms']=dict(type='array',items=dict(type='string',maxLength=160),maxItems=12)
 SETTING_FIELDS = {k: dict(TEXT) for k in ('timezone_name', 'public_base_url', 'smtp_host', 'smtp_username', 'smtp_to_email', 'smtp_from_email')}
 SETTING_FIELDS.update(smtp_port=dict(type='integer', minimum=0, maximum=65535), smtp_enabled=dict(type='boolean'), smtp_use_tls=dict(type='boolean'))
 
@@ -59,6 +69,11 @@ def tool(name, description, properties=None, required=(), permission='mcp:read')
 
 
 TOOLS = [
+    tool('prepare_topic_watch','Start a topic-watch setup with easy follow-up choices. Use when asked to notify/watch for a topic. Do not guess feed scope, once/every, delivery or expiry if unspecified. Suggest refinements when ambiguous; ask specific movie/language/quality questions if useful. The setup UI handles confirmations.',{'topic':dict(type='string',maxLength=160),'preferences':TASK_SCHEMA},['topic']),
+    tool('list_tasks','List the user\'s topic watches, states, expiry, match counts and delivery problems.',{'state':dict(type='string',enum=['all','active','paused','completed','archived'])}),
+    tool('get_task','Read a task rule, matches and delivery history.',{'task_id':TEXT},['task_id']),
+    tool('propose_task','Prepare a fully specified topic watch or edit for approval. In chat prefer prepare_topic_watch for missing choices. All feed scope is []; channels always include Nightfeed. Expiry is ISO date/time in app timezone.',{'config':TASK_SCHEMA,'task_id':TEXT,'revision':dict(type='integer',minimum=1)},['config'],'mcp:write'),
+    tool('propose_task_state','Prepare pausing, reactivating or archiving a task for approval.',{'task_id':TEXT,'action':dict(type='string',enum=['pause','resume','archive'])},['task_id','action'],'mcp:write'),
     tool('get_app_state', 'Read exact live counts of accessible feeds, stored/unread/saved topics and unread notifications. Notifications and topics are separate.'),
     tool('list_notifications', 'Read current notification counts and a limited list. unread_count and total_count are exact, never infer counts from list length.', {'status':dict(type='string', enum=['all','unread','read']), 'feed_id':ID}),
     tool('get_notification', 'Read a notification without marking it read.', {'notification_id':ID}, ['notification_id']),
@@ -243,13 +258,31 @@ class Services:
         validate(arguments, definition['inputSchema'])
         if name != 'apply_draft':
             self.access.permit(definition['permission'], arguments.get('feed_id'))
+        if name in ('prepare_topic_watch','list_tasks','get_task','propose_task','propose_task_state'):
+            from . import tasks
+            if name=='list_tasks': return dict(tasks=tasks.list_tasks(self.db,self.access,arguments.get('state','all')))
+            if name=='get_task': return tasks.get_task(self.db,self.access,arguments['task_id'])
+            if name=='prepare_topic_watch':
+                caps=tasks.options(self.db,self.access.device_id,tasks.owner(self.db,self.access))
+                if self.access.feed_ids: caps['feeds']=[p for p in caps['feeds'] if p['id'] in self.access.feed_ids]
+                return dict(topic=arguments['topic'],preferences=arguments.get('preferences',{}),options=caps,setup_id=secrets.token_urlsafe(18))
+            if name=='propose_task_state':
+                task=tasks.get_task(self.db,self.access,arguments['task_id'])
+                return self.draft('task_state',dict(task_id=task['id'],action=arguments['action'],name=task['name'],revision=task['revision']))
+            old=None
+            if arguments.get('task_id'):
+                old=tasks.get_task(self.db,self.access,arguments['task_id'])
+                if old['revision']!=arguments.get('revision'): raise ValueError('Reload this task before editing it.')
+            config=tasks.normalize(self.db,arguments['config'],self.access,existing=old['config'] if old else None)
+            return self.draft('task',dict(config={k:v for k,v in config.items() if k in TASK_FIELDS and v is not None},task_id=arguments.get('task_id'),revision=arguments.get('revision')))
         if name == 'get_app_state':
             topic_scope, values = self.scope_clause('i')
             notice_scope, notice_values = self.scope_clause('n')
             with closing(core.connect_db(self.db)) as conn:
                 topics = conn.execute('SELECT COUNT(*) AS total, COALESCE(SUM(seen_at IS NULL),0) AS unread, COALESCE(SUM(saved_at IS NOT NULL),0) AS saved FROM feed_items i WHERE '+topic_scope, values).fetchone()
                 notices = conn.execute('SELECT COUNT(*) AS total, COALESCE(SUM(read_at IS NULL),0) AS unread FROM notifications n WHERE '+notice_scope, notice_values).fetchone()
-            return dict(feed_count=len([p for p in core.list_profiles(self.db) if not self.access.feed_ids or p.id in self.access.feed_ids]), stored_topics=topics['total'], unread_topics=topics['unread'], saved_topics=topics['saved'], total_notifications=notices['total'], unread_notifications=notices['unread'])
+            timezone_name=core.get_app_settings(self.db).timezone_name
+            return dict(current_time=datetime.now(ZoneInfo(timezone_name)).isoformat(), timezone=timezone_name, feed_count=len([p for p in core.list_profiles(self.db) if not self.access.feed_ids or p.id in self.access.feed_ids]), stored_topics=topics['total'], unread_topics=topics['unread'], saved_topics=topics['saved'], total_notifications=notices['total'], unread_notifications=notices['unread'])
         if name in ('list_notifications', 'get_notification', 'propose_notification_action'):
             clause, values = self.scope_clause('n', arguments.get('feed_id'))
             with closing(core.connect_db(self.db)) as conn:
@@ -438,7 +471,21 @@ class Services:
                 profile = self.feed(row['profile_id'])
                 if profile_revision(profile) != row['revision']:
                     raise ValueError('Feed changed since this proposal. Prepare a new draft.')
-            if row['kind'] == 'feed':
+            if row['kind'] == 'task':
+                from . import tasks
+                result=tasks.save(self.db,self.access,payload['config'],payload.get('task_id'),payload.get('revision'),conn=conn)
+            elif row['kind'] == 'task_state':
+                from . import tasks
+                task=conn.execute('SELECT * FROM topic_tasks WHERE id=? AND principal=?',(payload['task_id'],tasks.owner(self.db,self.access))).fetchone()
+                if not task or not tasks.permitted(task,self.access) or task['revision']!=payload['revision']: raise ValueError('This task changed. Prepare the action again.')
+                action=payload['action']
+                if action=='pause' and task['state']!='active': raise ValueError('Only active tasks can be paused.')
+                if action=='resume' and task['expires'] and task['expires']<=time.time(): raise ValueError('Set a future expiry before reactivating this task.')
+                state={'pause':'paused','resume':'active','archive':'archived'}[action]
+                conn.execute('UPDATE topic_tasks SET state=?,reason=?,updated=?,revision=revision+1 WHERE id=?',(state,'manual' if action=='archive' else '',time.time(),task['id']))
+                tasks.event(conn,task,action,actor=self.access.principal)
+                result=dict(message='Task '+ {'pause':'paused','resume':'reactivated','archive':'archived'}[action]+'.',url='/tasks?task='+task['id'])
+            elif row['kind'] == 'feed':
                 if self.access.feed_ids and not row['profile_id']:
                     raise ValueError('Creating feeds requires unrestricted access.')
                 config, _ = self.config(payload['config'], row['profile_id'])

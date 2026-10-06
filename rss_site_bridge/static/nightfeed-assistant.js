@@ -37,6 +37,7 @@
     voice.disabled = !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !window.AudioContext;
     if (!value && voiceMode && !speaking) scheduleListening();
     panel.querySelectorAll('[data-apply-draft]').forEach(button => { if (!button.dataset.applied) button.disabled = value; });
+    messages.querySelectorAll('.task-setup button').forEach(button => { button.disabled=value; });
   };
   const api = async (path, options = {}) => {
     const response = await fetch(path, options);
@@ -163,11 +164,22 @@
     }
   };
   const card = ({kind, data}, replay = false) => {
+    if (kind === 'task_setup') {
+      messages.querySelectorAll('[data-setup-id]').forEach(previous=>{if(previous.querySelector('.task-setup'))previous.remove();});
+      const box=node('section','','assistant-card');box.dataset.setupId=data.setup_id;
+      box.append(node('h3','Watch for a topic'));
+      window.nightfeedTasks.setup(box,{...data,conversation},result=>card({kind:'result',data:result}));box.querySelectorAll('button').forEach(button=>{button.disabled=busy;});messages.append(box);bottom();return;
+    }
+    if (kind === 'tasks') {
+      const box=node('section','','assistant-card');box.append(node('h3','Tasks'));const list=node('div');box.append(list);
+      const openTask=task=>location.assign('/tasks?task='+task.id),refreshTasks=async()=>{const result=await api('/api/tasks');window.nightfeedTasks.renderList(list,result.tasks,openTask,refreshTasks);};
+      window.nightfeedTasks.renderList(list,data.tasks,openTask,refreshTasks);messages.append(box);bottom();return;
+    }
     if (kind === 'navigation') {
       if (!replay) pendingNavigation = data.navigate;
       const box = node('section', '', 'assistant-card'); box.append(link('Open saved topic safely', data.navigate)); messages.append(box); return;
     }
-    const existing = kind === 'result' && data.draft_id ? Array.from(messages.querySelectorAll('[data-draft-id]')).find(el => el.dataset.draftId === data.draft_id) : null;
+    const existing = kind === 'result' ? Array.from(messages.querySelectorAll('[data-draft-id],[data-setup-id]')).find(el => data.draft_id && el.dataset.draftId === data.draft_id || data.setup_id && el.dataset.setupId === data.setup_id) : null;
     const box = existing || node('section', '', 'assistant-card');
     if (existing) { box.replaceChildren(); box.classList.remove('assistant-proposal'); }
     if (kind === 'preview') {
@@ -188,7 +200,7 @@
       if (!replay && ['system','light','dark'].includes(data.browser_action?.appearance)) document.dispatchEvent(new CustomEvent('nightfeed:appearance',{detail:data.browser_action.appearance}));
       if (!replay && data.browser_action?.unread_notifications !== undefined) {
         const action=data.browser_action; window.nightfeedUnread?.(action.unread_notifications);
-        document.querySelectorAll('[data-notification-count]').forEach(el => { el.textContent = `${action.unread_notifications} unread refresh notifications.`; });
+        document.querySelectorAll('[data-notification-count]').forEach(el => { el.textContent = `${action.unread_notifications} unread notifications.`; });
         for (const id of action.notification_ids || []) {
           const row=document.querySelector(`[data-notification-id="${id}"]`); if (!row) continue;
           if (action.notification_action?.startsWith('delete') || new URL(location.href).searchParams.get('status') === 'unread') row.remove();
@@ -217,7 +229,11 @@
       box.classList.add('assistant-proposal'); box.dataset.draftId = data.draft_id;
       box.append(node('h3', 'Nightfeed'));
       const payload = data.payload;
-      if (data.kind === 'feed') {
+      if (data.kind === 'task') {
+        const cfg=payload.config;box.append(node('p',cfg.name),node('p',`Match: ${cfg.terms.join(', ')} · ${cfg.feed_ids?.length?'Selected feeds':'All feeds'} · ${cfg.mode==='once'?'Once':'Every new match'}`),node('p',`Delivery: ${cfg.channels.join(' + ')} · ${cfg.expires_at?'Expires '+window.nightfeedTasks.date(Number(cfg.expires_at)): 'No expiry'}`));
+      } else if (data.kind === 'task_state') {
+        box.append(node('p',`${payload.action[0].toUpperCase()+payload.action.slice(1)} “${payload.name}”?`));
+      } else if (data.kind === 'feed') {
         const config = payload.config;
         box.append(node('p', config.feed_title));
         box.append(node('p', config.cron_expression ? `Schedule: ${config.cron_expression} (${config.schedule_timezone})` : config.refresh_interval_minutes ? `Every ${config.refresh_interval_minutes} minutes` : 'Manual refresh only'));
@@ -284,7 +300,7 @@
     clearTimeout(reloadTimer);
     conversation = id; select.value = id; remember('conversation', id); messages.replaceChildren();
     showUsage(null); status.textContent = '';
-    if (!id) { setBusy(false); message('assistant', 'Paste a listing URL, search saved topics, or ask for help.'); return; }
+    if (!id) { setBusy(false); message('assistant', 'I help with Nightfeed feeds, saved content, notifications, tasks, and settings. Paste a listing URL or tell me what you want to do.'); return; }
     const result = await api(`/api/assistant/conversations/${id}`);
     if (conversation !== id) return;
     showUsage(result.usage && Object.keys(result.usage).length ? result.usage : null);
@@ -316,6 +332,13 @@
   };
   document.addEventListener('click', event => { panel.querySelectorAll('details[open]').forEach(menu => { if (!menu.contains(event.target)) menu.open = false; }); });
   launcher.addEventListener('click', () => open(panel.hidden));
+  const switchView = value => {
+    panel.querySelector('#assistant-chat-view').hidden=value!=='chat';
+    panel.querySelector('#assistant-tasks-view').hidden=value!=='tasks';
+    panel.querySelectorAll('[data-assistant-view]').forEach(button=>{const selected=button.dataset.assistantView===value;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;});
+    if(value==='tasks')window.nightfeedTasks.mount(panel.querySelector('#assistant-tasks-view'));
+  };
+  panel.querySelectorAll('[data-assistant-view]').forEach(button=>{button.addEventListener('click',()=>switchView(button.dataset.assistantView));button.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();const value=button.dataset.assistantView==='chat'?'tasks':'chat';switchView(value);panel.querySelector(`[data-assistant-view=${value}]`).focus();}});});
   panel.querySelector('[data-assistant-close]').addEventListener('click', () => open(false));
   panel.addEventListener('keydown', event => { if (event.key === 'Escape') open(false); });
   select.addEventListener('change', () => load(select.value).catch(error => { status.textContent = error.message; }));

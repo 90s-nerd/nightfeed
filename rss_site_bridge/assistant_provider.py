@@ -150,6 +150,7 @@ def complete(config, history, tools, system, on_delta=None):
         definitions = [dict(type='function', name=t['name'], description=t['description'], parameters=t['inputSchema'], strict=False) for t in tools]
         payload = dict(model=config['model'], instructions=system, input=wire, tools=definitions,
                        max_output_tokens=config['max_tokens'], store=False, include=['reasoning.encrypted_content'])
+        if not tools: payload.pop('tools')
         if on_delta is not None:
             payload['stream'] = True
         result = request_provider(config, '/responses', json=payload, on_delta=on_delta)
@@ -168,6 +169,7 @@ def complete(config, history, tools, system, on_delta=None):
             m.pop('tool_calls', None)
     payload = dict(model=config['model'], messages=[dict(role='system', content=system)] + wire,
                    tools=definitions, max_tokens=config['max_tokens'])
+    if not tools: payload.pop('tools')
     if on_delta is not None:
         payload['stream'] = True
         payload['stream_options'] = {'include_usage': True}
@@ -222,6 +224,7 @@ def complete_native(config, history, tools, system, on_delta):
         else: wire.append(dict(role=role, **{key:parts}))
     if anthropic:
         payload = dict(model=config['model'], system=system, messages=wire, max_tokens=config['max_tokens'], tools=[dict(name=t['name'], description=t['description'], input_schema=t['inputSchema']) for t in tools])
+        if not tools: payload.pop('tools')
         if on_delta is not None: payload['stream'] = True
         result = request_provider(config, '/messages', json=payload, on_delta=on_delta)
         if result.get('stop_reason') == 'max_tokens': raise ValueError('The response reached its token limit. Increase the response limit.')
@@ -231,6 +234,7 @@ def complete_native(config, history, tools, system, on_delta):
         return dict(role='assistant', content=content, tool_calls=calls, _anthropic_content=parts, _usage=usage(config, result.get('usage')))
     model = quote(config['model'].removeprefix('models/'), safe='')
     payload = dict(systemInstruction=dict(parts=[dict(text=system)]), contents=wire, generationConfig=dict(maxOutputTokens=config['max_tokens']), tools=[dict(functionDeclarations=[dict(name=t['name'], description=t['description'], parametersJsonSchema=t['inputSchema']) for t in tools])])
+    if not tools: payload.pop('tools')
     path = f'/models/{model}:' + ('streamGenerateContent?alt=sse' if on_delta is not None else 'generateContent')
     result = request_provider(config, path, json=payload, on_delta=on_delta)
     candidates = result.get('candidates', [])
