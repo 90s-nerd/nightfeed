@@ -1,5 +1,6 @@
 """Shared, side-effect-free stored-content queries for chat and MCP."""
 from contextlib import closing
+import json
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,6 +12,7 @@ PAGING = dict(limit=dict(type='integer', minimum=1, maximum=100),
               snapshot_id=dict(type='integer', minimum=0, maximum=2**63-1))
 DAY = dict(type='string', maxLength=10)
 FILTERS = dict(status=STATUS, saved_only=dict(type='boolean'),
+               item_ids=dict(type='array', items=dict(type='integer', minimum=1, maximum=2**63-1), maxItems=100000, description='Exact stored item IDs, such as new_item_ids returned by a refresh. Empty means no items.'),
                feed_ids=dict(type='array', items=dict(type='integer', minimum=1, maximum=2**63-1), maxItems=100),
                added_on=dict(DAY, description='Discovery day: today, yesterday or YYYY-MM-DD.'),
                added_from=dict(DAY, description='First included discovery date, YYYY-MM-DD.'),
@@ -61,6 +63,8 @@ def topics(db, access, arguments, *, count=False):
     query=arguments.get('query',''); status=arguments.get('status','all')
     clauses=['(instr(lower(i.title),lower(?))>0 OR instr(lower(i.summary),lower(?))>0 OR instr(lower(i.link),lower(?))>0)']
     values=[query]*3
+    if 'item_ids' in arguments:
+        clauses.append('i.id IN (SELECT value FROM json_each(?))'); values.append(json.dumps(arguments['item_ids']))
     if selected:
         clauses.append('i.profile_id IN ('+','.join('?' for _ in selected)+')'); values.extend(selected)
     if status=='unread': clauses.append('i.seen_at IS NULL')
@@ -71,7 +75,7 @@ def topics(db, access, arguments, *, count=False):
     period,bounds=dates(db,arguments)
     for operator,stamp in bounds:
         clauses.append('julianday(i.discovered_at)'+operator+'julianday(?)'); values.append(stamp)
-    filters={key:arguments[key] for key in ('query','feed_id','feed_ids','status','saved_only','sort') if key in arguments}
+    filters={key:arguments[key] for key in ('query','feed_id','feed_ids','item_ids','status','saved_only','sort') if key in arguments}
     filters.update(query=query,status=status)
     filters.update({key:value for key,value in period.items() if key!='time_field'})
     with closing(core.connect_db(db)) as conn:

@@ -492,9 +492,10 @@ class AssistantTests(unittest.TestCase):
             response=self.client.post(f'/api/assistant/conversations/{token}/messages',json=dict(message='Can you refresh this feed?',path=f'/profiles/{feed.id}'),buffered=True)
             self.assertEqual(response.status_code,200);self.assertEqual(refresh.call_count,1)
             self.assertNotIn(b'"kind": "draft"',response.data)
-            self.assertEqual(response.data.count(b'"kind": "result"'),1)
+            self.assertEqual(response.data.count(b'"kind": "result"'),0)
         visible=self.client.get(f'/api/assistant/conversations/{token}').json['messages']
         self.assertFalse(any(m['role']=='assistant' and m['content']=='Feed refreshed.' for m in visible))
+        self.assertEqual(sum('Refreshed 1 feed.' in m['content'] for m in visible if m['role']=='assistant'),1)
         self.assertEqual(core.get_profile_by_id(self.db,feed.id).item_count,3)
         with closing(core.connect_db(self.db)) as conn:
             sources=[json.loads(r['details']).get('approval_source') for r in conn.execute("SELECT details FROM assistant_audit WHERE kind='approval'")]

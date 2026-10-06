@@ -66,15 +66,16 @@ SETTING_FIELDS.update(smtp_port=dict(type='integer', minimum=0, maximum=65535), 
 def tool(name, description, properties=None, required=(), permission='mcp:read'):
     return dict(name=name, description=description,
                 inputSchema=dict(type='object', properties=properties or {}, required=list(required), additionalProperties=False),
-                permission=permission, annotations=dict(readOnlyHint=name not in ('apply_draft', 'refresh_feed') and not name.startswith('propose_'),
-                                                       destructiveHint=name=='apply_draft', idempotentHint=name=='apply_draft', openWorldHint=name in ('inspect_source', 'preview_feed', 'propose_feed_change', 'propose_refresh', 'refresh_feed')))
+                permission=permission, annotations=dict(readOnlyHint=name not in ('apply_draft', 'refresh_feed','refresh_feeds') and not name.startswith('propose_'),
+                                                       destructiveHint=name=='apply_draft', idempotentHint=name=='apply_draft', openWorldHint=name in ('inspect_source', 'preview_feed', 'propose_feed_change', 'propose_refresh', 'refresh_feed','refresh_feeds')))
 
 
 TOOLS = [
     tool('get_capabilities','Read the actual available tools and operations requiring Nightfeed UI. Use before claiming an unsupported action.',{}),
-    tool('prepare_topic_watch','Start a topic-watch setup with easy follow-up choices. Use when asked to notify/watch for a topic. Do not guess feed scope, once/every, delivery or expiry if unspecified. Suggest refinements when ambiguous; ask specific movie/language/quality questions if useful. The setup UI handles confirmations.',{'topic':dict(type='string',maxLength=160),'preferences':TASK_SCHEMA},['topic']),
+    tool('prepare_topic_watch','Start or refine a conversational topic watch. Returns live delivery and feed choices. Ask one short question at a time about matching, feeds, once/every, delivery and expiry; do not guess missing choices or show a full form. Suggest movie/language/quality refinements where useful. Creation needs final approval.',{'topic':dict(type='string',maxLength=160),'preferences':TASK_SCHEMA},['topic']),
     tool('list_tasks','List the user\'s topic watches, states, expiry, match counts and delivery problems.',{'state':dict(type='string',enum=['all','active','paused','completed','archived']),'query':TEXT,'limit':queries.PAGING['limit'],'offset':queries.PAGING['offset']}),
     tool('get_task','Read a task rule, matches and delivery history.',{'task_id':TEXT},['task_id']),
+    tool('preview_task','Preview exact existing stored-item matches for a watch configuration. Read-only: these existing matches do not trigger new alerts.',{'config':TASK_SCHEMA},['config']),
     tool('propose_task','Prepare a fully specified topic watch or edit for approval. In chat prefer prepare_topic_watch for missing choices. All feed scope is []; channels always include Nightfeed. Expiry is ISO date/time in app timezone.',{'config':TASK_SCHEMA,'task_id':TEXT,'revision':dict(type='integer',minimum=1)},['config'],'mcp:write'),
     tool('propose_task_state','Prepare pausing, reactivating or archiving a task for approval.',{'task_id':TEXT,'action':dict(type='string',enum=['pause','resume','archive'])},['task_id','action'],'mcp:write'),
     tool('get_app_state', 'Read exact live counts of accessible feeds, stored/unread/saved topics and unread notifications. Notifications and topics are separate.'),
@@ -108,6 +109,7 @@ TOOLS = [
 ]
 SAFE_TOOL = tool('open_safe_browser', 'Open a saved Nightfeed topic safely in the main window. Only on explicit user request. No arbitrary URLs.', {'feed_id': ID, 'item_id': ID}, ['feed_id', 'item_id'])
 REFRESH_TOOL = tool('refresh_feed', 'Refresh an existing feed immediately when the user explicitly asks. The request itself is authorization; do not ask for a proposal approval. Return the real result.', {'feed_id':ID}, ['feed_id'], 'feeds:refresh')
+BULK_REFRESH_TOOL = tool('refresh_feeds','Refresh all accessible active feeds, or the selected feed_ids, on an explicit request. Return exact new_item_ids from this batch, not unread or today counts. Set show_new_topics to return the first page of newly inserted topics and next_arguments for search_topics. Paused feeds are skipped.',{'feed_ids':dict(type='array',items=ID,maxItems=1000),'show_new_topics':dict(type='boolean')},[],'feeds:refresh')
 DEVICE_TOOLS = [
     tool('get_device_preferences', 'Read this browser device appearance and registered push preferences. No secrets.'),
     tool('propose_appearance', 'Prepare a color theme change for this browser device only.', {'appearance':dict(type='string', enum=['system','light','dark'])}, ['appearance']),
@@ -163,7 +165,7 @@ class Access:
 
 def definitions(access):
     result = []
-    for entry in TOOLS + ([SAFE_TOOL] + DEVICE_TOOLS + ([REFRESH_TOOL] if access.refresh_authorized else []) if access.chat else [REFRESH_TOOL]):
+    for entry in TOOLS + ([SAFE_TOOL] + DEVICE_TOOLS + ([REFRESH_TOOL,BULK_REFRESH_TOOL] if access.refresh_authorized else []) if access.chat else [REFRESH_TOOL,BULK_REFRESH_TOOL]):
         if access.chat and access.refresh_authorized and entry['name'] == 'propose_refresh':
             continue
         if access.chat and entry['name'] in ('apply_draft','deny_draft'):
@@ -277,7 +279,7 @@ class Services:
                     read=bool(row['read_at']), url=f"/notifications/{row['id']}")
 
     def _call(self, name, arguments):
-        definition = next((t for t in TOOLS + [SAFE_TOOL, REFRESH_TOOL] + DEVICE_TOOLS if t['name'] == name), None)
+        definition = next((t for t in TOOLS + [SAFE_TOOL, REFRESH_TOOL,BULK_REFRESH_TOOL] + DEVICE_TOOLS if t['name'] == name), None)
         if definition is None or name not in {t['name'] for t in definitions(self.access)}:
             raise ValueError('Tool not available.')
         validate(arguments, definition['inputSchema'])
@@ -290,8 +292,9 @@ class Services:
                                      dict(action='Register push/browser permission on each device',url='/settings'),
                                      dict(action='Select and submit files from safe-browser downloads',url='/settings/downloaders')],
                         safe_browser_available=self.access.chat,changes='Proposals need approval; refresh_feed is an explicit refresh action.')
-        if name in ('prepare_topic_watch','list_tasks','get_task','propose_task','propose_task_state'):
+        if name in ('prepare_topic_watch','list_tasks','get_task','propose_task','propose_task_state','preview_task'):
             from . import tasks
+            if name=='preview_task': return tasks.preview(self.db,self.access,arguments['config'])
             if name=='list_tasks':
                 rows=[task for task in tasks.list_tasks(self.db,self.access,arguments.get('state','all')) if arguments.get('query','').casefold() in task['name'].casefold()]
                 return page_result(rows,arguments,'tasks')
@@ -460,6 +463,27 @@ class Services:
             zone = core.parse_timezone_name(arguments['timezone_name'])
             return self.draft('timezone', dict(before=core.get_app_settings(self.db).timezone_name, timezone_name=zone,
                               impact='Changes calendar schedules across ALL feeds; displayed dates still use the device timezone.'), permission='mcp:settings')
+        if name == 'refresh_feeds':
+            if self.access.chat and not self.access.refresh_authorized: raise ValueError('Ask explicitly to refresh feeds first.')
+            if arguments.get('show_new_topics'): self.access.permit('mcp:read')
+            selected=arguments.get('feed_ids') or list(self.access.feed_ids)
+            for identity in selected:
+                self.access.permit('feeds:refresh',identity);self.feed(identity)
+            feeds=[feed for feed in core.list_profiles(self.db) if not selected or feed.id in selected]
+            results=[];deadline=time.monotonic()+210
+            for feed in feeds:
+                if not feed.active: continue
+                if self.access.check_active: self.access.check_active()
+                if time.monotonic()>deadline: break
+                self.progress('Refreshing '+feed.feed_title)
+                try: results.append(self.call('refresh_feed',dict(feed_id=feed.id)))
+                except (RuntimeError,ValueError): results.append(dict(feed_title=feed.feed_title,url=f'/profiles/{feed.id}',success=False,message='Refresh could not finish.'))
+            remaining=sum(feed.active for feed in feeds)-len(results)
+            identities=list(dict.fromkeys(identity for result in results for identity in result.get('changes',{}).get('new_item_ids',[])))
+            output=dict(results=results,new_item_ids=identities,new_item_count=len(identities),refreshed_count=sum(result.get('success') is True for result in results),failed_count=sum(result.get('success') is not True for result in results),remaining_count=remaining,skipped_count=sum(not feed.active for feed in feeds),success=not remaining and all(result.get('success') is True for result in results))
+            if arguments.get('show_new_topics'):
+                output['new_topics']=self.call('search_topics',dict(query='',status='all',item_ids=identities,limit=5))
+            return output
         if name == 'refresh_feed':
             if self.access.chat and not self.access.refresh_authorized: raise ValueError('Ask explicitly to refresh a feed first.')
             feed_id = arguments['feed_id']
@@ -468,6 +492,8 @@ class Services:
                 draft = self.draft('refresh', arguments, profile_revision(profile), profile.id, 'feeds:refresh')
                 self.refresh_results[feed_id] = dict(message='Refresh requested. Check the feed status before retrying.', url=f'/profiles/{feed_id}')
                 self.refresh_results[feed_id] = self.apply(draft['draft_id'], approval_source='explicit_refresh_request')
+                self.refresh_results[feed_id]['feed_title']=profile.feed_title
+                self.refresh_results[feed_id]['feed_id']=feed_id
             return self.refresh_results[feed_id]
         if name=='propose_feed_maintenance':
             profile=self.feed(arguments['feed_id']);action=arguments['action']
@@ -655,7 +681,7 @@ class Services:
                 profile = self.feed(row['profile_id'])
                 document = fetch_document(profile.source_url, profile.fetch_mode)
                 if self.access.check_active: self.access.check_active()
-                changes = core.refresh_profile(self.db, row['profile_id'], document=document)
+                changes = core.refresh_profile(self.db, row['profile_id'], document=document, include_item_ids=True)
                 result['message'] = 'Feed refreshed.'
                 result['success'] = True
                 result['changes'] = changes

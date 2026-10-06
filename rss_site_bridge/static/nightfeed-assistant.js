@@ -151,6 +151,24 @@
     imagePreview(article, items); article.append(content); messages.append(article); bottom();
     return content;
   };
+  const choices = (content, values, mode='single') => {
+    if (!values?.length) return;
+    const row=node('div','','assistant-choices');
+    const selected=new Set(['Nightfeed']);
+    for (const value of values) {
+      const button=node('button',value,'btn btn-secondary');button.type='button';
+      if (mode==='multi') {
+        button.setAttribute('aria-pressed',String(selected.has(value)));button.disabled=value==='Nightfeed';
+        button.addEventListener('click',()=>{ if (busy) return; if (selected.has(value)) selected.delete(value);else selected.add(value);button.setAttribute('aria-pressed',String(selected.has(value))); });
+      } else button.addEventListener('click',()=>{ if (busy) return;input.value=value;form.requestSubmit(); });
+      row.append(button);
+    }
+    if (mode==='multi') {
+      const next=node('button','Continue','btn btn-primary');next.type='button';
+      next.addEventListener('click',()=>{ if (busy) return;input.value=selected.has('Push')?(selected.has('Email')?'Push and email':'Push'):selected.has('Email')?'Email':'Nightfeed only';form.requestSubmit(); });row.append(next);
+    }
+    content.closest('.assistant-message').append(row);
+  };
   const previews = (target, entries) => {
     for (const item of entries || []) {
       const row = node('div', '', 'assistant-preview');
@@ -162,10 +180,10 @@
   };
   const card = ({kind, data}, replay = false) => {
     if (kind === 'task_setup') {
-      messages.querySelectorAll('[data-setup-id]').forEach(previous=>{if(previous.querySelector('.task-setup'))previous.remove();});
-      const box=node('section','','assistant-card');box.dataset.setupId=data.setup_id;
-      box.append(node('h3','Watch for a topic'));
-      window.nightfeedTasks.setup(box,{...data,conversation},result=>card({kind:'result',data:result}));box.querySelectorAll('button').forEach(button=>{button.disabled=busy;});messages.append(box);bottom();return;
+      const content=message('assistant',`Would you like to continue setting up your watch for “${data.topic}”?`);
+      content.closest('.assistant-message').dataset.setupId=data.setup_id;
+      if (!replay) choices(content,['Set up this watch']);
+      bottom();return;
     }
     if (kind === 'tasks') {
       const box=node('section','','assistant-card');box.append(node('h3','Tasks'));const list=node('div');box.append(list);
@@ -240,6 +258,13 @@
       const payload = data.payload;
       if (data.kind === 'task') {
         const cfg=payload.config;box.append(node('p',cfg.name),node('p',`Match: ${cfg.terms.join(', ')} · ${cfg.feed_ids?.length?'Selected feeds':'All feeds'} · ${cfg.mode==='once'?'Once':'Every new match'}`),node('p',`Delivery: ${cfg.channels.join(' + ')} · ${cfg.expires_at?'Expires '+window.nightfeedTasks.date(Number(cfg.expires_at)): 'No expiry'}`));
+        if (cfg.required_terms?.length) box.append(node('p','Include: '+cfg.required_terms.join(', ')));
+        if (cfg.exclude_terms?.length) box.append(node('p','Exclude: '+cfg.exclude_terms.join(', ')));
+        if (payload.preview) {
+          const preview=node('details');preview.append(node('summary',`${payload.preview.total_count} existing matches · Preview only`));
+          for (const item of payload.preview.items) preview.append(node('p',item.title));
+          preview.append(node('small','I’ll notify you only about future arrivals.'));box.append(preview);
+        }
       } else if (data.kind === 'task_state') {
         box.append(node('p',`${payload.action[0].toUpperCase()+payload.action.slice(1)} “${payload.name}”?`));
       } else if (data.kind === 'feed_maintenance') {
@@ -316,7 +341,7 @@
     const result = await api(`/api/assistant/conversations/${id}`);
     if (conversation !== id) return;
     showUsage(result.usage && Object.keys(result.usage).length ? result.usage : null);
-    for (const item of result.messages) { if (item.content || item.images?.length) message(item.role, item.content, item.images || []); (item.cards || []).forEach(value => card(value, true)); }
+    for (const item of result.messages) { if (item.content || item.images?.length) choices(message(item.role, item.content, item.images || []),item.choices,item.choice_mode); (item.cards || []).forEach(value => card(value, true)); }
     panel.querySelectorAll('[data-apply-draft]').forEach(button => { if ((result.applied_drafts || []).includes(button.dataset.applyDraft)) { button.dataset.applied='1'; button.disabled=true; button.textContent='Applied'; } });
     setBusy(result.busy);
     for (const box of messages.querySelectorAll('[data-draft-id]')) {
@@ -387,6 +412,7 @@
         throw new Error(error.error || (response.status === 413 ? 'Request is too large.' : `Request rejected (HTTP ${response.status}).`));
       }
       accepted = true;
+      messages.querySelectorAll('.assistant-choices').forEach(row=>row.remove());
       message('user', text, sentImages); streamingMessage = null; pendingNavigation = ''; turnError = false;
       status.textContent = 'Thinking…';
       const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
@@ -401,7 +427,7 @@
         if (type === 'delta') { streamingMessage ||= message('assistant', ''); streamingMessage.textContent += value.text; bottom(); }
         if (type === 'message') {
           if (value.card_only) { streamingMessage?.closest('.assistant-message')?.remove(); streamingMessage = null; }
-          else { streamingMessage ||= message('assistant', ''); renderReply(streamingMessage, value.content); }
+          else { streamingMessage ||= message('assistant', ''); renderReply(streamingMessage, value.content); choices(streamingMessage,value.choices,value.choice_mode); }
           bottom();
           if (speak.checked && window.speechSynthesis) {
             speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(value.content);

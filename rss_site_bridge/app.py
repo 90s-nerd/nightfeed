@@ -3395,7 +3395,7 @@ def get_next_refresh_at(profile: StoredProfile) -> datetime | None:
     return due_base + timedelta(minutes=profile.refresh_interval_minutes)
 
 
-def refresh_profile(db_path: Path, profile_id: int, *, document: FetchedDocument | None = None) -> dict[str, int]:
+def refresh_profile(db_path: Path, profile_id: int, *, document: FetchedDocument | None = None, include_item_ids: bool = False) -> dict:
     profile = get_profile_by_id(db_path, profile_id)
     if profile is None:
         raise ValueError("Profile not found.")
@@ -3534,6 +3534,8 @@ def refresh_profile(db_path: Path, profile_id: int, *, document: FetchedDocument
         entry_count=len(entries),
         duration_ms=get_elapsed_ms(refresh_started_at),
     )
+    if include_item_ids:
+        changes['new_item_ids'] = [item['id'] for item in task_items]
     return changes
 
 
