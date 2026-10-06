@@ -64,6 +64,7 @@ class PushTests(unittest.TestCase):
         with closing(push.connect(self.db)) as conn:
             self.assertEqual(tuple(key), tuple(conn.execute('SELECT private_key,public_key FROM push_config').fetchone()))
         defaults = self.subscribe()['preferences']
+        self.assertEqual(self.row()['user_id'], 1)
         self.assertEqual((defaults['new'], defaults['updated'], defaults['failures'], defaults['interval'], defaults['daily_limit']), (True, False, False, 15, 12))
         self.assertIn('no-store', self.client.get('/api/push/config').headers['Cache-Control'])
         manifest = self.client.get('/manifest.webmanifest').json
@@ -258,6 +259,17 @@ class PushTests(unittest.TestCase):
             events = conn.execute('SELECT new_count,updated_count FROM push_events ORDER BY id').fetchall()
         self.assertEqual([tuple(row) for row in events], [(1, 0), (0, 1)])
 
+
+    def test_legacy_subscription_migration_and_account_isolation(self):
+        self.subscribe()
+        with closing(push.connect(self.db)) as conn:
+            conn.execute('UPDATE push_devices SET user_id=NULL');conn.commit()
+        push.initialize(self.db)
+        self.assertEqual(self.row()['user_id'],1)
+        with closing(push.connect(self.db)) as conn:
+            conn.execute('UPDATE push_devices SET user_id=2');conn.commit()
+        self.assertEqual(self.post('device',device_token=self.token).status_code,400)
+        self.assertEqual(self.post('subscribe',subscription=self.sub,preferences={}).status_code,400)
 
 if __name__ == '__main__':
     unittest.main()

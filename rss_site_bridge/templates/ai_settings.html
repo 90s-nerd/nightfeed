@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block title %}AI and MCP · Nightfeed{% endblock %}
+{% block content %}
+<div class="account-page ai-settings">
+  <section class="surface section">
+    <div class="account-page-heading"><h1>AI and MCP</h1><div class="button-row"><a class="btn btn-secondary" href="/settings/ai/audit">Audit history</a><a class="btn btn-secondary" href="/settings">Back to settings</a></div></div>
+    <p>Connect your preferred AI service to create feeds, search your saved content, and get help in chat.</p>
+    <p class="meta">Messages and relevant page HTML go to your configured provider. Normal feed refreshes do not use AI. Credentials stay on the server.</p>
+    {% if error %}<p class="error-text" role="alert">{{ error }}</p>{% endif %}
+    {% if saved %}<p role="status">Settings saved.</p>{% endif %}
+    <div class="button-row">{% for item in providers %}<a class="btn btn-secondary" href="?provider={{ item.id }}">{{ item.name }}{% if assistant_config.active_provider == item.id %} · {{ 'Active' if item.tested else 'Needs test' }}{% endif %}</a>{% endfor %}<a class="btn btn-secondary" href="?new=1">Add connection</a></div>
+    <form method="post" class="ai-form" autocomplete="off">
+      <input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="provider_id" value="{{ config.id or '' }}">
+      <div class="settings-fields-two"><div class="field"><label for="ai-name">Connection name</label><input id="ai-name" name="name" value="{{ config.name or '' }}" placeholder="Home Ollama" required maxlength="100"></div>
+      <div class="field"><label for="ai-api_type">API type</label><select id="ai-api_type" name="api_type">{% for value,label in [('compatible','OpenAI-compatible chat API'),('responses','OpenAI Responses API'),('anthropic','Anthropic Messages API'),('gemini','Google Gemini API')] %}<option value="{{ value }}" {% if config.get('api_type','compatible') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div></div>
+      <div class="field"><div class="field-label"><label for="ai-base_url">API base URL</label><details class="ui-hint"><summary aria-label="Help with AI endpoint">?</summary><div class="ui-hint-content">Use the base before /responses or /chat/completions. OpenAI: https://api.openai.com/v1. Ollama: http://ollama:11434/v1. OpenWebUI: http://openwebui:8080/api. Anthropic: https://api.anthropic.com/v1. Gemini: https://generativelanguage.googleapis.com/v1beta. Use a model supporting function calling. In Docker, localhost means the Nightfeed container.</div></details></div><input id="ai-base_url" name="base_url" type="url" value="{{ config.base_url or '' }}" placeholder="https://api.openai.com/v1" required></div>
+      <div class="settings-fields-two"><div class="field"><label for="ai-api_key">API key</label><input id="ai-api_key" name="api_key" type="password" autocomplete="new-password" placeholder="{{ 'Saved — leave blank to keep' if config.has_api_key else 'Optional for local servers' }}"></div>
+      <div class="field"><label for="ai-model">Model</label><input id="ai-model" name="model" value="{{ config.model or '' }}" placeholder="Model identifier from your provider" required maxlength="200"></div></div>
+      {% if config.has_api_key %}<label class="check-option"><input type="checkbox" name="clear_api_key" value="1">Remove saved API key</label>{% endif %}
+      <div class="ai-check-field"><label class="check-option"><input type="checkbox" name="streaming" value="1" {% if config.get('streaming', true) %}checked{% endif %}>Stream replies as they arrive</label><small>Turn this off for endpoints that support tools but do not support streaming.</small></div>
+      <div class="settings-fields-two"><div class="field"><label for="ai-timeout">Request timeout (seconds)</label><input id="ai-timeout" name="timeout" type="number" min="10" max="90" value="{{ config.timeout or 45 }}" required></div><div class="field"><label for="ai-max_tokens">Response token limit</label><input id="ai-max_tokens" name="max_tokens" type="number" min="256" max="8000" value="{{ config.max_tokens or 2000 }}" required></div></div>
+      <details class="ai-options"><summary>Usage and cost estimates</summary><div class="ai-options-body"><p>Token usage is captured when the provider reports it. Enter your model's context limit to show a usage gauge. Prices are optional USD per million tokens; estimates exclude audio and other non-token fees.</p>
+        <div class="field"><label for="ai-context_window">Model context window (tokens)</label><input id="ai-context_window" name="context_window" type="number" min="0" max="10000000" value="{{ config.context_window or 0 }}"></div>
+        <div class="settings-fields-two">{% for field,label in [('input_price','Input'),('output_price','Output'),('cache_price','Cached input'),('cache_write_price','Cache write')] %}<div class="field"><label for="ai-{{ field }}">{{ label }} USD / million tokens</label><input id="ai-{{ field }}" name="{{ field }}" type="number" min="0" max="100000" step="any" value="{{ config[field] if config.get(field) is not none else '' }}"></div>{% endfor %}</div>
+      </div></details>
+      <details class="ai-options"><summary>Voice input and conversation</summary><div class="ai-options-body"><p>Dictation and continuous voice use an audio-transcription API. It can be a different provider from chat. Voice conversation automatically submits speech when you pause and reads replies using your device’s available voices.</p>
+        <div class="field"><label for="ai-speech_url">Transcription API base URL</label><input id="ai-speech_url" name="speech_url" type="url" value="{{ config.speech_url or '' }}" placeholder="https://api.openai.com/v1"></div>
+        <div class="field"><label for="ai-speech_model">Transcription model</label><input id="ai-speech_model" name="speech_model" value="{{ config.speech_model or '' }}" maxlength="200"></div>
+        <div class="field"><label for="ai-speech_key">Transcription API key</label><input id="ai-speech_key" name="speech_key" type="password" autocomplete="new-password" placeholder="{{ 'Saved — leave blank to keep' if config.has_speech_key else 'Optional for local servers' }}"></div>
+        {% if config.has_speech_key %}<label class="check-option"><input type="checkbox" name="clear_speech_key" value="1">Remove saved transcription key</label>{% endif %}
+        <small>Recordings are sent to this endpoint for transcription. Microphone access requires HTTPS or localhost.</small>
+      </div></details>
+      <div class="button-row ai-form-actions"><button class="btn btn-primary" name="action" value="test">Test and activate</button><button class="btn btn-secondary" name="action" value="save">Save without activating</button></div>
+      <small>The test makes one AI request and verifies tool calling. Saving changes requires a fresh test before chat becomes available.</small>
+    </form>
+    {% if config.id %}<form method="post" class="button-row ai-connection-actions"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="provider_id" value="{{ config.id }}"><button class="btn btn-secondary" name="action" value="disable">Disable chat</button><button class="btn btn-danger" name="action" value="delete" data-delete-connection>Delete this connection</button></form>{% endif %}
+  </section>
+  <section class="surface section">
+    <h2>Connect an external agent with MCP</h2>
+    <p>MCP works independently of the built-in AI connection. It provides feed setup, previews, edits, internal search and help. It does not open the safe browser.</p>
+    <form method="post" class="ai-form"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="action" value="mcp"><label class="check-option"><input type="checkbox" name="mcp_enabled" value="1" {% if assistant_config.mcp_enabled %}checked{% endif %}>Enable MCP endpoint</label><button class="btn btn-primary">Save MCP settings</button></form>
+    <p>In your agent, choose <strong>Streamable HTTP</strong> and use:</p><code class="ai-endpoint">{{ request.host_url.rstrip('/') }}/mcp</code>
+    <p>Create a dedicated API key with <strong>MCP read</strong>. Add <strong>MCP write</strong> to create/edit feeds, <strong>Refresh feeds</strong> to request refreshes, or <strong>MCP settings</strong> for non-secret global app settings.</p>
+    <p>Configure the header <code>Authorization: Bearer YOUR_KEY</code>. Use HTTPS outside your trusted local network. Clients must support custom Bearer headers; OAuth discovery is not provided.</p>
+    <div class="button-row"><a class="btn btn-secondary" href="/settings/api-keys">Manage API keys</a></div>
+    <p class="meta">Feed restrictions apply to MCP reads and writes. Creating feeds and inspecting arbitrary source pages require unrestricted feed access. Global settings cannot be used with feed restrictions. Your external agent should ask for approval before calling apply_draft.</p>
+  </section>
+</div>
+{% endblock %}

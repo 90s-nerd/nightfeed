@@ -17,7 +17,7 @@ import time
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from flask import Blueprint, jsonify, request, url_for
+from flask import Blueprint, g, jsonify, request, url_for
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from pywebpush import webpush, WebPushException
 import requests
@@ -51,6 +51,10 @@ def initialize(db):
         CREATE INDEX IF NOT EXISTS push_events_device ON push_events(device_id,created_at);
         CREATE TABLE IF NOT EXISTS push_failures(device_id TEXT NOT NULL, feed_id INTEGER NOT NULL, PRIMARY KEY(device_id,feed_id));
         ''')
+        from .app import ensure_column
+        ensure_column(conn, 'push_devices', 'user_id', 'INTEGER')
+        claim_legacy_devices(conn)
+        conn.commit()
         conn.execute('BEGIN IMMEDIATE')
         if not conn.execute('SELECT id FROM push_config WHERE id=1').fetchone():
             key = ec.generate_private_key(ec.SECP256R1())
@@ -59,6 +63,14 @@ def initialize(db):
             conn.execute('INSERT INTO push_config VALUES(1,?,?,?)',
                          (Fernet(encryption_key(db)).encrypt(private).decode(), base64.urlsafe_b64encode(public).decode().rstrip('='), ''))
         conn.commit()
+
+
+def claim_legacy_devices(conn):
+    """Pre-auth subscriptions belong to the sole Nightfeed owner on upgrade."""
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='auth_users'").fetchone():
+        users = conn.execute('SELECT id FROM auth_users LIMIT 2').fetchall()
+        if len(users) == 1:
+            conn.execute('UPDATE push_devices SET user_id=? WHERE user_id IS NULL', (users[0]['id'],))
 
 
 def preferences(value):
@@ -178,11 +190,17 @@ def dispatch(db, now=None):
             continue
         with closing(connect(db)) as conn:
             conn.execute('BEGIN IMMEDIATE')
+            # Task alerts share the device's delivery lease and daily allowance.
+            device = conn.execute('SELECT * FROM push_devices WHERE id=?', (device['id'],)).fetchone()
+            if not device or (device['day'] == day and device['sent'] >= prefs['daily_limit']):
+                continue
             if not conn.execute('UPDATE push_devices SET lease_until=? WHERE id=? AND enabled=1 AND lease_until<=? AND due_at<=?', (now + 120, device['id'], now, now)).rowcount:
                 conn.rollback(); continue
             events = conn.execute('SELECT * FROM push_events WHERE device_id=? ORDER BY id', (device['id'],)).fetchall()
             conn.commit()
         if not events:
+            with closing(connect(db)) as conn:
+                conn.execute('UPDATE push_devices SET lease_until=0 WHERE id=?', (device['id'],)); conn.commit()
             continue
         # Device opt-in permits these summaries while signed out. Full reports
         # remain behind the application authentication gate.
@@ -262,7 +280,7 @@ def register(app):
             raise ValueError('Invalid device token.')
         with closing(connect(db)) as conn:
             row = conn.execute('SELECT * FROM push_devices WHERE secret_hash=?', (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-        if not row:
+        if not row or row['user_id'] != g.auth_user['id']:
             raise ValueError('This device is not registered. Enable notifications again.')
         return row
 
@@ -293,12 +311,14 @@ def register(app):
                 if existing:
                     identity = existing['id']
             if existing:
+                if existing['user_id'] != g.auth_user['id']:
+                    raise ValueError('This subscription belongs to another account.')
                 conn.execute('DELETE FROM push_events WHERE device_id=?', (identity,))
                 conn.execute('DELETE FROM push_failures WHERE device_id=?', (identity,))
                 conn.execute('DELETE FROM push_devices WHERE id=?', (identity,))
-            conn.execute('INSERT INTO push_devices(id,secret_hash,endpoint_hash,subscription,preferences,day,sent,test_at) VALUES(?,?,?,?,?,?,?,?)',
+            conn.execute('INSERT INTO push_devices(id,secret_hash,endpoint_hash,subscription,preferences,day,sent,test_at,user_id) VALUES(?,?,?,?,?,?,?,?,?)',
                          (identity, hashlib.sha256(token.encode()).hexdigest(), endpoint_hash, json.dumps(sub), json.dumps(prefs),
-                          existing['day'] if existing else '', existing['sent'] if existing else 0, existing['test_at'] if existing else 0))
+                          existing['day'] if existing else '', existing['sent'] if existing else 0, existing['test_at'] if existing else 0, g.auth_user['id']))
             contact = os.environ.get('NIGHTFEED_PUSH_CONTACT') or ('https://' + urlsplit(request.host_url).hostname)
             conn.execute('UPDATE push_config SET contact=? WHERE id=1', (contact,))
             conn.commit()
@@ -363,6 +383,8 @@ def register(app):
             while not stop.is_set():
                 try:
                     dispatch(db)
+                    from .tasks import dispatch as dispatch_tasks
+                    dispatch_tasks(db)
                 except Exception:
                     log.exception('Push queue sweep failed')
                 stop.wait(20)

@@ -41,7 +41,10 @@ DEFAULTS = dict(session_minutes=720, idle_minutes=30, lockout_attempts=5,
                 trusted_proxies='', proxy_hops=0)
 SCOPES = {'rss:read': 'Read RSS XML', 'feeds:read': 'Read feed list through API',
           'topics:read': 'Read topics through API', 'notifications:read': 'Read notifications through API',
-          'feeds:refresh': 'Refresh feeds through API'}
+          'feeds:refresh': 'Refresh feeds through API',
+          'mcp:read': 'MCP: read feeds, search content, help and previews',
+          'mcp:write': 'MCP: prepare and apply feed changes',
+          'mcp:settings': 'MCP: read and change non-secret global app settings'}
 PUBLIC = {'auth.login', 'auth.setup', 'auth.oidc_start', 'auth.oidc_callback',
           'static', 'push.manifest', 'push.worker'}
 
@@ -363,6 +366,16 @@ def register(app):
 
     @app.before_request
     def protect():
+        if request.path.startswith(('/api/assistant/','/api/tasks')) or request.path in ('/mcp', '/settings/ai'):
+            if request.path == '/api/assistant/transcribe':
+                limit = 11 * 1024 * 1024
+            elif request.method == 'POST' and re.fullmatch(r'/api/assistant/conversations/[A-Za-z0-9_-]+/messages', request.path):
+                limit = 12 * 1024 * 1024  # Four 2 MB images plus base64/JSON overhead.
+            else:
+                limit = 65536
+            request.max_content_length = limit
+            if request.content_length and request.content_length > limit:
+                return jsonify(error='Request is too large.'), 413
         g.auth_user = None
         g.api_key = None
         g.auth_settings = settings(db)
@@ -388,6 +401,8 @@ def register(app):
                 required = {'feed_route': 'rss:read', 'auth.api_feeds': 'feeds:read',
                             'auth.api_topics': 'topics:read', 'auth.api_notifications': 'notifications:read',
                             'auth.api_refresh': 'feeds:refresh'}.get(request.endpoint)
+                if request.endpoint == 'assistant.mcp':
+                    required = 'mcp:read'
                 if not required or required not in api_key['scopes']:
                     return jsonify(error='API key does not permit this endpoint.'), 403
                 if request.endpoint == 'feed_route':
@@ -415,7 +430,7 @@ def register(app):
                     conn.execute('UPDATE auth_sessions SET last_seen=? WHERE token_hash=?', (now, fingerprint(token)))
                     conn.commit()
         if request.endpoint not in PUBLIC and not g.auth_user and not g.api_key:
-            if request.path.startswith('/api/') or request.method not in ('GET', 'HEAD') or request.path.endswith('.xml'):
+            if request.path.startswith('/api/') or request.path == '/mcp' or request.method not in ('GET', 'HEAD') or request.path.endswith('.xml'):
                 return jsonify(error='Authentication required.'), 401
             destination = dict(next=safe_next(request.full_path.rstrip('?')))
             if request.endpoint in ('notifications_route', 'notification_detail_route'):
@@ -509,6 +524,8 @@ def register(app):
                         if conn.execute('SELECT 1 FROM auth_users').fetchone():
                             abort(409)
                         identity = conn.execute('INSERT INTO auth_users(username,name,password_hash) VALUES(?,?,?)', (username, name, hashed)).lastrowid
+                        from .push_notifications import claim_legacy_devices
+                        claim_legacy_devices(conn)
                         audit(conn, 'owner_created', identity)
                         conn.commit()
                     Path(db).with_suffix('.setup-token').unlink(missing_ok=True)
@@ -629,6 +646,10 @@ def register(app):
                     scopes = request.form.getlist('scopes')
                     if not name or len(name) > 100 or not scopes or any(v not in SCOPES for v in scopes):
                         raise ValueError('Enter a key name and select at least one permission.')
+                    if any(v in scopes for v in ('mcp:write', 'mcp:settings')) and 'mcp:read' not in scopes:
+                        raise ValueError('MCP write/settings permissions also require MCP read.')
+                    if 'mcp:settings' in scopes and request.form.getlist('feed_ids'):
+                        raise ValueError('Global MCP settings cannot be combined with feed restrictions.')
                     feed_ids = list(set(int(v) for v in request.form.getlist('feed_ids')))
                     expiry = request.form.get('expires', '')
                     expires = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc).timestamp() if expiry else None

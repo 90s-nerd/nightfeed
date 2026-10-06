@@ -6,7 +6,7 @@
 <header class="topbar">
   <div class="page-title">
     <h1 class="sr-only">Notifications</h1>
-    <p>{{ unread_count }} unread refresh {{ 'notification' if unread_count == 1 else 'notifications' }}.</p>
+    <p data-notification-count>{{ unread_count }} unread {{ 'notification' if unread_count == 1 else 'notifications' }}.</p>
   </div>
   <div class="topbar-actions">
     <a class="btn btn-secondary" href="/notifications?status=unread" {% if status_filter == 'unread' %}aria-current="page"{% endif %}>Unread</a>
@@ -27,7 +27,7 @@
   {% if notifications %}
   <div class="list-stack">
     {% for notification in notifications %}
-    <article class="item-card notification-card {{ 'notification-unread' if not notification.read_at else '' }}">
+    <article data-notification-id="{{ notification.id }}" class="item-card notification-card {{ 'notification-unread' if not notification.read_at else '' }}">
       <div class="notification-copy">
           <h3>{% if not notification.read_at %}<span class="notification-dot" role="img" aria-label="Unread"></span>{% endif %}<a class="notification-report-link" href="{{ url_for('notification_detail_route', notification_id=notification.id, status=status_filter) }}">{{ notification.title }}</a></h3>
           <p class="meta notification-meta">
