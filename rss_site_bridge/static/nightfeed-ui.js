@@ -96,12 +96,18 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
     menu.addEventListener('focusout', () => setTimeout(() => {
+      if (document.documentElement.classList.contains('auth-checking')) return;
       if (!menu.contains(document.activeElement)) close(menu);
     }, 0));
   });
   document.addEventListener('click', event => menus.forEach(menu => {
     if (!menu.contains(event.target)) close(menu);
   }));
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const open=menus.find(menu=>menu.open);
+    if (open) { close(open,true);event.preventDefault(); }
+  });
 });
 
 document.addEventListener('DOMContentLoaded', () => {

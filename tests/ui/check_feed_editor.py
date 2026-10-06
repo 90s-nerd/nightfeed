@@ -10,7 +10,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import create_app, create_profile, connect_db, FeedRequest, FeedEntry, get_profile_by_id, list_profiles
 from ui_auth_support import create_ui_app, authenticate_page
@@ -150,10 +150,12 @@ def run():
                         current = get_profile_by_id(db, original.id)
                         assert current.feed_token == original.feed_token and current.item_count == 1
                         page.get_by_role('link', name='RSS', exact=True).click()
+                        page.wait_for_load_state('load')
                         assert current.feed_token in page.locator('#permanent-feed-url').input_value()
                         page.evaluate("Object.defineProperty(navigator, 'clipboard', {value: {writeText: () => Promise.reject(new Error('denied'))}, configurable: true})")
                         page.get_by_role('button', name='Copy feed URL').click()
-                        page.locator('[data-copy-status]').get_by_text('Copy unavailable.', exact=False).wait_for()
+                        assert not errors, errors
+                        expect(page.locator('[data-copy-status]')).to_contain_text('Copy unavailable.')
                         assert page.locator('#permanent-feed-url').evaluate('(el) => el.selectionEnd === el.value.length')
                         # Refresh failure is inline; a successful refresh updates stored rows in place.
                         page.get_by_role('link', name='Items', exact=True).click()

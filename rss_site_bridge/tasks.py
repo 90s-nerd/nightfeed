@@ -101,6 +101,8 @@ def normalize(db, value, access, *, existing=None):
     if not isinstance(value, dict): raise ValueError('Choose task settings.')
     if set(value) - {'name','terms','required_terms','exclude_terms','feed_ids','mode','match_mode','fields','channels','expires_at'}:
         raise ValueError('Unknown task setting.')
+    if existing:
+        value={**{key:existing[key] for key in ('name','terms','required_terms','exclude_terms','feed_ids','mode','match_mode','fields','channels','expires_at') if key in existing},**value}
     result = dict(name=value.get('name',''), terms=value.get('terms',[]), required_terms=value.get('required_terms',[]), exclude_terms=value.get('exclude_terms',[]),
                   feed_ids=value.get('feed_ids',[]), mode=value.get('mode',''), match_mode=value.get('match_mode','flexible'),
                   fields=value.get('fields','title'), channels=value.get('channels',['nightfeed']), expires_at=value.get('expires_at'))
@@ -212,13 +214,36 @@ def save(db, access, value, identity=None, revision=None, *, conn=None, setup_id
         if own_conn: conn.close()
 
 
+def remove_feed(conn, identity):
+    """Remove a deleted feed without ever broadening a selected-feed watch."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='topic_tasks'").fetchone(): return
+    for task in conn.execute('SELECT * FROM topic_tasks').fetchall():
+        config=json.loads(task['config'])
+        if identity not in config['feed_ids']: continue
+        remaining=[feed for feed in config['feed_ids'] if feed!=identity]
+        if remaining:
+            config['feed_ids']=remaining
+            conn.execute('UPDATE topic_tasks SET config=?,updated=?,revision=revision+1 WHERE id=?',(json.dumps(config),time.time(),task['id']))
+        elif task['state'] in ('active','paused'):
+            # Keep the missing ID until the user chooses a replacement scope.
+            conn.execute("UPDATE topic_tasks SET state='paused',reason='missing_feed',updated=?,revision=revision+1 WHERE id=?",(time.time(),task['id']))
+        event(conn,task,'feed_removed',feed_id=identity,needs_feed_selection=not remaining)
+
+
+def validate_resume(conn, task):
+    if task['expires'] and task['expires']<=time.time(): raise ValueError('Set a future expiry or remove expiry before reactivating this task.')
+    for identity in json.loads(task['config'])['feed_ids']:
+        if not conn.execute('SELECT 1 FROM profiles WHERE id=?',(identity,)).fetchone():
+            raise ValueError('A watched feed was deleted. Edit this task and choose feeds before reactivating it.')
+
+
 def change_state(db,access,identity,action):
     access.permit('mcp:write');get_task(db,access,identity)
     if action not in ('pause','resume','archive'): raise ValueError('Choose pause, resume, or archive.')
     with closing(connect(db)) as conn:
         conn.execute('BEGIN IMMEDIATE')
         task=conn.execute('SELECT * FROM topic_tasks WHERE id=?',(identity,)).fetchone()
-        if action=='resume' and task['expires'] and task['expires']<=time.time(): raise ValueError('Set a future expiry or remove expiry before reactivating this task.')
+        if action=='resume': validate_resume(conn,task)
         state={'pause':'paused','resume':'active','archive':'archived'}[action]
         if action=='pause' and task['state']!='active': raise ValueError('Only active tasks can be paused.')
         conn.execute('UPDATE topic_tasks SET state=?,reason=?,updated=?,revision=revision+1 WHERE id=?',(state,'manual' if state=='archived' else '',time.time(),identity))

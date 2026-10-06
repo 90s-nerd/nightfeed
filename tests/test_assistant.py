@@ -506,7 +506,8 @@ class AssistantTests(unittest.TestCase):
         for text in ['How do I refresh a feed?',"Don't refresh this feed",'Are there new items?', 'Can you explain how to refresh?']:
             self.assertFalse(ai.explicit_refresh_request(text),text)
         self.assertNotIn('refresh_feed',{t['name'] for t in definitions(self.access)})
-        self.assertNotIn('refresh_feed',{t['name'] for t in definitions(Access('key:1',('feeds:refresh',)))})
+        self.assertIn('refresh_feed',{t['name'] for t in definitions(Access('key:1',('feeds:refresh',)))})
+        self.assertNotIn('refresh_feed',{t['name'] for t in definitions(Access('key:1',('mcp:read',)))})
         with self.assertRaises(ValueError):self.services.call('refresh_feed',dict(feed_id=1))
 
     def test_chat_image_request_over_64kb_is_accepted_and_invalid_images_are_not_saved(self):

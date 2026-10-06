@@ -78,12 +78,9 @@ until it is deleted; audit events retain attachment metadata, not image data.
 
 For **voice input**, configure a separate compatible audio-transcription API base
 URL, model and optional key under the connection's Voice input options. The microphone
-icon records dictation (up to 60 seconds). The waveform icon starts continuous voice
-conversation: speech is submitted after a pause, replies are read aloud, then listening
-resumes. Tap the waveform again or close chat to stop. Microphone access requires
-HTTPS or localhost. Spoken replies use your device's speech synthesis voices.
-This uses transcription, chat and speech synthesis in sequence, so latency depends
-on your configured services. The shortcut menu also includes a read-replies option.
+icon records dictation (up to 60 seconds); tap it again to submit the message.
+Microphone access requires HTTPS or localhost. The shortcut menu includes a
+read-replies option using your device's speech synthesis voices.
 
 While a reply is running, the send arrow becomes a Stop button. Stop releases the
 conversation so another message can be sent, including after a page reload. It
@@ -177,7 +174,24 @@ text/event-stream`, and the negotiated `MCP-Protocol-Version` on subsequent
 requests. The server supports initialization, ping, tool discovery and calls.
 MCP exposes the same validated feed, preview, internal-search, task and help services,
 but **does not expose safe-browser opening**. Write workflows return a draft;
-the external agent must obtain user approval before calling `apply_draft`.
+the external agent must obtain user approval before calling `apply_draft`, or use
+`deny_draft` when declined. An explicit `refresh_feed` call with **Refresh feeds**
+permission runs immediately and reports whether refresh succeeded.
+
+Stored-content tools support exact counts, unread/read/saved/updated status,
+feed selection, title/summary/link search, and discovery dates in the app timezone.
+“New items” means unread; “items added today” means discovered today. The assistant
+retains these filters for follow-ups such as “which ones?”, “only saved ones” and
+“show more”. Paged results include `total_count`, `has_more` and `next_arguments`;
+MCP clients should reuse `next_arguments` rather than treating one page as the total.
+Topic pages retain an insertion snapshot, so newly arriving items do not shift pages.
+
+Feed cloning, history purging and deletion require reviewed proposals. Partial
+task edits preserve omitted settings. `get_capabilities` explains available tools
+and links to settings for credentials, device permissions and other manual steps.
+Search is limited to stored Nightfeed content; unrelated questions stay outside
+the assistant's scope. Uncertain requests are classified with conversation context,
+while recognized app workflows proceed directly to the relevant tools.
 
 Feed-restricted keys can read/search/edit their permitted feeds and preview their
 existing source URLs. Creating feeds, inspecting arbitrary source pages and

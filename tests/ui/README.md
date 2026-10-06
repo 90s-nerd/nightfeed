@@ -41,8 +41,9 @@ form widths, including the profile editor in the dark theme.
 `check_assistant.py` verifies provider activation, real preview cards, approved
 creation, persistent conversation history, internal search, context/cost display,
 audit access, MCP settings and the composer on mobile and desktop. Synthetic audio
-exercises speech-pause detection, transcription, resumed listening and stopping
-continuous voice without requiring physical microphone access or a live AI key.
+exercises transcription and starting, stopping and cancelling microphone dictation
+without requiring physical microphone access or a live AI key. Continuous
+conversation mode has been removed.
 It also verifies the fixed redirect for unrelated questions and recovery to
 stored-content search. Scope decisions use fixtures; no paid calls are made.
 

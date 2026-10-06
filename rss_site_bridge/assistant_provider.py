@@ -128,7 +128,24 @@ def read_stream(response, path, timeout, on_delta):
     return dict(usage=measured, choices=[dict(message=dict(content=''.join(text_parts), tool_calls=list(calls.values())))])
 
 
+def completed_tool_history(history):
+    """Keep cancelled/failed multi-tool turns valid for the next provider call."""
+    result=[];index=0
+    while index<len(history):
+        message=history[index];result.append(message);index+=1
+        calls=message.get('tool_calls',[]) if message['role']=='assistant' else []
+        if not calls: continue
+        completed=set()
+        while index<len(history) and history[index]['role']=='tool':
+            output=history[index];result.append(output);completed.add(output.get('tool_call_id'));index+=1
+        for call in calls:
+            if call.get('id') not in completed:
+                result.append(dict(role='tool',tool_call_id=call['id'],content=json.dumps(dict(error='This operation was interrupted; no result was received. Check current app state before retrying an action.'))))
+    return result
+
+
 def complete(config, history, tools, system, on_delta=None):
+    history=completed_tool_history(history)
     if not config.get('streaming', True):
         on_delta = None
     if config['api_type'] in ('anthropic', 'gemini'):
