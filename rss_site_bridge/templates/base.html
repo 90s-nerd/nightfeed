@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta name="auth-csrf" content="{{ auth_csrf }}">
+    {% if auth_user %}<meta name="auth-session-status" content="{{ url_for('auth.session_status') }}">{% endif %}
     <script src="{{ url_for('static', filename='nightfeed-auth.js') }}"></script>
     <meta name="downloader-csrf" content="{{ downloader_csrf }}">
     <meta name="topic-csrf" content="{{ topic_csrf }}">

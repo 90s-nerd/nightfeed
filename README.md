@@ -96,9 +96,11 @@ cost estimates. Estimates exclude audio, search, and other non-token fees and ar
 not provider invoices. Missing usage or pricing is shown as unavailable.
 
 **Settings → AI and MCP → Audit history** lists messages, provider calls, connection
-tests, transcription, tool calls and approvals, including failed operations. Expand
-an event for usage, timings and action details; filter by type and export a page as
-JSON. Provider usage includes cached/reasoning tokens when returned. Request sizes
+tests, transcription, tool calls and approvals, including failed operations, grouped
+by conversation. Expand a chat for its complete usage totals and recent events;
+select **View full history** to page through that chat. Activity outside chats has
+its own group. Expand an event for timings and action details; filter by type and
+export shown events as JSON. Provider usage includes cached/reasoning tokens when returned. Request sizes
 are captured when token usage is unavailable. Credentials and raw source HTML are
 redacted; audio is not retained. Audit records survive conversation deletion and
 are included in database backups. Only the signed-in owner can view/export audits;
@@ -117,13 +119,17 @@ content. It redirects general knowledge, unrelated advice and standalone image
 identification. Unclear uploads ask for their Nightfeed purpose. A small, text-only
 scope check runs before answers or tools; its provider usage and configured cost
 estimate are logged separately under `request_scope` in audit request details.
-It uses the selected provider/model and adds one short request per chat turn,
-except for common persona questions and feed/RSS definitions answered locally.
-These friendly product replies are audited and make no provider calls. Broader
-questions about the assistant's identity and Nightfeed concepts are also in scope.
-Short preference answers to a pending app setup question continue that workflow
-without another scope request. Complex answers include the pending question and
-original workflow in the scope check; independent general questions remain restricted.
+Routing uses conservative high/low confidence levels. Exact inventory questions,
+common persona questions and feed/RSS definitions use local answers, with inventory
+counts read from live tools. Recognized choices answering a pending app setup
+question skip the scope request. Typos, free-form answers, images and unfamiliar
+wording go to the selected AI provider/model for scope checking before answering
+or acting. The AI receives recent conversation and the pending setup question;
+uncertainty alone never causes a local refusal. `scope_route` audit events record
+the route, confidence level and reason. Local answers make no provider calls.
+Queries about items added today/yesterday use first-discovery timestamps in the
+configured Nightfeed timezone. Broader persona and product questions remain in
+scope; independent general questions remain restricted.
 Missing or invalid scope decisions do not authorize actions. Scope decisions
 depend on the configured model; tool permissions and approval checks remain
 enforced by Nightfeed independently.
@@ -206,6 +212,9 @@ Serve production instances over HTTPS. Cookies default to Secure, HttpOnly and S
 Lax. For **local HTTP development only**, set `NIGHTFEED_SECURE_COOKIES=0`; otherwise
 an HTTP browser cannot retain the setup/login cookie. Session defaults are 12 hours
 maximum and 30 minutes of inactivity. Change these under **Settings → Security**.
+Open tabs check the session without extending its idle timeout and return to login
+when it expires. Restoring a tab or returning to the app checks the session before
+showing private content; temporary network failures wait for revalidation.
 Password changes revoke other sessions. Security changes also sign out other sessions.
 
 Open **Settings → Manage profile** (also available in the account menu) to change

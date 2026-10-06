@@ -2,7 +2,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
-import os, sys
+import os, sys, time
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 os.environ['NIGHTFEED_SECURE_COOKIES']='0'
@@ -128,6 +128,21 @@ with TemporaryDirectory(dir='.test-preview') as temp:
    page.get_by_label('Password',exact=True).fill('browser fixture passphrase')
    page.get_by_role('button',name='Sign in',exact=True).click()
    page.wait_for_url(address+'/feeds')
+   with closing(connect(db)) as conn:
+    conn.execute('UPDATE auth_sessions SET expires=?',(time.time()-1,));conn.commit()
+   page.evaluate("window.dispatchEvent(new Event('focus'))")
+   page.wait_for_url('**/auth/login?**',timeout=15000)
+   expect(page.get_by_role('heading',name='Sign in to Nightfeed')).to_be_visible()
+   assert 'Private UI fixture' not in page.content()
+   page.get_by_label('Username').fill('owner');page.get_by_label('Password',exact=True).fill('browser fixture passphrase')
+   page.get_by_role('button',name='Sign in',exact=True).click();page.wait_for_url(address+'/feeds')
+   with closing(connect(db)) as conn:
+    conn.execute('UPDATE auth_sessions SET expires=?',(time.time()+2,));conn.commit()
+   page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}))")
+   page.wait_for_url('**/auth/login?**',timeout=15000)
+   expect(page.get_by_role('heading',name='Sign in to Nightfeed')).to_be_visible()
+   page.get_by_label('Username').fill('owner');page.get_by_label('Password',exact=True).fill('browser fixture passphrase')
+   page.get_by_role('button',name='Sign in',exact=True).click();page.wait_for_url(address+'/feeds')
    page.locator('.account-menu > summary').click()
    page.get_by_role('button',name='Log out').click()
    page.wait_for_url('**/auth/login?sso=off')
