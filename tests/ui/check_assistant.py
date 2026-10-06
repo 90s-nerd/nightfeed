@@ -29,13 +29,13 @@ HTML = '<article><a href="/one">Linux release one</a><p>A stable release</p></ar
 
 def fake_complete(config, history, tools, system, on_delta=None):
     if history[-1]['role'] == 'tool':
-        text = '**Here are real extracted items.** Review the proposal, then apply it.'
+        text = 'I found 3 matching items in your stored content.'
         if on_delta:
             on_delta(text[:20]); on_delta(text[20:])
         return dict(role='assistant', content=text, tool_calls=[], _usage=dict(available=True,input_tokens=1200,output_tokens=80,cached_tokens=100,reasoning_tokens=0,context_window=16000,estimated_usd=.001))
     text = history[-1]['content'].lower()
     name, args = ('search_topics', dict(query='Linux')) if 'search' in text else ('propose_feed_change', dict(config=CONFIG))
-    return dict(role='assistant', content='', tool_calls=[dict(id='fixture-' + str(len(history)), type='function', function=dict(name=name, arguments=json.dumps(args)))])
+    return dict(role='assistant', content='', tool_calls=[dict(id='fixture-' + str(len(history)), type='function', function=dict(name=name, arguments=json.dumps(args)))], _usage=dict(available=True,input_tokens=1200,output_tokens=80,cached_tokens=100,reasoning_tokens=0,context_window=16000,estimated_usd=.001))
 
 
 def fake_scope(config, history, context):
@@ -142,7 +142,7 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 expect(page.locator('[data-assistant-conversations]')).to_have_value(selected_conversation)
                 page.get_by_label('Message', exact=True).fill('Search my saved Linux content')
                 page.get_by_role('button', name='Send message', exact=True).click()
-                expect(page.get_by_role('heading', name='3 matching items')).to_be_visible()
+                expect(page.locator('[data-assistant-messages]')).to_contain_text('3 matching items')
                 expect(page.get_by_role('button', name='New chat', exact=True)).to_be_enabled()
                 page.get_by_label('Context usage',exact=True).click()
                 expect(page.locator('[data-context-usage]')).to_contain_text('1,200 input')
@@ -180,16 +180,16 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 expect(page.get_by_role('button',name='Dictate message',exact=True)).to_be_visible()
                 expect(page.locator('[data-assistant-status]')).to_have_text('',timeout=20000)
                 composer=page.get_by_label('Message',exact=True)
-                composer.fill('How many items added today?')
+                composer.fill('How many new topics got added today?')
                 composer.press('Enter')
                 expect(page.locator('[data-assistant-messages]')).to_contain_text('3 items were added today')
                 expect(page.locator('[data-assistant-status]')).to_have_text('')
                 composer.fill('Who is the US president?')
                 composer.press('Enter')
                 expect(page.locator('[data-assistant-status]')).to_have_text('')
-                composer.fill('Which are those newly added items?')
+                composer.fill('Which one are those? Just show me.')
                 composer.press('Enter')
-                expect(page.get_by_role('heading',name='3 matching items').last).to_be_visible()
+                expect(page.locator('[data-assistant-messages]')).to_contain_text('I found 3 matching items')
                 expect(page.locator('[data-assistant-messages]')).to_contain_text('Added ')
                 page.set_viewport_size({'width':390,'height':844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

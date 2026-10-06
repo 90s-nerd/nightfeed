@@ -133,12 +133,14 @@ enforced by Nightfeed independently.
 
 ### Topic watch tasks
 
-Ask the assistant “Notify me when Spider Man appears.” The setup asks for all or
+Ask the assistant “Notify me when Spider Man appears.” Chat asks one short question
+at a time, with compact reply choices or typed answers, for matching and all or
 selected feeds, every new match or once, delivery channels, and optional expiry
 (7 days, 30 days, or a custom date/time in the app's schedule timezone). Refine the
 rule with required/excluded phrases, exact wording, or title-and-summary matching.
-Flexible matching covers `Spider Man`, `Spider-Man`, and `Spiderman`. Preview
-existing matches before selecting **Create task**; existing items do not send alerts.
+Flexible matching covers `Spider Man`, `Spider-Man`, and `Spiderman`. A compact final
+approval includes an existing-match preview; existing items do not send alerts.
+The full editor and **Create task** button remain on the Tasks page.
 
 Nightfeed notifications are always included. Select push to notify all enabled
 devices registered to your account, including devices registered later, and/or
@@ -177,6 +179,12 @@ but **does not expose safe-browser opening**. Write workflows return a draft;
 the external agent must obtain user approval before calling `apply_draft`, or use
 `deny_draft` when declined. An explicit `refresh_feed` call with **Refresh feeds**
 permission runs immediately and reports whether refresh succeeded.
+`refresh_feeds` refreshes all accessible active feeds, or selected `feed_ids`,
+and reports partial failures and paused feeds. For “refresh and show new topics”,
+set `show_new_topics: true`: results include exact `new_item_ids` inserted by
+that refresh batch and a paged `new_topics` list. Follow-up `search_topics` calls
+can use those `item_ids`; older unread items and updates are excluded, and an
+empty ID list returns no items.
 
 Stored-content tools support exact counts, unread/read/saved/updated status,
 feed selection, title/summary/link search, and discovery dates in the app timezone.

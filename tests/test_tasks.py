@@ -79,8 +79,15 @@ class TaskTests(unittest.TestCase):
         token=self.client.post('/api/assistant/conversations').json['id']
         reply=dict(role='assistant',content='',tool_calls=[dict(id='watch',type='function',function=dict(name='prepare_topic_watch',arguments=json.dumps(dict(topic='Spider Man'))))])
         with patch('rss_site_bridge.assistant_provider.complete',return_value=reply):self.client.post(f'/api/assistant/conversations/{token}/messages',json=dict(message='Notify me for Spider Man'),buffered=True)
-        card=self.client.get(f'/api/assistant/conversations/{token}').json['messages'][-1]['cards'][0]
-        payload=dict(config=WATCH,conversation=token,setup_id=card['data']['setup_id'])
+        question=self.client.get(f'/api/assistant/conversations/{token}').json['messages'][-1]
+        self.assertTrue(question['choices']);self.assertEqual(question['cards'],[])
+        # Preserve the authenticated legacy setup API contract for upgraded histories.
+        setup=Services(self.db,self.access).call('prepare_topic_watch',dict(topic='Spider Man'))
+        with closing(core.connect_db(self.db)) as conn:
+            history=json.loads(conn.execute('SELECT history FROM assistant_conversations WHERE id=?',(token,)).fetchone()[0])
+            history.append(dict(role='assistant',content='',_cards=[dict(kind='task_setup',data=setup)]))
+            conn.execute('UPDATE assistant_conversations SET history=? WHERE id=?',(json.dumps(history),token));conn.commit()
+        payload=dict(config=WATCH,conversation=token,setup_id=setup['setup_id'])
         first=self.client.post('/api/tasks',json=payload);second=self.client.post('/api/tasks',json=payload)
         self.assertEqual(first.status_code,200);self.assertEqual(first.json['task_id'],second.json['task_id']);self.assertEqual(len(tasks.list_tasks(self.db,self.access)),1)
         history=self.client.get(f'/api/assistant/conversations/{token}').json['messages']

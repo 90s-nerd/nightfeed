@@ -32,7 +32,7 @@ def inventory_query(message):
     text=' '.join(re.sub(r'[^\w\s]', ' ', message.get('content','').casefold()).split())
     match=re.fullmatch(r'(?:how many|(?:is|are) there(?: any)?|do (?:i|we) have(?: any)?|any|count(?: the)?|what is the (?:number|count) of) '
                        r'(?P<status>new |unread |read |saved |updated |stored )?(?P<kind>feeds?|feats|items?|topics?|notifications?|tasks?)'
-                       r'(?: (?:do (?:i|we) have|(?:have been |been |were )?added|in nightfeed|in the timeline))?'
+                       r'(?: (?:do (?:i|we) have|(?:have been |been |were |got |was )?added|in nightfeed|in the timeline))?'
                        r'(?: (?P<day>today|yesterday))?',text)
     if not match: return None
     kind=match['kind'];status=(match['status'] or '').strip();day=match['day']
@@ -50,7 +50,7 @@ def listing_query(message):
     text=re.sub(r'^what is new (?=today|yesterday)', 'show items added ',text)
     text=re.sub(r'^which(?: are)?(?: the)? ', 'show ',text)
     text=re.sub(r'^what (?=(?:new |unread |saved |updated |recent |newly added )?(?:items|topics|notifications|feeds|tasks)\b)', 'show ',text)
-    text=re.sub(r' (?:have been|were|have) added ', ' added ',text)
+    text=re.sub(r' (?:have been|were|have|got) added ', ' added ',text)
     all_feeds=bool(re.search(r' (?:from|across|in) all feeds\b',text))
     text=re.sub(r' (?:from|across|in) all feeds\b','',text)
     if text in ('what is new','whats new','show what is new','show whats new'):
@@ -145,6 +145,10 @@ def retrieval_context(history):
 def content_followup(message):
     if message.get('_images'): return False
     text=' '.join(re.sub(r'[^\w\s]', ' ', message.get('content','').casefold()).split())
+    # A common spoken follow-up: “Which one are those? Just show me.”
+    # Only strip this exact browsing request, never an arbitrary second command.
+    text=re.sub(r' (?:just )?show (?:me|them|those)$','',text)
+    if re.fullmatch(r'(?:which|what) (?:one|ones) (?:are|were) (?:those|these|they)',text): return True
     return bool(re.fullmatch(r'(?:which (?:are|were) (?:those|the)(?: newly added| new| added)? (?:items|topics)|'
                              r'(?:show|list)(?: me)? (?:those|these|the)(?: newly added| new| added)? (?:items|topics)|'
                              r'(?:show|list)(?: me)? them|which ones|what are they|'
@@ -162,7 +166,7 @@ def app_workflow(message):
     if message.get('_images'): return False
     text=' '.join(re.sub(r'[^\w\s]',' ',message.get('content','').casefold()).split())
     text=re.sub(r'^(?:(?:can|could|would|will) you (?:please )?|please )','',text)
-    return bool(re.fullmatch(r'(?:(?:pause|resume|archive|delete|clone|duplicate|purge|refresh) (?:the |this |my |all )?(?:feed|feeds|task|tasks|watch|watches)(?: \d+)?|'
+    return bool(re.fullmatch(r'(?:refresh all (?:the |my )?feeds(?: now)?|(?:pause|resume|archive|delete|clone|duplicate|purge|refresh) (?:the |this |my |all )?(?:feed|feeds|task|tasks|watch|watches)(?: \d+)?|'
                              r'mark (?:all |the |my |these )?(?:items|topics|notifications) (?:as )?read|'
                              r'(?:what is|whats|when is|when was) (?:the )?(?:source url|url|next refresh|last refresh|refresh frequency|schedule|status) (?:of|for) (?:this|the|my) feed)',text))
 
@@ -200,6 +204,10 @@ def assess(history):
     if refined: return dict(confidence='high',mode='content_list',reason='stored_content_refinement',query=refined['arguments'],retrieval=refined)
     if previous and page_followup(latest):
         return dict(confidence='high',mode='content_next',reason='stored_content_next_page',retrieval=previous)
+    if previous and (previous.get('source')=='refresh_batch' or 'item_ids' in previous.get('arguments',{})) and not latest.get('_images'):
+        text=' '.join(re.sub(r'[^\w\s]',' ',latest.get('content','').casefold()).split())
+        if re.fullmatch(r'what (?:did|has) (?:that|the|this) refresh (?:find|add|added)|(?:show|list)(?: me)? (?:what|everything) (?:that|the|this) refresh (?:found|added)|what(?: s| is) new (?:from|in|after) (?:that|the|this) refresh',text):
+            return dict(confidence='high',mode='content_list',reason='refresh_batch_followup',query=previous['arguments'],retrieval=previous)
     if previous and content_followup(latest):
         # Explicit nouns cannot accidentally refer to another kind of result.
         noun_tools={'items':'search_topics','topics':'search_topics','notifications':'list_notifications','feeds':'list_feeds','tasks':'list_tasks','watches':'list_tasks'}

@@ -100,7 +100,7 @@ class ScopeTests(unittest.TestCase):
         with patch.object(scope,'classify',return_value=dict(decision='redirect')) as classifier,patch('rss_site_bridge.assistant_provider.complete',return_value=reply) as complete:
             ai.run_turn(self.db,self.access,self.config,history,{},lambda kind,value:events.append((kind,value)))
             classifier.assert_not_called();complete.assert_called_once()
-        self.assertTrue(any(kind=='card' and value['kind']=='task_setup' for kind,value in events))
+        self.assertTrue(any(kind=='message' and value.get('choices') for kind,value in events))
         self.assertTrue(history[2]['_scope_allowed'])
         with closing(core.connect_db(self.db)) as conn:self.assertEqual(conn.execute("SELECT COUNT(*) FROM assistant_audit WHERE kind='scope_followup'").fetchone()[0],1)
 
@@ -152,12 +152,12 @@ class ScopeTests(unittest.TestCase):
                             dict(role='user',content='Which are those newly added items?')])
             events=[]
             ai.run_turn(self.db,self.access,self.config,history,dict(feed_id=other.id),lambda kind,value:events.append((kind,value)))
-            result=history[-1]['_cards'][0]['data']
+            result=history[-1]['_retrieval']
             self.assertEqual(result['total_count'],2)
-            self.assertEqual({item['title'] for item in result['items']},{'Topic 0','Topic 1'})
-            self.assertTrue(history[-1]['_card_only'])
-            self.assertEqual([kind for kind,_ in events].count('card'),1)
-            self.assertEqual(result['added_on'],now.date().isoformat())
+            self.assertEqual({item['title'] for item in result['references']},{'Topic 0','Topic 1'})
+            self.assertNotIn('_card_only',history[-1])
+            self.assertEqual([kind for kind,_ in events].count('card'),0)
+            self.assertEqual(result['arguments']['added_on'],now.date().isoformat())
 
     def test_content_followups_require_context_and_never_bypass_mixed_requests(self):
         anchor=dict(role='assistant',content='2 saved items.',_content_query=dict(query='',status='saved'))
@@ -193,10 +193,10 @@ class ScopeTests(unittest.TestCase):
         history.append(dict(role='user',content='List them'))
         with patch.object(scope,'classify',side_effect=AssertionError('Retained query')),patch('rss_site_bridge.assistant_provider.complete',side_effect=AssertionError('Retained query')):
             ai.run_turn(self.db,self.access,self.config,history,{},lambda *args:None)
-        data=history[-1]['_cards'][0]['data']
+        data=history[-1]['_retrieval']
         self.assertEqual(data['total_count'],1)
-        self.assertEqual(data['items'][0]['title'],'Old topic 0')
-        self.assertEqual(data['added_on'],'2020-01-01')
+        self.assertEqual(data['references'][0]['title'],'Old topic 0')
+        self.assertEqual(data['arguments']['added_on'],'2020-01-01')
         self.assertEqual({key:history[-1]['_content_query'][key] for key in arguments},arguments)
         self.assertEqual(history[-1]['_content_query']['timezone'],'UTC')
 
