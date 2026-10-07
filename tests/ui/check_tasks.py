@@ -25,10 +25,6 @@ def provider(config,history,tools,system,on_delta=None):
         return dict(role='assistant',content='Which Spider-Man topic: a movie, comic, or news? This will help create your notification task.',tool_calls=[])
     return dict(role='assistant',content='',tool_calls=[dict(id='watch',type='function',function=dict(name='prepare_topic_watch',arguments=json.dumps(dict(topic='Spider Man'))))])
 
-def scope_fixture(config,history,context):
-    # A standalone classifier would reject this fragment; workflow continuity
-    # must recognize it before asking that classifier.
-    return dict(decision='redirect' if history[-1].get('content')=='about the new movie' else 'allow',usage={})
 
 with TemporaryDirectory(dir=ROOT/'.test-preview') as temp:
     db=Path(temp)/'ui.db';app=core.create_app(dict(TESTING=True,DATABASE_PATH=db,START_SCHEDULER=False));client=authenticated_client(app)
@@ -39,7 +35,7 @@ with TemporaryDirectory(dir=ROOT/'.test-preview') as temp:
         conn.execute('INSERT INTO push_devices(id,secret_hash,endpoint_hash,subscription,preferences,user_id) VALUES(?,?,?,?,?,?)',('device',hashlib.sha256(b'ui-device-secret').hexdigest(),'endpoint','{}',json.dumps(DEFAULTS),1));conn.commit()
     server=make_server('127.0.0.1',0,app,threaded=True);Thread(target=server.serve_forever,daemon=True).start();address=f'http://127.0.0.1:{server.server_port}'
     try:
-        with patch('rss_site_bridge.assistant_scope.classify',side_effect=scope_fixture),patch('rss_site_bridge.assistant_provider.complete',side_effect=provider),patch.object(core,'send_smtp_message'),patch('rss_site_bridge.push_notifications.deliver'):
+        with patch('rss_site_bridge.assistant_provider.complete',side_effect=provider),patch.object(core,'send_smtp_message'),patch('rss_site_bridge.push_notifications.deliver'):
             with sync_playwright() as playwright:
                 browser=playwright.chromium.launch(channel='chrome');context=browser.new_context(viewport=dict(width=1440,height=1000));context.add_cookies([dict(name='nightfeed_auth',value=client.get_cookie('nightfeed_auth').value,url=address)])
                 page=context.new_page();page.add_init_script("localStorage.setItem('nightfeed.push.device','ui-device-secret')");errors=[];page.on('pageerror',lambda error:errors.append(str(error)))

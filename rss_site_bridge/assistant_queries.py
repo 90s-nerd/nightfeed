@@ -87,7 +87,9 @@ def topics(db, access, arguments, *, count=False):
         total=conn.execute('SELECT COUNT(*)'+source,values).fetchone()[0]
         result=dict(total_count=total,feed_id=arguments.get('feed_id'),query=query,status=status,
                     source='stored_items',filters=filters,**period)
-        if count: return result
+        if count:
+            result['snapshot_id']=ceiling
+            return result
         orders=dict(recent='i.discovered_at DESC,i.id DESC',oldest='i.discovered_at,i.id',new='(i.seen_at IS NULL) DESC,i.discovered_at DESC,i.id DESC',title='i.title COLLATE NOCASE,i.id DESC',priority='p.priority DESC,i.discovered_at DESC,i.id DESC')
         limit=arguments.get('limit',25);offset=arguments.get('offset',0)
         rows=conn.execute('SELECT i.*,p.feed_title'+source+' ORDER BY '+orders[arguments.get('sort','recent')]+' LIMIT ? OFFSET ?',[*values,limit,offset]).fetchall()

@@ -112,24 +112,29 @@ key with the database. Provider errors never expose response bodies or credentia
 Configure model/token limits and provider-side spending controls as needed.
 
 The built-in assistant is limited to Nightfeed workflows and retrieved stored
-content. It redirects general knowledge, unrelated advice and standalone image
-identification. Unclear uploads ask for their Nightfeed purpose. A small, text-only
-scope check runs before answers or tools; its provider usage and configured cost
-estimate are logged separately under `request_scope` in audit request details.
-Routing uses conservative high/low confidence levels. Exact inventory questions,
-common persona questions and feed/RSS definitions use local answers, with inventory
-counts read from live tools. Recognized choices answering a pending app setup
-question skip the scope request. Typos, free-form answers, images and unfamiliar
-wording go to the selected AI provider/model for scope checking before answering
-or acting. The AI receives recent conversation and the pending setup question;
-uncertainty alone never causes a local refusal. `scope_route` audit events record
-the route, confidence level and reason. Local answers make no provider calls.
-Queries about items added today/yesterday use first-discovery timestamps in the
-configured Nightfeed timezone. Broader persona and product questions remain in
-scope; independent general questions remain restricted.
-Missing or invalid scope decisions do not authorize actions. Scope decisions
-depend on the configured model; tool permissions and approval checks remain
-enforced by Nightfeed independently.
+content. Scope and conversational intent are handled by the answering model in
+one pass, using versioned app instructions, conversation history, the current
+page, pending setup questions and structured retrieval metadata. There is no
+separate semantic classifier that can reject an unfamiliar follow-up first.
+General knowledge and unrelated image analysis remain outside its role. For a
+mixed request, it can help with the Nightfeed portion and decline the unrelated
+part. Missing app details prompt a specific follow-up instead of a scope challenge.
+
+Local routing is an optimization for exact read queries and product FAQs, never
+an authorization decision or a keyword denylist. Counts use live database tools.
+Short browsing replies preserve dates, feed selection, read/saved filters and
+result snapshots; "Show" after a count displays that same set. Unfamiliar wording,
+transcription errors and free-form preferences go directly to the configured
+answering model. `scope_route` records `local` or `model`, the recognition confidence
+and reason. Provider calls record `purpose=agent_turn` and the policy version;
+there is no extra `request_scope` usage. Model tool rounds still use separate calls.
+
+Conversational scope depends on the configured model. Identity, feed permissions,
+argument validation and proposal approvals are enforced in tool code independently
+for both chat and MCP. The chat model cannot approve its own writes. Model/provider
+failures surface as errors rather than falling back to a general chatbot.
+Regression tests use provider fixtures; an opt-in model evaluation is available
+in `tests/evals/README.md` for checking a configured model's actual behavior.
 
 ### Topic watch tasks
 
@@ -198,8 +203,8 @@ Feed cloning, history purging and deletion require reviewed proposals. Partial
 task edits preserve omitted settings. `get_capabilities` explains available tools
 and links to settings for credentials, device permissions and other manual steps.
 Search is limited to stored Nightfeed content; unrelated questions stay outside
-the assistant's scope. Uncertain requests are classified with conversation context,
-while recognized app workflows proceed directly to the relevant tools.
+the assistant's scope. The answering model interprets uncertain requests with
+conversation context; exact read shortcuts use the same underlying tools.
 
 Feed-restricted keys can read/search/edit their permitted feeds and preview their
 existing source URLs. Creating feeds, inspecting arbitrary source pages and

@@ -20,8 +20,6 @@ class TaskTests(unittest.TestCase):
         self.tmp=TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.db=Path(self.tmp.name)/'tasks.db'
         self.app=core.create_app(dict(TESTING=True,DATABASE_PATH=self.db,START_SCHEDULER=False));self.client=authenticated_client(self.app)
         self.access=Access('user:1',chat=True);self.feed=core.create_profile(self.db,core.FeedRequest(**FEED))
-        scope=patch('rss_site_bridge.assistant_scope.classify',return_value=dict(decision='allow',usage={}))
-        scope.start();self.addCleanup(scope.stop)
 
     def save(self,**changes):
         result=tasks.save(self.db,self.access,dict(WATCH,**changes));return result['task_id']
