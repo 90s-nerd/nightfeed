@@ -232,7 +232,7 @@ body .settings-toggle-control:checked::after { background: var(--nf-onPrimary); 
   .sidebar-header .brand-mark { width: 32px; height: 32px; border-radius: 0; }
   .sidebar-header .brand-copy span { display: none; }
   .sidebar-menu { display: block; }
-  .nav-list { position: fixed; bottom: 0; left: 0; right: 0; z-index: 50; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 4px max(4px, env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left)); background: var(--nf-surface); border-top: 1px solid var(--nf-border); }
+  .nav-list { position: fixed; bottom: 0; left: 0; right: 0; z-index: 50; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; padding: 4px max(4px, env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left)); background: var(--nf-surface); border-top: 1px solid var(--nf-border); }
   .nav-link { flex-direction: column; justify-content: center; padding: 4px 0; gap: 2px; font-size: 12px; line-height: 16px; min-height: 48px; position: relative; }
   .nav-link.active { background: transparent; color: var(--nf-primary); }
   .nav-link .pill { position: absolute; top: 0; right: 4px; padding: 0 4px; font-size: 13px; }
@@ -390,6 +390,9 @@ body .settings-toggle-control:checked::after { background: var(--nf-onPrimary); 
 .notification-choice > .check-option, .settings-tls-row > .check-option { display: inline-flex; align-items: baseline; }
 .notification-choice > .check-option input, .settings-tls-row > .check-option input { align-self: flex-start; }
 .safe-browser-hint { color: var(--nf-secondary); font-size: 13px; line-height: 20px; }
+.safe-browser-empty { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 24px; text-align: center; background: var(--nf-surface); }
+.safe-browser-empty[hidden] { display: none; }
+.safe-browser-empty p { max-width: 480px; color: var(--nf-secondary); margin-top: 12px; }
 .session-ended { padding: 16px; background: var(--nf-subtle); border-bottom: 1px solid var(--nf-border); }
 @media(max-width:767px) {
   .settings-section, .settings-fields-two, .settings-smtp-grid { grid-template-columns: 1fr; }

@@ -270,7 +270,7 @@ def bind_download_handles(downloads: dict[str, dict[str, Any]], pending: list[An
 
 
 class SafeBrowserSession:
-    def __init__(self, source_url: str, profile_id: int, item_id: int):
+    def __init__(self, source_url: str, profile_id: int | None, item_id: int | None):
         self.id = secrets.token_urlsafe(24)
         self.source_url = source_url
         self.profile_id = profile_id
@@ -415,7 +415,7 @@ class SafeBrowserSession:
                 page.on("download", lambda download: pending_download_handles.append(download))
                 download_events.on("Browser.downloadWillBegin", download_started)
                 download_events.on("Browser.downloadProgress", download_progress)
-                response = page.goto(self.source_url, wait_until="domcontentloaded")
+                response = page.goto(self.source_url, wait_until="domcontentloaded") if self.source_url else None
                 if response is not None and not response.ok:
                     raise RuntimeError(f"Upstream HTTP error: {response.status} {response.status_text}")
                 page.wait_for_timeout(400)
@@ -462,7 +462,7 @@ class SafeBrowserSession:
                         scroll = {"x": 0, "y": 0, "max_x": 0, "max_y": 0}
                         title = "Opening page…"
                     return {
-                        "url": page.url,
+                        "url": "" if page.url == "about:blank" else page.url,
                         "title": title,
                         "can_go_back": True,
                         "popup_attempts": popup_attempts,
@@ -727,9 +727,9 @@ def is_safe_browser_url(value: str) -> bool:
     )
 
 
-def create_safe_browser_session(source_url: str, profile_id: int, item_id: int) -> SafeBrowserSession:
-    if not is_safe_browser_url(source_url):
-        raise RuntimeError("Only public http or https topic URLs can be opened safely.")
+def create_safe_browser_session(source_url: str, profile_id: int | None = None, item_id: int | None = None) -> SafeBrowserSession:
+    if not (source_url == "" and profile_id is None and item_id is None) and not is_safe_browser_url(source_url):
+        raise RuntimeError("Only public http or https URLs can be opened safely.")
     session = SafeBrowserSession(source_url, profile_id, item_id)
     session.start()
     with _safe_browser_sessions_lock:
@@ -737,7 +737,7 @@ def create_safe_browser_session(source_url: str, profile_id: int, item_id: int) 
     return session
 
 
-def get_safe_browser_session(session_id: str, profile_id: int, item_id: int) -> SafeBrowserSession | None:
+def get_safe_browser_session(session_id: str, profile_id: int | None = None, item_id: int | None = None) -> SafeBrowserSession | None:
     with _safe_browser_sessions_lock:
         session = _safe_browser_sessions.get(session_id)
     if session is None or session.closed:
@@ -1591,20 +1591,33 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             purged=request.args.get("purged") == "1",
         )
 
-    def safe_return_destination(value: str | None, profile_id: int) -> str:
-        fallback = url_for("profile_detail", profile_id=profile_id)
+    def safe_return_destination(value: str | None, profile_id: int | None) -> str:
+        fallback = url_for("profile_detail", profile_id=profile_id) if profile_id is not None else url_for("timeline")
         if not value or not value.startswith("/") or value.startswith("//"):
             return fallback
         if "\\" in value or any(ord(char) < 32 for char in value):
             return fallback
         parsed = urlparse(value)
         allowed = parsed.path in {"/", "/feeds", fallback}
-        if re.fullmatch(r"/notifications/[1-9]\d*", parsed.path):
+        if profile_id is not None and re.fullmatch(r"/notifications/[1-9]\d*", parsed.path):
             notification = get_notification(Path(app.config["DATABASE_PATH"]), int(parsed.path.rsplit("/", 1)[-1]))
             allowed = notification is not None and notification.profile_id == profile_id
         if parsed.scheme or parsed.netloc or not allowed:
             return fallback
         return value
+
+    @app.get("/safe-browser")
+    def safe_browser_route() -> Response:
+        return_to = safe_return_destination(request.args.get("return_to"), None)
+        safe_session = None
+        error = ""
+        try:
+            safe_session = create_safe_browser_session("")
+            safe_session.return_to = return_to
+        except RuntimeError as exc:
+            error = str(exc)
+            log_event(logging.WARNING, "safe_browser_start_failed", error=error)
+        return render_safe_browser(None, None, safe_session, return_to, error)
 
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe")
     def safe_topic_route(profile_id: int, item_id: int) -> Response:
@@ -1636,6 +1649,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 error=error,
             )
 
+        return render_safe_browser(profile, item, safe_session, return_to, error)
+
+    def render_safe_browser(profile, item, safe_session, return_to, error) -> Response:
         response = Response(
             render_template(
                 "safe_browser.html",
@@ -1657,11 +1673,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    def require_safe_session(profile_id: int, item_id: int, session_id: str) -> SafeBrowserSession | None:
+    def require_safe_session(profile_id: int | None, item_id: int | None, session_id: str) -> SafeBrowserSession | None:
         return get_safe_browser_session(session_id, profile_id, item_id)
 
+    @app.get("/safe-browser/<session_id>/screenshot", defaults={"profile_id": None, "item_id": None})
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/screenshot")
-    def safe_browser_screenshot_route(profile_id: int, item_id: int, session_id: str) -> Response:
+    def safe_browser_screenshot_route(profile_id: int | None, item_id: int | None, session_id: str) -> Response:
         safe_session = require_safe_session(profile_id, item_id, session_id)
         if safe_session is None:
             return Response("Safe browser session expired.", status=410, mimetype="text/plain; charset=utf-8")
@@ -1683,8 +1700,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             downloaded["downloaders"] = eligible_profiles(Path(app.config["DATABASE_PATH"]), downloaded["name"])
         return state
 
+    @app.get("/safe-browser/<session_id>/state", defaults={"profile_id": None, "item_id": None})
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/state")
-    def safe_browser_state_route(profile_id: int, item_id: int, session_id: str) -> Response:
+    def safe_browser_state_route(profile_id: int | None, item_id: int | None, session_id: str) -> Response:
         safe_session = require_safe_session(profile_id, item_id, session_id)
         if safe_session is None:
             return jsonify({"error": "Safe browser session expired."}), 410
@@ -1694,8 +1712,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 410
 
+    @app.post("/safe-browser/<session_id>/command", defaults={"profile_id": None, "item_id": None})
     @app.post("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/command")
-    def safe_browser_command_route(profile_id: int, item_id: int, session_id: str) -> Response:
+    def safe_browser_command_route(profile_id: int | None, item_id: int | None, session_id: str) -> Response:
         safe_session = require_safe_session(profile_id, item_id, session_id)
         if safe_session is None:
             return jsonify({"error": "Safe browser session expired."}), 410
@@ -1710,10 +1729,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
 
+    @app.get("/safe-browser/<session_id>/downloads/<download_id>", defaults={"profile_id": None, "item_id": None})
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/downloads/<download_id>")
     def safe_browser_download_route(
-        profile_id: int,
-        item_id: int,
+        profile_id: int | None,
+        item_id: int | None,
         session_id: str,
         download_id: str,
     ) -> Response:
@@ -1731,8 +1751,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             max_age=0,
         )
 
+    @app.post("/safe-browser/<session_id>/close", defaults={"profile_id": None, "item_id": None})
     @app.post("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/close")
-    def safe_browser_close_route(profile_id: int, item_id: int, session_id: str) -> Response:
+    def safe_browser_close_route(profile_id: int | None, item_id: int | None, session_id: str) -> Response:
         safe_session = require_safe_session(profile_id, item_id, session_id)
         return_to = safe_return_destination(
             getattr(safe_session, "return_to", None) or request.form.get("return_to"), profile_id

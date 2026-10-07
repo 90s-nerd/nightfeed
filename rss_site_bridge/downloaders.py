@@ -292,6 +292,7 @@ def register(app, safe_session_lookup):
         adapter = ADAPTERS[profile['kind']](profile, key)
         return jsonify(categories=adapter.categories(), default_category=profile['default_category'], require_category=bool(profile['require_category']), start_immediately=bool(profile['start_immediately']))
 
+    @bp.post('/safe-browser/<session_id>/downloads/<download_id>/send', defaults={'profile_id': None, 'item_id': None})
     @bp.post('/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/downloads/<download_id>/send')
     def send(profile_id, item_id, session_id, download_id):
         session = safe_session_lookup(session_id, profile_id, item_id)
