@@ -34,12 +34,12 @@ def fake_complete(config, history, tools, system, on_delta=None):
             on_delta(text[:20]); on_delta(text[20:])
         return dict(role='assistant', content=text, tool_calls=[], _usage=dict(available=True,input_tokens=1200,output_tokens=80,cached_tokens=100,reasoning_tokens=0,context_window=16000,estimated_usd=.001))
     text = history[-1]['content'].lower()
+    if text == 'who is the us president?':
+        return dict(role='assistant',content=ai.scope.REDIRECT,tool_calls=[])
     name, args = ('search_topics', dict(query='Linux')) if 'search' in text else ('propose_feed_change', dict(config=CONFIG))
     return dict(role='assistant', content='', tool_calls=[dict(id='fixture-' + str(len(history)), type='function', function=dict(name=name, arguments=json.dumps(args)))], _usage=dict(available=True,input_tokens=1200,output_tokens=80,cached_tokens=100,reasoning_tokens=0,context_window=16000,estimated_usd=.001))
 
 
-def fake_scope(config, history, context):
-    return dict(decision='redirect' if history[-1]['content']=='Who is the US president?' else 'allow',usage={})
 
 
 with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
@@ -50,7 +50,7 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
     Thread(target=server.serve_forever, daemon=True).start()
     address = f'http://127.0.0.1:{server.server_port}'
     try:
-        with patch('rss_site_bridge.assistant_scope.classify', side_effect=fake_scope), patch('rss_site_bridge.assistant_provider.test_connection', return_value=True), patch('rss_site_bridge.assistant_provider.complete', side_effect=fake_complete), patch('rss_site_bridge.assistant_provider.transcribe', return_value='Search my saved Linux content'), patch('rss_site_bridge.assistant_services.fetch_document', return_value=core.FetchedDocument(HTML, CONFIG['source_url'])):
+        with patch('rss_site_bridge.assistant_provider.test_connection', return_value=True), patch('rss_site_bridge.assistant_provider.complete', side_effect=fake_complete), patch('rss_site_bridge.assistant_provider.transcribe', return_value='Search my saved Linux content'), patch('rss_site_bridge.assistant_services.fetch_document', return_value=core.FetchedDocument(HTML, CONFIG['source_url'])):
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(channel='chrome')
                 context = browser.new_context(viewport={'width':1440,'height':1000})
@@ -184,6 +184,9 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 composer.press('Enter')
                 expect(page.locator('[data-assistant-messages]')).to_contain_text('3 items were added today')
                 expect(page.locator('[data-assistant-status]')).to_have_text('')
+                composer.fill('Show');composer.press('Enter')
+                expect(page.locator('[data-assistant-messages]')).to_contain_text('I found 3 matching items')
+                expect(page.locator('[data-assistant-status]')).to_have_text('')
                 composer.fill('Who is the US president?')
                 composer.press('Enter')
                 expect(page.locator('[data-assistant-status]')).to_have_text('')
@@ -200,6 +203,20 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.screenshot(path=str(ROOT / '.test-preview/assistant-chat-mobile-dark.png'), full_page=True)
                 panel_colors = page.locator('[data-assistant-panel]').evaluate('(el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]')
                 assert panel_colors[0] != 'rgb(255, 255, 255)', panel_colors
+                # Real refresh replies must render escaped feed labels as links,
+                # including brackets, backslashes and a literal ]( in the name.
+                titles=['[Mal] Top releases this week','[Mal] Recently Added',r'Slash \\ Path ](Part)']
+                for title in titles:
+                    config,_=ai.Services(db,ai.Access('user:1',chat=True)).config(dict(CONFIG,feed_title=title))
+                    core.create_profile(db,config)
+                composer.fill('Refresh all feeds');composer.press('Enter')
+                expect(page.locator('[data-assistant-status]')).to_have_text('',timeout=20000)
+                for title in titles:
+                    expect(page.locator('[data-assistant-messages]').get_by_role('link',name=title,exact=True)).to_be_visible()
+                assert '[\\[Mal\\]' not in page.locator('[data-assistant-messages]').inner_text()
+                page.reload();expect(page.locator('[data-assistant-panel]')).to_be_visible()
+                for title in titles:
+                    expect(page.locator('[data-assistant-messages]').get_by_role('link',name=title,exact=True)).to_be_visible()
                 page.get_by_role('button', name='Close assistant').click()
                 expect(page.locator('[data-assistant-panel]')).to_be_hidden()
                 page.goto(address + '/settings/ai/audit')

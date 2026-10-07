@@ -89,14 +89,17 @@
   // Build DOM nodes rather than accepting HTML from model responses.
   const inlineMarkdown = (target, text, depth = 0) => {
     if (depth > 5) { target.append(document.createTextNode(text)); return; }
-    const tokens = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|\[[^\]\n]+\]\([^\s)]+\))/g;
+    const tokens = /(\\[\\`*_{}\[\]()#+.!>\-]|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|\[(?:\\.|[^\]\\\n])+\]\((?:\\.|[^\s()\\]|\([^\s()]*\))+\))/g;
+    const unescape = value => value.replace(/\\([\\`*_{}\[\]()#+.!>\-])/g, '$1');
     let cursor = 0;
     for (const match of text.matchAll(tokens)) {
       target.append(document.createTextNode(text.slice(cursor, match.index)));
       const token = match[0];
-      if (token[0] === '[') {
-        const split = token.indexOf('](');
-        target.append(link(token.slice(1, split), token.slice(split + 2, -1)));
+      if (token[0] === '\\') {
+        target.append(document.createTextNode(unescape(token)));
+      } else if (token[0] === '[') {
+        const parts = token.match(/^\[((?:\\.|[^\]\\\n])+)\]\(((?:\\.|[^\s()\\]|\([^\s()]*\))+)\)$/);
+        target.append(link(unescape(parts[1]), unescape(parts[2])));
       } else {
         const code = token[0] === '`', bold = token.startsWith('**') || token.startsWith('__');
         const element = document.createElement(code ? 'code' : bold ? 'strong' : 'em');

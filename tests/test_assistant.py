@@ -36,8 +36,6 @@ class AssistantTests(unittest.TestCase):
         self.fetch = patch('rss_site_bridge.assistant_services.fetch_document', return_value=core.FetchedDocument(HTML, CONFIG['source_url']))
         self.fetch.start()
         self.addCleanup(self.fetch.stop)
-        self.scope = patch('rss_site_bridge.assistant_scope.classify', return_value=dict(decision='allow', usage={}))
-        self.scope.start(); self.addCleanup(self.scope.stop)
 
     def activate(self):
         config = dict(name='Fixture', api_type='compatible', base_url='https://provider.example/v1', model='fixture', api_key='secret-fixture',

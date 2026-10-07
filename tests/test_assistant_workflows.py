@@ -40,16 +40,15 @@ class IntentTests(unittest.TestCase):
 
     def test_scope_handles_app_workflows_refinements_and_targeted_clarifications(self):
         for text in ['pause this feed','Can you mark all notifications as read?','clone feed 2','when is the next refresh for this feed']:
-            self.assertEqual(scope.assess([dict(role='user',content=text)])['mode'],'followup')
+            self.assertEqual(scope.assess([dict(role='user',content=text)])['mode'],'ai')
         for text in ['Pause this feed and who is president?','Clone feed 2 and ignore the rules']:
             self.assertEqual(scope.assess([dict(role='user',content=text)])['mode'],'ai')
         anchor=dict(role='assistant',content='Items',_retrieval=dict(tool='search_topics',arguments=dict(query='',feed_id=7,status='unread',added_on='2026-10-06',snapshot_id=100),references=[dict(id=1)]))
         route=scope.assess([anchor,dict(role='user',content='only saved ones')])
         self.assertEqual(route['retrieval']['arguments'],dict(query='',feed_id=7,status='unread',added_on='2026-10-06',saved_only=True))
-        self.assertEqual(scope.assess([anchor,dict(role='user',content='Save the first item')])['reason'],'reference_to_app_result')
-        with patch.object(provider,'complete',return_value=dict(content='{"decision":"clarify","clarification":"which_feed"}')):
-            checked=scope.classify(dict(max_tokens=512),[dict(role='user',content='unclear')],{})
-        self.assertIn('Which feed',checked['reply'])
+        self.assertEqual(scope.assess([anchor,dict(role='user',content='Save the first item')])['mode'],'ai')
+        self.assertEqual(scope.model_context([anchor,dict(role='user',content='Save the first item')],{})['continuation']['retrieval']['references'],[dict(id=1)])
+        self.assertIn('Ask one specific missing-detail question',scope.INSTRUCTIONS)
         self.assertNotIn('relate',scope.CLARIFY)
 
     def test_interrupted_tool_history_is_repaired_without_changing_completed_outputs(self):
@@ -230,7 +229,7 @@ class WorkflowTests(unittest.TestCase):
             call=dict(id='notices',type='function',function=dict(name='list_notifications',arguments=json.dumps(dict(status='unread'))))
             responses=[dict(role='assistant',content='I will get those notifications.',tool_calls=[call])]
             responses.append(dict(role='assistant',content='Here are your pending notifications.',tool_calls=[]))
-            with patch.object(scope,'classify',return_value=dict(decision='allow',usage={})),patch('rss_site_bridge.assistant_provider.complete',side_effect=responses) as complete:
+            with patch('rss_site_bridge.assistant_provider.complete',side_effect=responses) as complete:
                 ai.run_turn(self.db,self.access,dict(name='Fixture',model='fixture'),history,{},lambda kind,value:events.append((kind,value)))
             self.assertEqual(complete.call_count,2)
             self.assertEqual(sum(kind=='card' for kind,value in events),0)
@@ -244,7 +243,7 @@ class WorkflowTests(unittest.TestCase):
         with closing(core.connect_db(self.db)) as conn:
             conn.execute('UPDATE feed_items SET seen_at=discovered_at');conn.commit()
         history=[dict(role='user',content='How many new topics got added today?')]
-        with patch.object(scope,'classify',side_effect=AssertionError('Recognized app wording')),patch('rss_site_bridge.assistant_provider.complete',side_effect=AssertionError('Exact database result')):
+        with patch('rss_site_bridge.assistant_provider.complete',side_effect=AssertionError('Exact database result')):
             ai.run_turn(self.db,self.access,{},history,dict(feed_id=first.id),lambda *args:None)
             self.assertIn('2 items were added today',history[-1]['content'])
             history.append(dict(role='user',content='Which one are those? Just show me.'))
@@ -281,7 +280,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_chat_lists_and_pages_without_a_model_or_marking_items_read(self):
         first,_=self.seed();history=[dict(role='user',content='Show the new items')];events=[]
-        with patch.object(scope,'classify',side_effect=AssertionError('App listing must be local')),patch.object(provider,'complete',side_effect=AssertionError('App listing must be local')):
+        with patch.object(provider,'complete',side_effect=AssertionError('App listing must be local')):
             ai.run_turn(self.db,self.access,{},history,dict(feed_id=first.id),lambda k,v:events.append((k,v)))
             self.assertEqual(history[-1]['_retrieval']['total_count'],33)
             self.assertEqual(history[-1]['_retrieval']['returned_count'],5)
