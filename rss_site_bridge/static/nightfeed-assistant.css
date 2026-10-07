@@ -31,3 +31,11 @@ body.assistant-open .app-shell{padding-right:460px}.assistant-composer [aria-pre
 .assistant-companion{position:relative;display:block;width:100%;height:100%;pointer-events:none}.assistant-companion img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain;opacity:1}.assistant-companion img.assistant-companion-closed{opacity:0}.assistant-companion[data-blink=true] img:not(.assistant-companion-closed){opacity:0}.assistant-companion[data-blink=true] img.assistant-companion-closed{opacity:1}.assistant-companion.assistant-header-companion{width:36px;height:40px}
 .assistant-choices{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.assistant-choices .btn{font-size:13px;min-height:34px;padding:6px 10px}
 .assistant-choices .btn[aria-pressed=true]{border-color:var(--nf-primary);background:var(--nf-selected);color:var(--nf-onSelected)}
+.assistant-activity{margin:0 0 14px;color:var(--nf-secondary,#666);font-size:13px;overflow-wrap:anywhere}
+.assistant-activity summary{cursor:pointer;padding:6px 0;width:fit-content}
+.assistant-activity summary:focus-visible{outline:2px solid var(--nf-accent,#c45518);outline-offset:3px;border-radius:4px}
+.assistant-activity ol{list-style:none;padding:0 0 0 12px;margin:6px 0;border-left:2px solid var(--nf-border,#ddd)}
+.assistant-activity li{padding:5px 0 9px;white-space:normal}
+.assistant-activity li strong{font-weight:600}
+.assistant-activity li small{margin-left:8px}
+.assistant-activity li p{margin:4px 0 0;white-space:pre-wrap}

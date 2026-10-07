@@ -133,6 +133,14 @@ Conversational scope depends on the configured model. Identity, feed permissions
 argument validation and proposal approvals are enforced in tool code independently
 for both chat and MCP. The chat model cannot approve its own writes. Model/provider
 failures surface as errors rather than falling back to a general chatbot.
+Chat confirmations apply the specific proposal presented for review. Agreeing to
+a setup question continues setup; it does not approve an unseen or older draft.
+
+Chat turns with tool calls include a collapsed **Activity** section. Expand it
+to see public assistant updates, tool names, completion status and concise
+result counts. These steps remain available after reopening the conversation.
+Activity does not expose private model reasoning, raw tool arguments or source
+HTML; the final answer remains separate from the activity trace.
 Regression tests use provider fixtures; an opt-in model evaluation is available
 in `tests/evals/README.md` for checking a configured model's actual behavior.
 

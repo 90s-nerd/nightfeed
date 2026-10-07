@@ -462,10 +462,11 @@ class AssistantTests(unittest.TestCase):
         feed=self.create_feed();self.seed_notifications(feed.id,2)
         access=Access('user:1',chat=True,conversation='approval-test')
         service=Services(self.db,access)
+        cards=[]
         for action in ('mark_all_read','mark_all_read'):
             # Two separate pending review choices, without relying on model output.
-            service.call('propose_notification_action',dict(action=action))
-        history=[dict(role='assistant',content='Would you like me to proceed?'),dict(role='user',content='yes')]
+            cards.append(dict(kind='draft',data=service.call('propose_notification_action',dict(action=action))))
+        history=[dict(role='assistant',content='Would you like me to proceed?',_cards=cards),dict(role='user',content='yes')]
         with patch.object(provider,'complete') as complete:
             ai.run_turn(self.db,access,dict(name='Fixture',model='fixture'),history,{},lambda *args:None);complete.assert_not_called()
         self.assertIn('More than one',history[-1]['content'])

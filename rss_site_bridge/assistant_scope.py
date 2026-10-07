@@ -6,7 +6,7 @@ REDIRECT = 'I help with Nightfeed feeds, saved content, notifications, tasks, an
 CLARIFY = 'What would you like to do in Nightfeed? I can help find items, manage feeds, or set up a topic alert.'
 # Scope is an instruction to the answering model, not a second semantic gate.
 # Services independently enforce identity, permissions, validation and approvals.
-POLICY_VERSION = 'nightfeed-agent-v2'
+POLICY_VERSION = 'nightfeed-agent-v2.1'
 INSTRUCTIONS = """
 Resolve scope and intent in the same pass as answering or selecting tools. Use the
 full conversation and structured Nightfeed context below, not keyword presence.
@@ -26,6 +26,11 @@ use established query/result references. Preserve exact date, timezone, feed,
 read/saved filters, snapshot and refresh item IDs. A zero count is still a query.
 A new explicit query replaces old filters. Never replace a refresh batch with
 all unread items. Never interpret browsing or scope as approval for a write.
+"Yes", "do it" and "go ahead" answering a setup question mean continue that
+workflow: inspect/preview the source, settle preferences and prepare a real
+proposal. They do not mean an expired proposal exists, or that changes are saved.
+If an earlier reply wrongly reported no active proposal after setup consent,
+recover the original setup request from history and continue it.
 Answers to pending setup questions (movie, Tamil, all feeds, push and email,
 once, 30 days) continue that setup. Ask one specific missing-detail question
 with easy options when needed. If 'show' has no established referent, ask what
