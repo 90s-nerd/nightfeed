@@ -202,7 +202,7 @@ def validate_images(images):
 
 
 def text_context_size(history):
-    return len(json.dumps([{k: v for k, v in m.items() if k != '_images'} for m in history]))
+    return len(json.dumps([{k: v for k, v in m.items() if k not in ('_images', '_activity')} for m in history]))
 
 
 def visible_history(history):
@@ -216,7 +216,7 @@ def visible_history(history):
         content = message.get('content') or ''
         if message['role'] == 'assistant' and (has_draft or message.get('_card_only') or content.strip() in result_texts): content = ''
         if content or cards or message.get('_images'):
-            visible.append(dict(role=message['role'], content=content, cards=cards, images=message.get('_images', []),choices=message.get('_choices',[]) if message is history[-1] else [],choice_mode=message.get('_choice_mode','single')))
+            visible.append(dict(role=message['role'], content=content, cards=cards, activity=message.get('_activity', []), images=message.get('_images', []),choices=message.get('_choices',[]) if message is history[-1] else [],choice_mode=message.get('_choice_mode','single')))
     return visible
 
 
@@ -363,11 +363,68 @@ def agent_instructions(history, context, watch_state=None):
     return instruction
 
 
+def presented_proposals(history):
+    """Bind chat approval to the review actually presented in the focused turn.
+
+    Words such as 'proceed' can be setup questions, not proposal approvals.
+    Legacy conversations locate the card preceding the generated review prompt.
+    Neither a user message nor an unpresented database draft establishes review.
+    """
+    preceding=history[:-1]
+    focus=next((message for message in reversed(preceding) if message['role']=='assistant'),{})
+    targets=list(focus.get('_proposal_ids',[]))
+    targets.extend(card['data']['draft_id'] for card in focus.get('_cards',[])
+                   if card.get('kind')=='draft' and card.get('data',{}).get('draft_id'))
+    if not targets and focus.get('_card_only') and focus.get('content')=='Please approve or deny this proposal.':
+        # Before proposal IDs were persisted, the card and review prompt lived
+        # in separate messages in the same assistant turn.
+        for message in reversed(preceding):
+            if message['role']=='user': break
+            if message['role']=='assistant':
+                targets.extend(card['data']['draft_id'] for card in message.get('_cards',[])
+                               if card.get('kind')=='draft' and card.get('data',{}).get('draft_id'))
+    return set(targets)
+
+
 def run_turn(db, access, config, history, context, emit, checkpoint=lambda: None):
+    # Keep observable activity on the user turn, independent of tool protocol
+    # messages that may be removed on failure. Provider adapters ignore this field.
+    turn = history[-1]
+    def activity(label, status='complete', detail='', entry=None):
+        entries = turn.setdefault('_activity', [])
+        if entry is None:
+            if len(entries) >= 60: return None
+            entry = dict(id=str(len(entries)), label=label[:120])
+            entries.append(entry)
+        entry.update(status=status, detail=detail[:2000])
+        emit('activity', dict(entry))
+        checkpoint()
+        return entry
     user_request=history[-1].get('content','')
     access.refresh_authorized = access.chat and explicit_refresh_request(history[-1].get('content', ''))
     show_refresh_topics=refresh_topics_requested(history[-1].get('content',''))
     service = Services(db, access, lambda title, detail='': emit('progress', dict(title=title, detail=detail)))
+    original_call = service.call
+    def traced_call(name, arguments):
+        # Automatically injected live state is not a user-requested action.
+        if name == 'get_app_state': return original_call(name, arguments)
+        entry = activity(name.replace('_', ' ').capitalize(), 'running')
+        try:
+            result = original_call(name, arguments)
+        except Exception:
+            if entry is not None: activity('', 'error', 'This step did not complete.', entry)
+            raise
+        # Whitelist numeric outcomes, never raw arguments, credentials or HTML.
+        details = []
+        if isinstance(result, dict):
+            for key, label in (('total_count','Matching results'), ('returned_count','Returned'), ('refreshed_count','Feeds refreshed'), ('failed_count','Feeds failed'), ('new_item_count','New items')):
+                value = result.get(key)
+                if type(value) is int: details.append(f'{label}: {value}')
+            if name.startswith('propose_'): details.append('Prepared for your approval; not applied.')
+        failed = isinstance(result, dict) and result.get('success') is False
+        if entry is not None: activity('', 'error' if failed else 'complete', '; '.join(details) or ('This step did not complete.' if failed else 'Completed.'), entry)
+        return result
+    service.call = traced_call
     if access.refresh_authorized and not history[-1].get('_images') and bulk_refresh_request(history[-1].get('content','')):
         audit.record(db,access.principal,'scope_route',conversation=access.conversation,route='local',confidence='high',reason='explicit_bulk_refresh_workflow')
         show=bool(re.search(r'\b(?:show|list|tell)\b',history[-1]['content'],re.I))
@@ -380,19 +437,15 @@ def run_turn(db, access, config, history, context, emit, checkpoint=lambda: None
     watch_state=watch.previous(history)
     if access.chat and watch.handle(service,history,emit): return history
     reply = ' '.join(history[-1]['content'].strip().lower().rstrip('.!?').split())
-    last_assistant = next((m for m in reversed(history[:-1]) if m['role'] == 'assistant'), {})
-    prompt_text = last_assistant.get('content', '')
-    approval_prompt = (
-        bool(re.search(r'\b(?:proceed|go ahead|approve|confirm)\b|\bapply (?:it|this|the|changes)\b', prompt_text, re.I))
-        or ('?' not in prompt_text and bool(re.search(r'\bproposal\b', prompt_text, re.I)))
-        or any(card['kind'] == 'draft' for card in last_assistant.get('_cards', []))
-    )
+    proposal_ids=presented_proposals(history)
+    approval_prompt=bool(proposal_ids)
     confirming = reply in APPROVALS or (reply in CONFIRMATIONS and approval_prompt)
     declining=reply in ('deny','decline proposal','cancel proposal') or (approval_prompt and reply in ('no','no thanks','no thank you','cancel','deny it','dont apply it','do not apply it'))
-    if not history[-1].get('_images') and (confirming or declining):
+    if access.chat and proposal_ids and not history[-1].get('_images') and (confirming or declining):
         with closing(core.connect_db(db)) as conn:
             drafts = conn.execute('SELECT id,kind FROM assistant_drafts WHERE principal=? AND conversation=? AND result IS NULL AND expires>? ORDER BY rowid DESC',
                                   (access.principal, access.conversation, time.time())).fetchall()
+        drafts=[draft for draft in drafts if draft['id'] in proposal_ids]
         if 'feed' in reply and confirming:
             drafts=[draft for draft in drafts if draft['kind']=='feed']
         if len(drafts) == 1:
@@ -476,8 +529,10 @@ def run_turn(db, access, config, history, context, emit, checkpoint=lambda: None
                 emit('delta', dict(text=message['content']))
             emit('message', dict(content=message['content']))
             return history
-        # Tool-call narration is transient, not another answer on stream or reload.
+        # Public tool-call narration belongs in activity, not a second answer.
         message['_card_only'] = True
+        if message.get('content'):
+            activity('Assistant update', detail=message['content'])
         emit('message', dict(content='', card_only=True))
         refresh_results = []
         refresh_calls=0;remaining=0;skipped=0
@@ -543,7 +598,8 @@ def run_turn(db, access, config, history, context, emit, checkpoint=lambda: None
         if any(card['kind'] in ('draft','task_setup') for card in message.get('_cards', [])):
             message['_card_only'] = True
             instruction = 'Choose the task settings and select Create task.' if any(card['kind']=='task_setup' for card in message.get('_cards', [])) else 'Please approve or deny this proposal.'
-            history.append(dict(role='assistant', content=instruction, _card_only=True))
+            history.append(dict(role='assistant', content=instruction, _card_only=True,
+                                _proposal_ids=[card['data']['draft_id'] for card in message.get('_cards',[]) if card['kind']=='draft']))
             emit('message', dict(content='', card_only=True))
             return history
         if refresh_calls == len(calls):
@@ -695,6 +751,9 @@ def register(app):
             if not row: return jsonify(error='Conversation not found.'), 404
             if row['busy_until']:
                 history = json.loads(row['history'])
+                for message in history:
+                    for step in message.get('_activity', []):
+                        if step['status'] == 'running': step.update(status='stopped', detail='Stopped before this step completed.')
                 completed = conn.execute('SELECT d.id,d.result FROM assistant_drafts d JOIN assistant_actions a ON a.draft_id=d.id WHERE d.conversation=? AND d.principal=? AND a.created>=? AND d.result IS NOT NULL', (token, access.principal, row['busy_until'] - 900)).fetchall()
                 for action in completed:
                     result = json.loads(action['result'])
@@ -779,6 +838,9 @@ def register(app):
                     run_turn(db, access, config, history, context, emit, checkpoint)
                 except Exception as exc:
                     message = str(exc) if isinstance(exc, ValueError) else 'The assistant could not finish this request. Retry or use the manual editor.'
+                    for item in history:
+                        for step in item.get('_activity', []):
+                            if step['status'] == 'running': step.update(status='error', detail='This step did not complete.')
                     audit.record(db, access.principal, 'turn_error', conversation=token, status='error', error=message)
                     # Remove incomplete tool-call sequences before a subsequent turn.
                     while history and history[-1]['role'] in ('tool', 'assistant') and not history[-1].get('_cards'):

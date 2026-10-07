@@ -21,6 +21,22 @@
   const remember = (key, value) => { try { sessionStorage.setItem('nightfeed-assistant:' + key, value); } catch (_) {} };
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text) el.textContent = text; if (cls) el.className = cls; return el; };
   const bottom = () => { messages.scrollTop = messages.scrollHeight; };
+  let activityBox;
+  const activity = entry => {
+    if (!activityBox) {
+      activityBox = node('details', '', 'assistant-activity');
+      activityBox.append(node('summary', 'Activity'), node('ol'));
+      messages.append(activityBox);
+    }
+    const list = activityBox.querySelector('ol');
+    let row = Array.from(list.children).find(item => item.dataset.stepId === entry.id);
+    if (!row) { row = node('li'); row.dataset.stepId = entry.id; list.append(row); }
+    row.dataset.status = entry.status;
+    row.replaceChildren(node('strong', entry.label), node('small', entry.status === 'running' ? 'In progress' : entry.status === 'error' ? 'Failed' : entry.status === 'stopped' ? 'Stopped' : 'Completed'));
+    if (entry.detail) row.append(node('p', entry.detail));
+    activityBox.querySelector('summary').textContent = `Activity · ${list.children.length} ${list.children.length === 1 ? 'step' : 'steps'}`;
+    bottom();
+  };
   const deviceContext = () => { let token=''; try { token=localStorage.getItem('nightfeed.push.device') || ''; } catch (_) {} return {device_token:token, appearance:document.documentElement.dataset.theme || 'system'}; };
   const setBusy = value => {
     busy = value; panel.dataset.busy = String(value); input.readOnly = value;
@@ -338,13 +354,13 @@
   const load = async id => {
     if (id !== conversation) stopVoice();
     clearTimeout(reloadTimer);
-    conversation = id; select.value = id; remember('conversation', id); messages.replaceChildren();
+    conversation = id; select.value = id; remember('conversation', id); messages.replaceChildren(); activityBox = null;
     showUsage(null); status.textContent = '';
     if (!id) { setBusy(false); message('assistant', 'I help with Nightfeed feeds, saved content, notifications, tasks, and settings. Paste a listing URL or tell me what you want to do.'); return; }
     const result = await api(`/api/assistant/conversations/${id}`);
     if (conversation !== id) return;
     showUsage(result.usage && Object.keys(result.usage).length ? result.usage : null);
-    for (const item of result.messages) { if (item.content || item.images?.length) choices(message(item.role, item.content, item.images || []),item.choices,item.choice_mode); (item.cards || []).forEach(value => card(value, true)); }
+    for (const item of result.messages) { if (item.content || item.images?.length) choices(message(item.role, item.content, item.images || []),item.choices,item.choice_mode); if (item.role === 'user') activityBox = null; (item.activity || []).forEach(activity); (item.cards || []).forEach(value => card(value, true)); }
     panel.querySelectorAll('[data-apply-draft]').forEach(button => { if ((result.applied_drafts || []).includes(button.dataset.applyDraft)) { button.dataset.applied='1'; button.disabled=true; button.textContent='Applied'; } });
     setBusy(result.busy);
     for (const box of messages.querySelectorAll('[data-draft-id]')) {
@@ -370,7 +386,7 @@
     }
     catch (error) { await load(''); status.textContent = error.message; }
   };
-  document.addEventListener('click', event => { panel.querySelectorAll('details[open]').forEach(menu => { if (!menu.contains(event.target)) menu.open = false; }); });
+  document.addEventListener('click', event => { panel.querySelectorAll('details[open]:not(.assistant-activity)').forEach(menu => { if (!menu.contains(event.target)) menu.open = false; }); });
   launcher.addEventListener('click', () => open(panel.hidden));
   const switchView = value => {
     panel.querySelector('#assistant-chat-view').hidden=value!=='chat';
@@ -416,7 +432,7 @@
       }
       accepted = true;
       messages.querySelectorAll('.assistant-choices').forEach(row=>row.remove());
-      message('user', text, sentImages); streamingMessage = null; pendingNavigation = ''; turnError = false;
+      message('user', text, sentImages); activityBox = null; streamingMessage = null; pendingNavigation = ''; turnError = false;
       status.textContent = 'Thinking…';
       const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
       const processEvent = block => {
@@ -425,6 +441,7 @@
         if (!raw) return; const value = JSON.parse(raw);
         if (type === 'progress') status.textContent = value.title + (value.detail ? ': ' + value.detail : '');
         if (type === 'card') card(value);
+        if (type === 'activity') activity(value);
         if (type === 'usage') showUsage(value);
         if (type === 'reply_start') streamingMessage = null;
         if (type === 'delta') { streamingMessage ||= message('assistant', ''); streamingMessage.textContent += value.text; bottom(); }

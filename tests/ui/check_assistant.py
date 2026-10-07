@@ -29,15 +29,22 @@ HTML = '<article><a href="/one">Linux release one</a><p>A stable release</p></ar
 
 def fake_complete(config, history, tools, system, on_delta=None):
     if history[-1]['role'] == 'tool':
-        text = 'I found 3 matching items in your stored content.'
+        inspecting=any(call.get('id')==history[-1].get('tool_call_id') and call.get('function',{}).get('name')=='inspect_source' for message in history for call in message.get('tool_calls',[]))
+        text = 'I inspected the listing. What should we call the feed?' if inspecting else 'I found 3 matching items in your stored content.'
         if on_delta:
             on_delta(text[:20]); on_delta(text[20:])
         return dict(role='assistant', content=text, tool_calls=[], _usage=dict(available=True,input_tokens=1200,output_tokens=80,cached_tokens=100,reasoning_tokens=0,context_window=16000,estimated_usd=.001))
     text = history[-1]['content'].lower()
+    if text == 'help me set up a feed':
+        return dict(role='assistant',content='Would you like me to proceed with this basic feed setup now?',tool_calls=[])
+    if text == 'yes' and any(message.get('content')=='Would you like me to proceed with this basic feed setup now?' for message in history):
+        return dict(role='assistant',content='',tool_calls=[dict(id='inspect-setup',type='function',function=dict(name='inspect_source',arguments=json.dumps(dict(source_url=CONFIG['source_url']))))])
     if text == 'who is the us president?':
         return dict(role='assistant',content=ai.scope.REDIRECT,tool_calls=[])
     name, args = ('search_topics', dict(query='Linux')) if 'search' in text else ('propose_feed_change', dict(config=CONFIG))
-    return dict(role='assistant', content='', tool_calls=[dict(id='fixture-' + str(len(history)), type='function', function=dict(name=name, arguments=json.dumps(args)))], _usage=dict(available=True,input_tokens=1200,output_tokens=80,cached_tokens=100,reasoning_tokens=0,context_window=16000,estimated_usd=.001))
+    narration = 'I’ll search your stored content.' if name == 'search_topics' else ''
+    if on_delta and narration: on_delta(narration)
+    return dict(role='assistant', content=narration, tool_calls=[dict(id='fixture-' + str(len(history)), type='function', function=dict(name=name, arguments=json.dumps(args)))], _usage=dict(available=True,input_tokens=1200,output_tokens=80,cached_tokens=100,reasoning_tokens=0,context_window=16000,estimated_usd=.001))
 
 
 
@@ -90,6 +97,15 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.goto(address + '/')
                 page.get_by_role('button', name='Open Nightfeed assistant').click()
                 expect(page.locator('[data-assistant-panel]')).to_be_visible()
+                page.get_by_label('Message',exact=True).fill('Help me set up a feed');page.get_by_role('button',name='Send message').click()
+                expect(page.get_by_text('Would you like me to proceed with this basic feed setup now?',exact=True)).to_be_visible()
+                page.reload()
+                expect(page.locator('[data-assistant-panel]')).to_be_visible()
+                page.get_by_label('Message',exact=True).fill('Yes');page.get_by_role('button',name='Send message').click()
+                expect(page.get_by_text('I inspected the listing. What should we call the feed?',exact=True)).to_be_visible()
+                expect(page.locator('[data-assistant-messages]')).not_to_contain_text('There is no active proposal')
+                expect(page.locator('.assistant-proposal')).to_have_count(0)
+                page.get_by_role('button',name='New chat',exact=True).click()
                 for question in ['how are you',"what's your name",'what is a feed']:
                     page.get_by_label('Message',exact=True).fill(question);page.get_by_role('button',name='Send message').click()
                     expect(page.get_by_text(ai.scope.local_reply(dict(content=question)),exact=True)).to_be_visible()
@@ -144,6 +160,17 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.get_by_role('button', name='Send message', exact=True).click()
                 expect(page.locator('[data-assistant-messages]')).to_contain_text('3 matching items')
                 expect(page.get_by_role('button', name='New chat', exact=True)).to_be_enabled()
+                activity = page.locator('.assistant-activity').last
+                expect(activity).not_to_have_attribute('open','')
+                activity.locator('summary').focus(); page.keyboard.press('Enter')
+                expect(activity).to_contain_text('I’ll search your stored content.')
+                expect(activity).to_contain_text('Matching results: 3')
+                expect(page.locator('.assistant-message').get_by_text('I’ll search your stored content.',exact=True)).to_have_count(0)
+                page.reload()
+                activity = page.locator('.assistant-activity').last
+                activity.locator('summary').click()
+                expect(activity).to_contain_text('I’ll search your stored content.')
+                expect(activity).to_contain_text('Matching results: 3')
                 page.get_by_label('Context usage',exact=True).click()
                 expect(page.locator('[data-context-usage]')).to_contain_text('1,200 input')
                 expect(page.locator('[data-context-usage]')).to_contain_text('Estimated $0.001000')
@@ -203,6 +230,12 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.screenshot(path=str(ROOT / '.test-preview/assistant-chat-mobile-dark.png'), full_page=True)
                 panel_colors = page.locator('[data-assistant-panel]').evaluate('(el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]')
                 assert panel_colors[0] != 'rgb(255, 255, 255)', panel_colors
+                activity = page.locator('.assistant-activity').last
+                activity.locator('summary').click()
+                activity.scroll_into_view_if_needed()
+                expect(activity).to_contain_text('Completed')
+                assert activity.evaluate('(el)=>el.scrollWidth <= el.clientWidth')
+                page.screenshot(path=str(ROOT / '.test-preview/assistant-activity-mobile-dark.png'),full_page=True)
                 # Real refresh replies must render escaped feed labels as links,
                 # including brackets, backslashes and a literal ]( in the name.
                 titles=['[Mal] Top releases this week','[Mal] Recently Added',r'Slash \\ Path ](Part)']

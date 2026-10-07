@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="nightfeed",
-    version="0.8.2",
+    version="0.8.3",
     description="Save site extraction profiles and publish RSS feeds from topic listing pages.",
     python_requires=">=3.10",
     packages=find_packages(include=["rss_site_bridge", "rss_site_bridge.*"]),

@@ -14,6 +14,8 @@ QUERY = dict(query='', status='all', added_on='2026-10-06', timezone='America/Ch
 ANCHOR = dict(role='assistant', content='2 items were added today.',
               _retrieval=dict(tool='search_topics', arguments=QUERY, total_count=2))
 CASES = [
+    dict(id='setup-consent',text='Yes',prefix=[dict(role='user',content='Set up a feed for https://example.com/releases'),dict(role='assistant',content='Would you like me to proceed with the basic manual refresh setup now?')],tool='inspect_source',arguments=dict(source_url='https://example.com/releases'),review='Continue setup consent; no missing/expired proposal message and no claim of a saved feed.'),
+    dict(id='setup-consent-recovery',text='Do it',prefix=[dict(role='user',content='Set up a feed for https://example.com/releases'),dict(role='assistant',content='Would you like me to proceed with setup now?'),dict(role='user',content='Yes'),dict(role='assistant',content='There is no active proposal. It may have expired.')],tool='inspect_source',arguments=dict(source_url='https://example.com/releases'),review='Recover the original setup intent instead of repeating the missing-proposal response.'),
     dict(id='elliptical-show', text='Show', anchor=ANCHOR, tool='search_topics', arguments=QUERY),
     dict(id='free-form-browsing', text='Can I have a look at those?', anchor=ANCHOR, tool='search_topics', arguments=QUERY),
     dict(id='zero-count-browsing', text='Show', anchor=dict(role='assistant',content='No items in that refresh.',
