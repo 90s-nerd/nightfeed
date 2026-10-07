@@ -38,6 +38,53 @@ class BrowsingTests(unittest.TestCase):
         self.assertEqual(result.location, timeline)
         session.stop.assert_called_once()
 
+    def test_standalone_browser_starts_blank_without_a_topic(self):
+        session = Mock(id="blank-session")
+        with patch("rss_site_bridge.app.create_safe_browser_session", return_value=session) as start:
+            response = self.client.get("/safe-browser?return_to=/feeds")
+        self.assertEqual(response.status_code, 200)
+        start.assert_called_once_with("")
+        html = BeautifulSoup(response.data, "html.parser")
+        self.assertEqual(html.select_one('[data-browser-address]')["value"], "")
+        self.assertEqual(html.select_one('[data-safe-browser]')["data-command-url"], "/safe-browser/blank-session/command")
+        self.assertIsNotNone(html.select_one('[data-browser-empty]'))
+        self.assertEqual(html.find("button", string="Close session").find_parent("form")["action"], "/safe-browser/blank-session/close")
+        self.assertIn("frame-src 'none'", response.headers["Content-Security-Policy"])
+        with patch("rss_site_bridge.app.get_safe_browser_session", return_value=session):
+            result = self.client.post("/safe-browser/blank-session/close")
+        self.assertEqual(result.location, "/feeds")
+        session.stop.assert_called_once()
+
+    def test_standalone_browser_commands_and_expiration(self):
+        session = Mock()
+        session.execute.return_value = {"url": "https://example.org", "downloads": []}
+        with patch("rss_site_bridge.app.get_safe_browser_session", return_value=session) as lookup:
+            response = self.client.post("/safe-browser/blank/command", json={"action": "navigate", "url": "https://example.org"})
+            self.assertEqual(response.status_code, 200)
+            session.execute.assert_called_once_with("navigate", url="https://example.org")
+            lookup.assert_called_once_with("blank", None, None)
+        with patch("rss_site_bridge.app.get_safe_browser_session", return_value=None):
+            for suffix in ["state", "screenshot", "downloads/file"]:
+                self.assertEqual(self.client.get("/safe-browser/expired/" + suffix).status_code, 410)
+            self.assertEqual(self.client.post("/safe-browser/expired/command", json={"action": "reload"}).status_code, 410)
+            self.assertEqual(self.client.post("/safe-browser/expired/close", data={"return_to": "//evil.example"}).location, "/")
+
+    def test_standalone_and_topic_sessions_cannot_be_mixed(self):
+        from rss_site_bridge.app import get_safe_browser_session, _safe_browser_sessions
+        standalone = Mock(closed=False, profile_id=None, item_id=None)
+        topic = Mock(closed=False, profile_id=self.profile.id, item_id=1)
+        with patch.dict(_safe_browser_sessions, blank=standalone, topic=topic):
+            self.assertIs(get_safe_browser_session("blank"), standalone)
+            self.assertIsNone(get_safe_browser_session("blank", self.profile.id, 1))
+            self.assertIsNone(get_safe_browser_session("topic"))
+
+    def test_standalone_start_failure_shows_recovery(self):
+        with patch("rss_site_bridge.app.create_safe_browser_session", side_effect=RuntimeError("Chromium unavailable")):
+            response = self.client.get("/safe-browser")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn(b"Chromium unavailable", response.data)
+        self.assertIn(b"Go back", response.data)
+
     def test_expired_safe_browser_return_and_untrusted_destination(self):
         close = f"/profiles/{self.profile.id}/items/1/safe/expired/close"
         origin = f"/profiles/{self.profile.id}?page=3"

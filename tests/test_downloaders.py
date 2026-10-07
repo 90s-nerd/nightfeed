@@ -91,6 +91,15 @@ class DownloaderTests(unittest.TestCase):
         payload.update(overrides)
         return self.client.post(self.url, json=payload, headers=self.headers)
 
+    def test_standalone_browser_sends_downloads_through_same_workflow(self):
+        self.url = '/safe-browser/session/downloads/file/send'
+        response = self.submit()
+        self.assertEqual(response.status_code, 202)
+        self.lookup.assert_called_with('session', None, None)
+        result = self.completed(response.json['id'])
+        self.assertEqual(result['status'], 'added')
+        self.assertEqual(FakeDownloader.added[0][1:], ('Movies', True))
+
     def completed(self, identity):
         for _ in range(100):
             result = self.client.get('/api/downloader-jobs/' + identity).json

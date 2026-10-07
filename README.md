@@ -13,7 +13,7 @@
 - Sends optional Web Push summaries to individual devices, with feed selection, quiet hours, and daily limits. Includes a short Home Screen installation guide in Settings.
 - Uses HTTP-only fetching by default.
 - Offers an optional hardened browser mode for JavaScript-rendered pages.
-- Opens stored topics in an optional interactive, isolated browser with popup and ad-request controls.
+- Opens stored topics or any public HTTP/HTTPS URL in an optional interactive, isolated browser with popup and ad-request controls.
 - Captures user-triggered browser downloads and serves them from a temporary Nightfeed download tray.
 - Rejects off-site topic links when building the feed.
 
@@ -62,7 +62,7 @@ captured before approval, excluding later arrivals.
 
 Search covers **saved Nightfeed feeds and stored topic content only**. The assistant
 can explain settings and open an explicitly requested saved item in the existing
-isolated browser. There is no general web search or arbitrary-URL safe browsing.
+isolated browser. The assistant has no general web search or arbitrary-URL browsing tool; use **Safe Browser** in the navigation to browse a website yourself.
 Source inspection for feed setup is limited to public HTTP/HTTPS destinations on
 ports 80/443 and validates DNS and redirects. Browser inspection requires the
 browser extra and Chromium and blocks WebSockets, downloads and private network
@@ -414,7 +414,7 @@ pip install ".[browser]"
 playwright install chromium
 ```
 
-The same optional Playwright installation powers **Open safely** on stored topics. Safe browser sessions run for up to ten minutes after the user stops interacting. New windows are suppressed, common advertising hosts and non-public network targets are blocked, and files initiated by the user appear in the session's Downloads tray. Session cookies and downloaded temporary files are removed when the session ends.
+The same optional Playwright installation powers **Open safely** on stored topics and **Safe Browser** in the navigation. Safe Browser starts with an empty address bar: paste a public HTTP/HTTPS URL and click Go. It includes the same back/forward/reload controls, desktop/mobile viewports, Downloads tray, and Send to downloader workflow, without requiring a saved feed or topic. Safe browser sessions run for up to ten minutes after the user stops interacting. New windows are suppressed, common advertising hosts and non-public network targets are blocked, and files initiated by the user appear in the session's Downloads tray. Session cookies and downloaded temporary files are removed when the session ends.
 
 ### Safe-browser streaming roadmap
 

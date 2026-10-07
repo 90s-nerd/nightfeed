@@ -1,18 +1,21 @@
 {% extends "base.html" %}
+{% set standalone = item is none %}
+{% set browser_base = ('/safe-browser/' if standalone else '/profiles/' ~ profile.id ~ '/items/' ~ item.id ~ '/safe/') ~ (safe_session.id if safe_session else '') %}
+{% set restart_url = url_for('safe_browser_route', return_to=return_to) if standalone else url_for('safe_topic_route', profile_id=profile.id, item_id=item.id, return_to=return_to) %}
 {% block body_class %}focused-browser{% endblock %}
 
-{% block title %}Safe browser · {{ item.title }} · Nightfeed{% endblock %}
+{% block title %}Safe Browser{% if not standalone %} · {{ item.title }}{% endif %} · Nightfeed{% endblock %}
 
 {% block page_header %}
 <header class="topbar">
   <div class="page-title">
-    <div class="help-heading"><h1>Isolated browser</h1><details class="ui-hint"><summary aria-label="Help with Isolated browser">?</summary><div class="ui-hint-content">This page runs in a separate browser session. Click to type and scroll to move through the page. Remote screenshots do not expose page text to screen readers; Open original provides direct access.</div></details></div>
-    <p>{{ item.title }}</p>
+    <div class="help-heading"><h1>{{ 'Safe Browser' if standalone else 'Isolated browser' }}</h1><details class="ui-hint"><summary aria-label="Help with Safe Browser">?</summary><div class="ui-hint-content">This page runs in a separate browser session. Paste a public HTTP or HTTPS URL into the address bar, then click Go. Click to type and scroll to move through the page. Remote screenshots do not expose page text to screen readers; Open original provides direct access.</div></details></div>
+    <p>{{ 'Browse a website in an isolated session.' if standalone else item.title }}</p>
   </div>
   <div class="topbar-actions">
-    <a class="btn btn-secondary" href="{{ item.link }}" target="_blank" rel="noreferrer">Open original</a>
+    <a class="btn btn-secondary" {% if not standalone %}href="{{ item.link }}"{% else %}hidden{% endif %} data-browser-original target="_blank" rel="noreferrer">Open original</a>
     {% if safe_session %}
-    <form class="inline-form" action="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/close" method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
+    <form class="inline-form" action="{{ browser_base }}/close" method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
       <input type="hidden" name="return_to" value="{{ return_to }}">
       <button class="btn btn-primary" type="submit">Close session</button>
     </form>
@@ -35,13 +38,13 @@
 playwright install chromium</pre>
 </section>
 {% else %}
-<div class="session-ended" data-session-ended role="status" hidden><h2>Session ended</h2><p>Temporary files and cookies are no longer available. Starting again creates a new session.</p><div class="button-row"><a class="btn btn-primary" href="{{ url_for('safe_topic_route', profile_id=profile.id, item_id=item.id, return_to=return_to) }}">Start new session</a><a class="btn btn-secondary" href="{{ return_to }}">Return to feed</a></div></div>
+<div class="session-ended" data-session-ended role="status" hidden><h2>Session ended</h2><p>Temporary files and cookies are no longer available. Starting again creates a new session.</p><div class="button-row"><a class="btn btn-primary" href="{{ restart_url }}">Start new session</a><a class="btn btn-secondary" href="{{ return_to }}">{{ 'Return to Nightfeed' if standalone else 'Return to feed' }}</a></div></div>
 <section class="surface safe-browser-shell"
   data-safe-browser
-  data-screenshot-url="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/screenshot"
-  data-state-url="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/state"
-  data-command-url="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/command"
-  data-download-base="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/downloads/">
+  data-screenshot-url="{{ browser_base }}/screenshot"
+  data-state-url="{{ browser_base }}/state"
+  data-command-url="{{ browser_base }}/command"
+  data-download-base="{{ browser_base }}/downloads/">
   <div class="safe-browser-toast" role="status" aria-live="polite" data-browser-download-toast hidden>
     File downloaded. Check Downloads.
   </div>
@@ -52,7 +55,7 @@ playwright install chromium</pre>
       <button class="btn btn-secondary" type="button" data-browser-action="reload" aria-label="Reload">↻</button>
     </div>
     <form class="safe-browser-address" data-browser-address-form>
-      <input type="url" value="{{ item.link }}" aria-label="Browser address" data-browser-address autocomplete="off">
+      <input type="url" value="{{ '' if standalone else item.link }}" placeholder="https://example.com" aria-label="Browser address" data-browser-address autocomplete="off" required {% if standalone %}autofocus{% endif %}>
       <button class="btn btn-primary" type="submit">Go</button>
     </form>
     <div class="safe-browser-toolbar-actions">
@@ -85,18 +88,19 @@ playwright install chromium</pre>
   </div>
 
   <div class="safe-browser-status">
-    <span data-browser-title>Loading page…</span>
+    <span data-browser-title>{{ 'Ready to browse' if standalone else 'Loading page…' }}</span>
     <span><strong data-browser-blocked>0</strong> noisy requests blocked</span>
     <span><strong data-browser-popups>0</strong> popups stopped</span>
   </div>
 
   <div class="safe-browser-viewport" data-browser-viewport>
     <img
-      src="/profiles/{{ profile.id }}/items/{{ item.id }}/safe/{{ safe_session.id }}/screenshot"
+      src="{{ browser_base }}/screenshot"
       alt="Interactive safe browser viewport"
       tabindex="0"
       draggable="false"
       data-browser-screen>
+    {% if standalone %}<div class="safe-browser-empty" data-browser-empty><h2>Browse safely</h2><p>Paste a website URL into the address bar and click Go.</p><p>Files you download appear in Downloads, where you can save them or send them to a downloader.</p></div>{% endif %}
     <div class="safe-browser-loading" data-browser-loading hidden>Updating…</div>
   </div>
 
@@ -127,6 +131,8 @@ playwright install chromium</pre>
     const screen = browser.querySelector("[data-browser-screen]");
     const loading = browser.querySelector("[data-browser-loading]");
     const address = browser.querySelector("[data-browser-address]");
+    let addressEdited = address.value !== address.defaultValue;
+    address.addEventListener('input', () => { addressEdited = true; });
     const title = browser.querySelector("[data-browser-title]");
     const blocked = browser.querySelector("[data-browser-blocked]");
     const popups = browser.querySelector("[data-browser-popups]");
@@ -287,8 +293,14 @@ playwright install chromium</pre>
 
     const renderState = (state) => {
       if (!state || state.error) return;
-      address.value = state.url || address.value;
-      title.textContent = state.title || state.url || "Safe browser";
+      const currentUrl = state.url === 'about:blank' ? '' : (state.url || '');
+      if (!addressEdited) address.value = currentUrl;
+      const empty = browser.querySelector('[data-browser-empty]');
+      if (empty) empty.hidden = Boolean(currentUrl);
+      const original = document.querySelector('[data-browser-original]');
+      original.hidden = !/^https?:\/\//i.test(currentUrl);
+      if (!original.hidden) original.href = currentUrl;
+      title.textContent = state.title || currentUrl || "Ready to browse";
       blocked.textContent = state.blocked_requests || 0;
       popups.textContent = state.popup_attempts || 0;
       viewportWidth = Number(state.viewport_width) || viewportWidth;
@@ -423,6 +435,7 @@ playwright install chromium</pre>
         });
         const state = await response.json();
         if (!response.ok) { if(response.status === 410) endSession(); throw new Error(state.error || 'Browser command failed.'); }
+        if (['navigate', 'back', 'forward', 'reload'].includes(action)) addressEdited = false;
         renderState(state);
         refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
       } catch(error) { loading.textContent = error.message; loading.hidden = false; }
