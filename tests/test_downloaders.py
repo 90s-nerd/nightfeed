@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 import hashlib
+import base64
 import json
 import re
 import threading
@@ -31,8 +32,9 @@ def metadata_file(name=b'Example'):
 
 
 class FakeDownloader:
-    identify = staticmethod(adapters.file_identity)
+    identify = staticmethod(adapters.WebAPIv2Downloader.identify)
     extensions = ('.torrent',)
+    supports_magnets = True
     version = '5.0.0'
     api_version = '2.11.0'
     present = False
@@ -99,6 +101,83 @@ class DownloaderTests(unittest.TestCase):
         result = self.completed(response.json['id'])
         self.assertEqual(result['status'], 'added')
         self.assertEqual(FakeDownloader.added[0][1:], ('Movies', True))
+
+    def test_magnet_submission_uses_existing_torrent_route_and_category(self):
+        self.client.post('/settings/downloaders/save', data=self.values | {'id': self.profile['id'], 'enable_magnets': '1'}, headers=self.headers)
+        uri = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=Example&tr=https%3A%2F%2Ftracker.example%2Fannounce'
+        self.session.execute.return_value = {'name': 'Example', 'kind': 'magnet', 'data': uri}
+        self.assertEqual(d.eligible_profiles(self.db, 'Example', 'magnet')[0]['id'], self.profile['id'])
+        response = self.submit()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(self.completed(response.json['id'])['status'], 'added')
+        self.assertEqual(FakeDownloader.added, [(uri, 'Movies', True)])
+
+    def test_pending_file_and_magnet_with_same_hash_share_submission(self):
+        self.client.post('/settings/downloaders/save', data=self.values | {'id': self.profile['id'], 'enable_magnets': '1'}, headers=self.headers)
+        FakeDownloader.gate = threading.Event()
+        self.addCleanup(FakeDownloader.gate.set)
+        first = self.submit()
+        _, hashes = adapters.file_identity(metadata_file())
+        uri = 'magnet:?xt=urn:btih:' + hashes[0]
+        self.session.execute.return_value = {'name': 'Magnet', 'kind': 'magnet', 'data': uri}
+        second = self.submit()
+        self.assertEqual(second.json['id'], first.json['id'])
+        FakeDownloader.gate.set()
+        self.assertEqual(self.completed(first.json['id'])['status'], 'added')
+        self.assertEqual(len(FakeDownloader.added), 1)
+
+    def test_magnet_requires_enabled_supported_downloader(self):
+        self.session.execute.return_value = {'name': 'Magnet', 'kind': 'magnet', 'data': 'magnet:?xt=urn:btih:' + 'b' * 40}
+        with patch.object(FakeDownloader, 'supports_magnets', False):
+            self.assertEqual(d.eligible_profiles(self.db, 'Magnet', 'magnet'), [])
+            self.assertEqual(self.submit().status_code, 400)
+        values = self.values | {'id': self.profile['id'], 'secret': ''}
+        values.pop('enabled')
+        self.client.post('/settings/downloaders/save', data=values, headers=self.headers)
+        self.assertEqual(d.eligible_profiles(self.db, 'Magnet', 'magnet'), [])
+        self.assertEqual(self.submit().status_code, 400)
+
+    def test_magnets_are_opt_in_and_use_configured_button_label(self):
+        self.session.execute.return_value = {'name': 'Magnet', 'kind': 'magnet', 'data': 'magnet:?xt=urn:btih:' + 'b' * 40}
+        self.assertEqual(self.profile['enable_magnets'], 0)
+        self.assertEqual(d.eligible_profiles(self.db, 'Magnet', 'magnet'), [])
+        self.assertEqual(self.submit().status_code, 400)
+        values = self.values | {'id': self.profile['id'], 'enable_magnets': '1', 'button_label': 'Queue at home'}
+        self.client.post('/settings/downloaders/save', data=values, headers=self.headers)
+        self.assertEqual(d.eligible_profiles(self.db, 'Magnet', 'magnet')[0]['label'], 'Queue at home')
+        html = self.client.get('/settings/downloaders?edit=' + str(self.profile['id'])).get_data(as_text=True)
+        self.assertRegex(html, r'name="enable_magnets"[^>]*checked')
+        values.pop('enable_magnets')
+        self.client.post('/settings/downloaders/save', data=values, headers=self.headers)
+        self.assertEqual(d.eligible_profiles(self.db, 'Magnet', 'magnet'), [])
+        self.assertEqual(self.submit().status_code, 400)
+        self.assertEqual(len(d.eligible_profiles(self.db, 'Example.torrent')), 1)
+
+    def test_existing_profiles_upgrade_with_magnets_disabled(self):
+        with closing(d.connect(self.db)) as conn:
+            conn.execute('ALTER TABLE downloaders DROP COLUMN enable_magnets')
+            conn.commit()
+        d.initialize(self.db)
+        saved = d.get_profile(self.db, self.profile['id'])
+        self.assertEqual(saved['name'], 'Home')
+        self.assertEqual(saved['enable_magnets'], 0)
+        with closing(d.connect(self.db)) as conn:
+            conn.execute('UPDATE downloaders SET enable_magnets=1 WHERE id=?', (self.profile['id'],))
+            conn.commit()
+        d.initialize(self.db)
+        self.assertEqual(d.get_profile(self.db, self.profile['id'])['enable_magnets'], 1)
+
+    def test_browser_state_hides_magnets_until_profile_opt_in(self):
+        files = [{'id': 'magnet', 'name': 'Example', 'kind': 'magnet', 'status': 'ready'},
+                 {'id': 'file', 'name': 'Example.torrent', 'kind': 'file', 'status': 'ready'}]
+        self.session.execute.return_value = {'downloads': [dict(row) for row in files]}
+        response = self.client.get('/safe-browser/session/state')
+        self.assertEqual([row['id'] for row in response.json['downloads']], ['file'])
+        self.client.post('/settings/downloaders/save', data=self.values | {'id': self.profile['id'], 'enable_magnets': '1', 'button_label': 'Queue at home'}, headers=self.headers)
+        self.session.execute.return_value = {'downloads': [dict(row) for row in files]}
+        response = self.client.get('/safe-browser/session/state')
+        self.assertEqual([row['id'] for row in response.json['downloads']], ['magnet', 'file'])
+        self.assertEqual(response.json['downloads'][0]['downloaders'][0]['label'], 'Queue at home')
 
     def completed(self, identity):
         for _ in range(100):
@@ -274,6 +353,40 @@ class DownloaderTests(unittest.TestCase):
 
 
 class MetadataAndAdapterTests(unittest.TestCase):
+    def test_magnet_v1_hex_base32_v2_and_hybrid(self):
+        v1, v2 = 'ab' * 20, 'cd' * 32
+        hex_uri = 'magnet:?xt=urn:btih:' + v1 + '&dn=My%20download&tr=https%3A%2F%2Ftracker.example%2Fannounce'
+        magnet = adapters.parse_magnet(hex_uri)
+        self.assertEqual(magnet['name'], 'My download')
+        self.assertEqual(magnet['uri'], hex_uri)
+        self.assertEqual(magnet['hashes'], [v1])
+        b32 = base64.b32encode(bytes.fromhex(v1)).decode()
+        self.assertEqual(adapters.parse_magnet('magnet:?xt=urn:btih:' + b32)['fingerprint'], magnet['fingerprint'])
+        self.assertEqual(adapters.parse_magnet('magnet:?xt=urn:btmh:1220' + v2)['hashes'], sorted([v2[:40], v2]))
+        hybrid = adapters.parse_magnet('magnet:?xt=urn:btih:' + v1 + '&xt=urn:btmh:1220' + v2)
+        self.assertEqual(hybrid['hashes'], sorted([v1, v2[:40], v2]))
+
+    def test_invalid_magnets_reject_empty_hashes_and_multiple_url_injection(self):
+        valid = 'magnet:?xt=urn:btih:' + 'a' * 40
+        for uri in ['', 'https://example.com', 'magnet:?dn=Missing', 'magnet:?xt=urn:btih:bad',
+                    'magnet:?xt=urn:btmh:1220abc', valid + '\nhttps://evil.example',
+                    valid + '&dn=%0Ahttps://evil.example', valid + '#fragment', valid + '&dn=' + 'x' * 16384,
+                    valid + '&a=b' * 129]:
+            with self.subTest(uri=uri[:70]), self.assertRaises(ValueError):
+                adapters.parse_magnet(uri)
+
+    def test_magnet_adapter_preserves_uri_category_and_version_start_field(self):
+        uri = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&tr=https%3A%2F%2Ftracker.example%2Fannounce'
+        adapter = object.__new__(adapters.WebAPIv2Downloader)
+        adapter.call = Mock(return_value=b'Ok.')
+        for version, field in [('4.6.7', 'paused'), ('v5.0.0', 'stopped')]:
+            adapter.version = version
+            adapter.add(uri, 'Movies', False)
+            adapter.call.assert_called_with('torrents/add', {'urls': uri, 'category': 'Movies', 'autoTMM': 'true', field: 'true'})
+        adapter.call.return_value = b'Fails.'
+        with self.assertRaises(adapters.SubmissionRejected):
+            adapter.add(uri, 'Movies', True)
+
     def test_categories_allowlist_and_invalid_responses(self):
         adapter = object.__new__(adapters.WebAPIv2Downloader)
         adapter.profile = {'allowed_categories': '["Movies"]'}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from markupsafe import Markup
 
 from .downloaders import register as register_downloaders, eligible_profiles, MAX_SUBMISSION_BYTES, encryption_key
+from .downloader_adapters import parse_magnet
 from .push_notifications import register as register_push, initialize as initialize_push, enqueue as enqueue_push
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from croniter import croniter
@@ -260,6 +261,8 @@ class Notification:
 def bind_download_handles(downloads: dict[str, dict[str, Any]], pending: list[Any]) -> None:
     """Match Playwright handles in start order, before transfer completion can reorder them."""
     for item in list(downloads.values()):
+        if item.get("kind") == "magnet":
+            continue
         if "handle" in item:
             continue
         handle = next((candidate for candidate in pending
@@ -330,6 +333,7 @@ class SafeBrowserSession:
         last_user_interaction = 0.0
         viewport_mode = "desktop"
         downloads: dict[str, dict[str, Any]] = {}
+        magnet_error = ""
 
         try:
             with TemporaryDirectory(prefix="nightfeed-safe-") as download_dir, sync_playwright() as playwright:
@@ -340,10 +344,39 @@ class SafeBrowserSession:
                     service_workers="block",
                     viewport=SAFE_BROWSER_VIEWPORT,
                 )
+                def capture_magnet(source, uri):
+                    nonlocal magnet_error
+                    # Capturing only offers a review action; it never contacts a downloader.
+                    if time.monotonic() - last_user_interaction > 8:
+                        return
+                    try:
+                        magnet = parse_magnet(uri)
+                        if any(item.get("fingerprint") == magnet["fingerprint"] for item in downloads.values()):
+                            return
+                        if sum(item.get("kind") == "magnet" for item in downloads.values()) >= 100:
+                            raise ValueError("This session has too many magnet links. Start a new session.")
+                        identity = secrets.token_urlsafe(16)
+                        downloads[identity] = {
+                            "id": identity, "name": magnet["name"], "kind": "magnet",
+                            "uri": magnet["uri"], "fingerprint": magnet["fingerprint"],
+                            "size": 0, "total": 0, "status": "ready",
+                        }
+                        magnet_error = ""
+                    except ValueError as exc:
+                        magnet_error = str(exc)
+
+                context.expose_binding("__nightfeedCaptureMagnet", capture_magnet)
                 context.add_init_script(
                     """
                     (() => {
                       document.addEventListener('click', (event) => {
+                        const link = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+                        if (link && /^magnet:/i.test(link.href)) {
+                          event.preventDefault();
+                          event.stopImmediatePropagation();
+                          if (event.isTrusted) window.__nightfeedCaptureMagnet(link.href).catch(() => {});
+                          return;
+                        }
                         const anchor = event.target && event.target.closest ? event.target.closest('a[target="_blank"]') : null;
                         if (anchor && anchor.href) {
                           event.preventDefault();
@@ -467,6 +500,7 @@ class SafeBrowserSession:
                         "can_go_back": True,
                         "popup_attempts": popup_attempts,
                         "blocked_requests": blocked_requests,
+                        "magnet_error": magnet_error,
                         "viewport_mode": viewport_mode,
                         "viewport_width": viewport["width"],
                         "viewport_height": viewport["height"],
@@ -477,7 +511,7 @@ class SafeBrowserSession:
                         "scroll_target_x": scroll_target_x,
                         "scroll_target_y": scroll_target_y,
                         "downloads": [
-                            {"id": item["id"], "name": item["name"], "size": item["size"], "total": item["total"], "status": item["status"]}
+                            {"id": item["id"], "name": item["name"], "kind": item.get("kind", "file"), "size": item["size"], "total": item["total"], "status": item["status"]}
                             for item in downloads.values()
                         ],
                     }
@@ -573,6 +607,10 @@ class SafeBrowserSession:
                                 raise ValueError("Download not found.")
                             if download.get("status") != "ready":
                                 raise ValueError("Download is not ready yet.")
+                            if download.get("kind") == "magnet":
+                                result = {"name": download["name"], "kind": "magnet", "data": download["uri"]}
+                                command_response.put(result)
+                                continue
                             if download["size"] > MAX_SUBMISSION_BYTES:
                                 raise ValueError("File exceeds the 10 MB submission limit.")
                             with open(download["path"], "rb") as handle:
@@ -584,6 +622,8 @@ class SafeBrowserSession:
                                 raise ValueError("Download not found.")
                             if download.get("status") != "ready":
                                 raise ValueError("Download is not ready yet.")
+                            if download.get("kind") == "magnet":
+                                raise ValueError("Magnet links can be sent to a downloader; they are not files.")
                             result = download
                         else:
                             raise ValueError("Unsupported browser action.")
@@ -1696,8 +1736,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return response
 
     def safe_state_with_downloaders(state: dict[str, Any]) -> dict[str, Any]:
+        visible_downloads = []
         for downloaded in state.get("downloads", []):
-            downloaded["downloaders"] = eligible_profiles(Path(app.config["DATABASE_PATH"]), downloaded["name"])
+            downloaded["downloaders"] = eligible_profiles(Path(app.config["DATABASE_PATH"]), downloaded["name"], downloaded.get("kind", "file"))
+            if downloaded.get("kind") != "magnet" or downloaded["downloaders"]:
+                visible_downloads.append(downloaded)
+        if "downloads" in state:
+            state["downloads"] = visible_downloads
         return state
 
     @app.get("/safe-browser/<session_id>/state", defaults={"profile_id": None, "item_id": None})
@@ -2150,6 +2195,7 @@ def extract_feed_entries(
     now = datetime.now(timezone.utc)
     emit_progress(progress, "Extracting entries", "Reading titles and links from matched nodes.")
     container_fallback_used = False
+    extraction_diagnostics = {"has_usable_entries": False}
     entries = extract_entries_from_item_nodes(
         nodes,
         config,
@@ -2157,6 +2203,7 @@ def extract_feed_entries(
         progress=progress,
         parsed_filter_rules=parsed_filter_rules,
         parsed_exclude_filter_rules=parsed_exclude_filter_rules,
+        diagnostics=extraction_diagnostics,
     )
     if should_use_container_link_fallback(nodes, entries, config):
         emit_progress(progress, "Expanding repeated links", "Detected grouped links inside a container. Expanding them.")
@@ -2167,12 +2214,13 @@ def extract_feed_entries(
             progress=progress,
             parsed_filter_rules=parsed_filter_rules,
             parsed_exclude_filter_rules=parsed_exclude_filter_rules,
+            diagnostics=extraction_diagnostics,
         )
         if len(container_entries) >= len(entries):
             entries = container_entries
             container_fallback_used = True
 
-    if not entries:
+    if not extraction_diagnostics["has_usable_entries"]:
         log_event(
             logging.WARNING,
             "entry_extraction_failed",
@@ -2182,8 +2230,9 @@ def extract_feed_entries(
             error="Matched nodes did not contain usable titles and links.",
         )
         raise ValueError("Matched nodes did not contain usable titles and links.")
-    emit_progress(progress, "Applying filters", "Evaluating filter rules against extracted titles.")
     filtered_entries = apply_entry_filters(entries, parsed_filter_rules, parsed_exclude_filter_rules)[: config.max_items]
+    emit_progress(progress, "Applying filters", "Evaluating filter rules against extracted titles." if filtered_entries
+                  else "Usable topics were found, but none matched the include/exclude filters.")
     emit_progress(progress, "Preparing preview", "Formatting extracted titles and links.")
     log_event(
         logging.INFO,
@@ -2196,6 +2245,7 @@ def extract_feed_entries(
         include_filter_count=len(parsed_filter_rules),
         exclude_filter_count=len(parsed_exclude_filter_rules),
         container_fallback_used=container_fallback_used,
+        has_usable_entries=extraction_diagnostics["has_usable_entries"],
     )
     return filtered_entries
 
@@ -2234,6 +2284,7 @@ def extract_entries_from_item_nodes(
     progress: Callable[[str, str], None] | None = None,
     parsed_filter_rules: list[Any] | None = None,
     parsed_exclude_filter_rules: list[Any] | None = None,
+    diagnostics: dict[str, bool] | None = None,
 ) -> list[FeedEntry]:
     entries: list[FeedEntry] = []
     total = len(nodes)
@@ -2251,6 +2302,8 @@ def extract_entries_from_item_nodes(
         )
         if entry is None:
             continue
+        if diagnostics is not None:
+            diagnostics["has_usable_entries"] = True
         if parsed_filter_rules and not entry_matches_any_filter_rule(entry, parsed_filter_rules):
             continue
         if parsed_exclude_filter_rules and entry_matches_any_filter_rule(entry, parsed_exclude_filter_rules):
@@ -2276,6 +2329,7 @@ def extract_entries_from_link_collections(
     progress: Callable[[str, str], None] | None = None,
     parsed_filter_rules: list[Any] | None = None,
     parsed_exclude_filter_rules: list[Any] | None = None,
+    diagnostics: dict[str, bool] | None = None,
 ) -> list[FeedEntry]:
     entries: list[FeedEntry] = []
     seen_links: set[str] = set()
@@ -2299,6 +2353,8 @@ def extract_entries_from_link_collections(
             )
             if entry is None or entry.link in seen_links:
                 continue
+            if diagnostics is not None:
+                diagnostics["has_usable_entries"] = True
             if parsed_filter_rules and not entry_matches_any_filter_rule(entry, parsed_filter_rules):
                 continue
             if parsed_exclude_filter_rules and entry_matches_any_filter_rule(entry, parsed_exclude_filter_rules):

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch, Mock
 from bs4 import BeautifulSoup
 from rss_site_bridge.app import (bind_download_handles, create_app, create_profile, update_profile, get_profile_by_id,
-    extract_feed_entries, FeedEntry, FeedRequest, humanize_next_refresh, get_next_refresh_at, select_node_with_scope, validate_cron, list_feed_items, connect_db)
+    extract_feed_entries, FeedEntry, FeedRequest, humanize_next_refresh, get_next_refresh_at, select_node_with_scope, validate_cron, list_feed_items, connect_db, refresh_profile, list_notifications)
 
 
 class BrowsingTests(unittest.TestCase):
@@ -107,6 +107,7 @@ class BrowsingTests(unittest.TestCase):
     def test_same_name_download_handles_survive_reverse_completion_order(self):
         first, second = Mock(suggested_filename='same.bin'), Mock(suggested_filename='same.bin')
         downloads = {
+            'magnet': {'name': 'same.bin', 'kind': 'magnet', 'status': 'ready'},
             'first': {'name': 'same.bin', 'status': 'downloading'},
             'second': {'name': 'same.bin', 'status': 'finalizing'},
         }
@@ -193,6 +194,41 @@ class BrowsingTests(unittest.TestCase):
         with patch('rss_site_bridge.app.extract_feed_entries', return_value=[]):
             empty = self.client.post(url, headers=headers).json
         self.assertEqual(empty['message'], 'Already up to date.')
+
+    def test_refresh_with_unchanged_or_filtered_out_topics_succeeds(self):
+        update_profile(self.db, self.profile.id, replace(self.config, filter_rules='Premium'))
+        matching = '<article><a href="/one">Premium topic</a></article>'
+        filtered_out = '<article><a href="/two">Ordinary topic</a></article>'
+        with patch('rss_site_bridge.app.fetch_html', side_effect=[matching, matching, filtered_out]):
+            first = refresh_profile(self.db, self.profile.id)
+            unchanged = refresh_profile(self.db, self.profile.id)
+            empty = refresh_profile(self.db, self.profile.id)
+        self.assertEqual(first['new_items'], 1)
+        self.assertEqual(unchanged['new_items'], 0)
+        self.assertEqual(empty['new_items'], 0)
+        self.assertEqual(empty['updated_items'], 0)
+        self.assertEqual(len(list_feed_items(self.db, self.profile.id, 100)), 1)
+        saved = get_profile_by_id(self.db, self.profile.id)
+        self.assertEqual(saved.last_status, 'ok')
+        self.assertEqual(saved.last_error, '')
+        notification = list_notifications(self.db)[0]
+        self.assertEqual(notification.category, 'success')
+        self.assertEqual(notification.severity, 'info')
+
+    def test_valid_filtered_topics_are_not_extraction_failures(self):
+        regular = '<article><a href="/one">First topic</a></article><article><a href="/two">Second topic</a></article>'
+        grouped = '<article><a href="/one">First topic</a><br><a href="/two">Second topic</a></article>'
+        for html in [regular, grouped]:
+            for rules in [dict(filter_rules='Premium'), dict(exclude_filter_rules='*')]:
+                with self.subTest(grouped=html == grouped, rules=rules):
+                    with patch('rss_site_bridge.app.fetch_html', return_value=html):
+                        self.assertEqual(extract_feed_entries(replace(self.config, **rules)), [])
+        with patch('rss_site_bridge.app.fetch_html', return_value='<article><a>Missing link</a></article>'):
+            with self.assertRaisesRegex(ValueError, 'usable titles and links'):
+                extract_feed_entries(replace(self.config, filter_rules='Premium'))
+        with patch('rss_site_bridge.app.fetch_html', return_value='<p>No topic nodes</p>'):
+            with self.assertRaisesRegex(ValueError, 'No topic nodes matched'):
+                extract_feed_entries(self.config)
 
     def test_multiple_grouped_containers_preserve_all_links_and_wrapped_titles(self):
         html = '<div class="banger-container">'

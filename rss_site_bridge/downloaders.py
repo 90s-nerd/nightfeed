@@ -48,6 +48,8 @@ def initialize(db):
         );
         CREATE INDEX IF NOT EXISTS downloader_job_identity ON downloader_jobs(downloader_id, fingerprint, status);
         """)
+        if 'enable_magnets' not in {row['name'] for row in conn.execute('PRAGMA table_info(downloaders)')}:
+            conn.execute('ALTER TABLE downloaders ADD COLUMN enable_magnets INTEGER NOT NULL DEFAULT 0')
         # Interrupted submissions may have reached the remote client. Never retry blindly.
         conn.execute("UPDATE downloader_jobs SET status='unknown', message='Nightfeed restarted during submission. Check the downloader before retrying.' WHERE status='sending'")
         conn.commit()
@@ -90,7 +92,10 @@ def public_profile(profile):
     }
 
 
-def eligible_profiles(db, filename):
+def eligible_profiles(db, filename, kind='file'):
+    if kind == 'magnet':
+        return [public_profile(p) for p in profiles(db, True)
+                if p['enable_magnets'] and getattr(ADAPTERS[p['kind']], 'supports_magnets', False)]
     extension = Path(filename).suffix.lower()
     return [public_profile(p) for p in profiles(db, True) if extension in json.loads(p['extensions']) and extension in ADAPTERS[p['kind']].extensions]
 
@@ -144,7 +149,10 @@ def parse_profile(values, existing, key):
     default = text('default_category', 200)
     if default and allowed and default not in allowed:
         raise ValueError('Default category must be in the allowed categories.')
-    return dict(name=name, kind=kind, enabled=int(bool(values.get('enabled'))), button_label=text('button_label', 100),
+    enable_magnets = int(bool(values.get('enable_magnets')))
+    if enable_magnets and not getattr(ADAPTERS[kind], 'supports_magnets', False):
+        raise ValueError('The selected downloader does not support magnet links.')
+    return dict(name=name, kind=kind, enabled=int(bool(values.get('enabled'))), enable_magnets=enable_magnets, button_label=text('button_label', 100),
                 base_url=base, auth_mode=mode, username=text('username'), secret=encrypted, secret_env=env,
                 verify_tls=int(bool(values.get('verify_tls'))), ca_path=text('ca_path'), timeout=timeout,
                 extensions=json.dumps(extensions), default_category=default, allowed_categories=json.dumps(allowed),
@@ -258,7 +266,7 @@ def register(app, safe_session_lookup):
             form = request.form.to_dict()
             form.pop('secret', None)
             form['has_secret'] = bool(existing and existing['secret'])
-            for checkbox in ('enabled', 'verify_tls', 'require_category', 'start_immediately'):
+            for checkbox in ('enabled', 'enable_magnets', 'verify_tls', 'require_category', 'start_immediately'):
                 form[checkbox] = int(bool(request.form.get(checkbox)))
             return render_template('downloaders.html', profiles=[], downloaders=[{k: v for k, v in p.items() if k != 'secret'} for p in profiles(db)], editing=form, history=[], error=str(exc)), 400
         with closing(connect(db)) as conn:
@@ -306,7 +314,7 @@ def register(app, safe_session_lookup):
             raise ValueError('Downloader is disabled.')
         # Copy inside the browser worker before its temporary directory can be removed.
         downloaded = session.execute('download_copy', download_id=download_id)
-        if not any(p['id'] == profile['id'] for p in eligible_profiles(db, downloaded['name'])):
+        if not any(p['id'] == profile['id'] for p in eligible_profiles(db, downloaded['name'], downloaded.get('kind', 'file'))):
             raise ValueError('No matching file-extension route for this downloader.')
         fingerprint, hashes = ADAPTERS[profile['kind']].identify(downloaded['data'])
         category = payload.get('category', '')
@@ -318,7 +326,11 @@ def register(app, safe_session_lookup):
             raise ValueError('Select an allowed category.')
         with closing(connect(db)) as conn:
             conn.execute('BEGIN IMMEDIATE')
-            existing = conn.execute("SELECT * FROM downloader_jobs WHERE downloader_id=? AND fingerprint=? AND status IN ('sending','added','already_present','unknown') ORDER BY created_at DESC LIMIT 1", (profile['id'], fingerprint)).fetchone()
+            existing = conn.execute("""SELECT * FROM downloader_jobs WHERE downloader_id=?
+                AND (fingerprint=? OR EXISTS (SELECT 1 FROM json_each(downloader_jobs.hashes) stored
+                     JOIN json_each(?) incoming ON stored.value=incoming.value))
+                AND status IN ('sending','added','already_present','unknown') ORDER BY created_at DESC LIMIT 1""",
+                (profile['id'], fingerprint, json.dumps(hashes))).fetchone()
             if existing and existing['status'] in {'sending', 'unknown'}:
                 return jsonify(job_public(dict(existing))), 202
             if not _slots.acquire(blocking=False):

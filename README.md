@@ -664,6 +664,10 @@ Categories and directories come from your downloader. An optional allowlist limi
 
 In **Open Safely → Downloads**, choose a send action, review the destination/category/start settings, and choose **Send file**. Save file remains available. Sending runs asynchronously with a limit of four concurrent submissions. Status is retained across polling and reloads of the same browser session and appears in submission history.
 
+To offer magnet sending, turn on **Enable magnet links** in a supported downloader profile and enable that downloader. This option is off by default for new and existing profiles. Clicking a BitTorrent magnet link in **Open safely** or **Safe Browser** then makes it available in the same Downloads tray without leaving the website or opening an external application. Each eligible destination uses its configured button label. Choose that action, review the usual destination/category/start settings, and confirm with the same labeled button. Nothing is submitted until you confirm in that dialog. Without an enabled magnet destination, magnet entries and actions remain hidden. File downloads and Save file continue to work as before.
+
+Nightfeed validates v1 (hex or base32), v2, and hybrid magnet identifiers and passes the original magnet directly to qBittorrent; it does not download torrent metadata itself. Repeated clicks are coalesced in the session, and pending or uncertain submissions are matched by torrent hash across magnet links and `.torrent` files. Captured links expire with the browser session; raw magnet URIs are not stored in submission history.
+
 Files are validated against the selected adapter, limited to 10 MB, and copied into the job before browser-session cleanup. Job records retain metadata rather than file contents. Nightfeed checks remote identity before adding a file and does not automatically repeat an uncertain submission. Use **Check status** before explicitly retrying. Interrupted submissions are marked uncertain after restart. Retain the single-worker deployment; multiple workers are unsupported by the in-process scheduler and submission pool.
 
 ### Credentials and access

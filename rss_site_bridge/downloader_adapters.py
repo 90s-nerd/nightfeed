@@ -3,16 +3,58 @@ from __future__ import annotations
 from hashlib import sha1, sha256
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPCookieProcessor, HTTPSHandler, HTTPRedirectHandler
 import json
 import os
 import re
 import secrets
 import ssl
+import base64
 from cryptography.fernet import Fernet, InvalidToken
 
 MAX_SUBMISSION_BYTES = 10 * 1024 * 1024
+MAX_MAGNET_LENGTH = 16384
+
+
+def parse_magnet(uri):
+    """Validate one bounded BitTorrent magnet and normalize its torrent identifiers."""
+    if not isinstance(uri, str) or not uri or len(uri) > MAX_MAGNET_LENGTH or any(ord(c) < 32 or ord(c) == 127 for c in uri):
+        raise ValueError('Invalid or overly long magnet link.')
+    parsed = urlsplit(uri)
+    if parsed.scheme.lower() != 'magnet' or parsed.netloc or parsed.path or parsed.fragment or not parsed.query:
+        raise ValueError('A BitTorrent magnet link is required.')
+    try:
+        pairs = parse_qsl(parsed.query, max_num_fields=128)
+    except ValueError:
+        raise ValueError('Magnet link has too many parameters.') from None
+    hashes, name = [], ''
+    for key, value in pairs:
+        if any(ord(c) < 32 or ord(c) == 127 for c in key + value):
+            raise ValueError('Magnet link contains invalid characters.')
+        if key == 'dn' and not name:
+            name = value[:200].strip()
+        if key != 'xt':
+            continue
+        value = value.lower()
+        if value.startswith('urn:btih:'):
+            digest = value[9:]
+            if re.fullmatch(r'[0-9a-f]{40}', digest):
+                hashes.append(digest)
+            elif re.fullmatch(r'[a-z2-7]{32}', digest):
+                hashes.append(base64.b32decode(digest.upper()).hex())
+            else:
+                raise ValueError('Magnet link has an invalid v1 info hash.')
+        elif value.startswith('urn:btmh:'):
+            digest = value[9:]
+            if not re.fullmatch(r'1220[0-9a-f]{64}', digest):
+                raise ValueError('Magnet link has an invalid v2 info hash.')
+            hashes.extend([digest[4:44], digest[4:]])
+    hashes = sorted(set(hashes))
+    if not hashes:
+        raise ValueError('Magnet link must contain a supported BitTorrent info hash.')
+    fingerprint = 'magnet:' + sha256('|'.join(hashes).encode()).hexdigest()
+    return {'uri': uri, 'name': name or 'Magnet ' + hashes[0][:12], 'fingerprint': fingerprint, 'hashes': hashes}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -26,9 +68,13 @@ class SubmissionRejected(ValueError):
 
 class WebAPIv2Downloader:
     extensions = ('.torrent',)
+    supports_magnets = True
 
     @staticmethod
     def identify(data):
+        if isinstance(data, str):
+            magnet = parse_magnet(data)
+            return magnet['fingerprint'], magnet['hashes']
         return file_identity(data)
 
     def __init__(self, profile, key):
@@ -112,6 +158,12 @@ class WebAPIv2Downloader:
     def add(self, data, category, start):
         boundary = 'Nightfeed' + secrets.token_hex(16)
         fields = {'category': category, 'autoTMM': 'true', 'stopped' if self.version.lstrip('v').split('.')[0].isdigit() and int(self.version.lstrip('v').split('.')[0]) >= 5 else 'paused': str(not start).lower()}
+        if isinstance(data, str):
+            fields['urls'] = parse_magnet(data)['uri']
+            response = self.call('torrents/add', fields)
+            if response.strip() not in {b'Ok.', b''}:
+                raise SubmissionRejected('Downloader did not accept the magnet link.')
+            return
         parts = []
         for name, value in fields.items():
             parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())

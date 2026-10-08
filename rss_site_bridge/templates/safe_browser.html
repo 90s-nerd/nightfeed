@@ -80,7 +80,7 @@ playwright install chromium</pre>
           <span data-browser-download-summary>No files yet</span>
         </div>
         <div class="safe-browser-download-list" data-browser-downloads>
-          <div class="empty-state">Downloaded files will appear here.</div>
+          <div class="empty-state">Downloaded files and clicked magnet links will appear here.</div>
         </div>
       </div>
       </div>
@@ -100,7 +100,7 @@ playwright install chromium</pre>
       tabindex="0"
       draggable="false"
       data-browser-screen>
-    {% if standalone %}<div class="safe-browser-empty" data-browser-empty><h2>Browse safely</h2><p>Paste a website URL into the address bar and click Go.</p><p>Files you download appear in Downloads, where you can save them or send them to a downloader.</p></div>{% endif %}
+    {% if standalone %}<div class="safe-browser-empty" data-browser-empty><h2>Browse safely</h2><p>Paste a website URL into the address bar and click Go.</p><p>Downloaded files and clicked magnet links appear in Downloads, where you can send them to a downloader.</p></div>{% endif %}
     <div class="safe-browser-loading" data-browser-loading hidden>Updating…</div>
   </div>
 
@@ -132,6 +132,7 @@ playwright install chromium</pre>
     const loading = browser.querySelector("[data-browser-loading]");
     const address = browser.querySelector("[data-browser-address]");
     let addressEdited = address.value !== address.defaultValue;
+    let lastMagnetError = '';
     address.addEventListener('input', () => { addressEdited = true; });
     const title = browser.querySelector("[data-browser-title]");
     const blocked = browser.querySelector("[data-browser-blocked]");
@@ -164,6 +165,8 @@ playwright install chromium</pre>
     };
     const loadCategories = async () => {
       const serial = ++categoryRequest;
+      const destination = selectedFile?.downloaders.find(profile => String(profile.id) === destinationSelect.value);
+      submitSend.textContent = selectedFile?.kind === 'magnet' ? destination.label : 'Send file';
       submitSend.disabled = true; sendError.textContent = ''; sendProgress.textContent = 'Loading categories…';
       categorySelect.disabled = true; categoryOptions = []; categorySelect.replaceChildren();
       try {
@@ -183,12 +186,13 @@ playwright install chromium</pre>
         submitSend.disabled = false; sendProgress.textContent = '';
       } catch(error) {if(serial === categoryRequest){sendError.textContent = error.message; sendProgress.textContent = '';}}
     };
-    const openSend = file => {
+    const openSend = (file, destinationId) => {
       if (sending || ['sending','unknown','added','already_present'].includes(submissionStates.get(file.id)?.status)) return;
       selectedFile = file;
       sendDialog.querySelector('[data-send-caution]').hidden = submissionStates.get(file.id)?.status !== 'error';
       sendDialog.querySelector('[data-send-file]').textContent = file.name;
       destinationSelect.replaceChildren(...file.downloaders.map(profile => new Option(profile.name, profile.id)));
+      if (destinationId) destinationSelect.value = String(destinationId);
       sendDialog.showModal(); loadCategories();
     };
     sendDialog.addEventListener('cancel', () => { categoryRequest++; });
@@ -293,6 +297,8 @@ playwright install chromium</pre>
 
     const renderState = (state) => {
       if (!state || state.error) return;
+      if (state.magnet_error && state.magnet_error !== lastMagnetError) window.showRefreshToast(state.magnet_error, 'error');
+      lastMagnetError = state.magnet_error || '';
       const currentUrl = state.url === 'about:blank' ? '' : (state.url || '');
       if (!addressEdited) address.value = currentUrl;
       const empty = browser.querySelector('[data-browser-empty]');
@@ -320,14 +326,14 @@ playwright install chromium</pre>
       const changedDownload = files.find(f => downloadStatuses.get(f.id) !== (f.status || 'ready'));
       if (changedDownload) {
         const status = changedDownload.status || 'ready';
-        downloadToast.textContent = `${changedDownload.name}: ${status === 'ready' ? 'Ready. Open Downloads to save or send.' : status === 'failed' ? 'Download failed.' : 'Downloading…'}`;
+        downloadToast.textContent = changedDownload.kind === 'magnet' ? `${changedDownload.name}: Magnet captured. Open Downloads to send.` : `${changedDownload.name}: ${status === 'ready' ? 'Ready. Open Downloads to save or send.' : status === 'failed' ? 'Download failed.' : 'Downloading…'}`;
         showDownloadToast();
       }
       files.forEach(f => downloadStatuses.set(f.id, f.status || 'ready'));
       const readyCount = files.filter(f => !f.status || f.status === 'ready').length;
       downloadBadge.textContent = String(files.length);
       downloadBadge.hidden = files.length === 0;
-      downloadSummary.textContent = files.length === 0 ? "No files yet" : files.length === 1 ? (readyCount ? "1 file ready" : "Download in progress") : `${readyCount} ready · ${files.length} total`;
+      downloadSummary.textContent = files.length === 0 ? "No downloads yet" : files.length === 1 ? (readyCount ? (files[0].kind === 'magnet' ? "1 magnet ready" : "1 file ready") : "Download in progress") : `${readyCount} ready · ${files.length} total`;
       downloadToggle.setAttribute("aria-label", files.length ? `Downloads, ${readyCount} ready of ${files.length}` : "Downloads");
       if (hasNewDownload) {
         downloadBadge.classList.remove("is-updated");
@@ -337,7 +343,7 @@ playwright install chromium</pre>
       }
       downloadCount = files.length;
       if (!files.length) {
-        downloads.innerHTML = '<div class="empty-state">Downloaded files will appear here.</div>';
+        downloads.innerHTML = '<div class="empty-state">Downloaded files and clicked magnet links will appear here.</div>';
         return;
       }
       const signature = JSON.stringify([files, [...submissionStates]]);
@@ -352,7 +358,7 @@ playwright install chromium</pre>
         const fullName = String(file.name);
         name.title = fullName;
         const extensionAt = fullName.lastIndexOf(".");
-        const hasExtension = extensionAt > 0 && fullName.length - extensionAt <= 20;
+        const hasExtension = file.kind !== 'magnet' && extensionAt > 0 && fullName.length - extensionAt <= 20;
         const stem = document.createElement("span");
         stem.className = "safe-browser-download-stem";
         stem.textContent = hasExtension ? fullName.slice(0, extensionAt) : fullName;
@@ -365,21 +371,24 @@ playwright install chromium</pre>
         }
         const size = document.createElement("p");
         size.className = "meta";
-        size.textContent = ['downloading', 'finalizing'].includes(file.status) ? `Downloading… ${formatBytes(file.size)}${file.total ? ' / ' + formatBytes(file.total) : ''}` : file.status === 'failed' ? 'Download failed. Try the link again.' : formatBytes(file.size);
+        size.textContent = file.kind === 'magnet' ? (file.downloaders?.length ? 'Magnet link · Ready to send' : 'Magnet link · Configure an enabled .torrent downloader to send') : ['downloading', 'finalizing'].includes(file.status) ? `Downloading… ${formatBytes(file.size)}${file.total ? ' / ' + formatBytes(file.total) : ''}` : file.status === 'failed' ? 'Download failed. Try the link again.' : formatBytes(file.size);
         details.append(name, size);
         const link = document.createElement("a");
         link.className = "btn btn-secondary safe-browser-download-save";
         link.href = `${browser.dataset.downloadBase}${encodeURIComponent(file.id)}`;
         link.textContent = "Save file";
-        const actions = document.createElement('div'); actions.className = 'safe-download-actions'; if (!file.status || file.status === 'ready') actions.append(link);
+        const actions = document.createElement('div'); actions.className = 'safe-download-actions'; if (file.kind !== 'magnet' && (!file.status || file.status === 'ready')) actions.append(link);
         const submission = submissionStates.get(file.id);
         const status = document.createElement('p'); status.className='meta'; status.setAttribute('role','status'); status.dataset.downloadSubmission=file.id;
         status.textContent = submission?.message || ''; details.append(status);
         if ((!file.status || file.status === 'ready') && file.downloaders?.length) {
+          const destinations = file.kind === 'magnet' ? file.downloaders : [null];
+          destinations.forEach(destination => {
           const send = document.createElement('button'); send.type='button'; send.className='btn btn-primary';
-          send.textContent = file.downloaders.length === 1 ? file.downloaders[0].label : 'Send to downloader…';
+          send.textContent = destination ? destination.label : file.downloaders.length === 1 ? file.downloaders[0].label : 'Send to downloader…';
           send.disabled = ['sending','unknown','added','already_present'].includes(submission?.status);
-          send.addEventListener('click', () => openSend(file)); actions.append(send);
+          send.addEventListener('click', () => openSend(file, destination?.id)); actions.append(send);
+          });
           if (submission?.status === 'unknown') {
             const check = document.createElement('button'); check.type='button'; check.className='btn btn-secondary'; check.textContent='Check status';
             check.addEventListener('click', () => checkSubmission(file.id, submission.id)); actions.append(check);
