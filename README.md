@@ -2,6 +2,8 @@
 
 `nightfeed` saves site-specific extraction profiles, refreshes them on a schedule, and publishes stable RSS feed URLs.
 
+Nightfeed is open source under the [MIT License](LICENSE.md), which permits personal and commercial use, modification, and redistribution with the license notice retained.
+
 ## What it does
 
 - Stores source profiles in SQLite.
@@ -101,7 +103,7 @@ export shown events as JSON. Provider usage includes cached/reasoning tokens whe
 are captured when token usage is unavailable. Credentials and raw source HTML are
 redacted; audio is not retained. Audit records survive conversation deletion and
 are included in database backups. Only the signed-in owner can view/export audits;
-MCP keys cannot read them.
+MCP tools cannot read them.
 
 Chat messages, attached images and relevant source HTML are sent to the selected AI provider.
 Recordings are sent only to the configured transcription endpoint. Conversations
@@ -174,24 +176,23 @@ can result in a repeated delivery. Task events also appear in AI audit history.
 
 ### External agents
 
-**MCP works independently of AI configuration.** Enable it in the same settings
-page and create a dedicated API key under **Settings → API keys**. Use:
+**MCP works independently of AI configuration.** Under **Settings → AI and MCP**,
+enter your public HTTPS Nightfeed URL (without a path) and enable MCP. Use:
 
 - Transport: **Streamable HTTP** (stateless, JSON responses)
 - Endpoint: `https://YOUR_NIGHTFEED_HOST/mcp`
-- Header: `Authorization: Bearer YOUR_API_KEY`
-- Permissions: **MCP read**, optionally **MCP write**, **Refresh feeds**, and/or
-  **MCP settings** for non-secret global app settings.
+- Authentication: **OAuth**, with automatic client registration (DCR).
+- Sign in using your existing Nightfeed password or OIDC SSO and approve the connection.
 
-Clients must support custom Bearer headers; automatic OAuth discovery and the
-legacy HTTP+SSE transport are not provided. Send `Accept: application/json,
+OAuth discovery, authorization-code flow with PKCE S256, and rotating refresh
+tokens are provided. The legacy HTTP+SSE transport is not provided. Send `Accept: application/json,
 text/event-stream`, and the negotiated `MCP-Protocol-Version` on subsequent
 requests. The server supports initialization, ping, tool discovery and calls.
 MCP exposes the same validated feed, preview, internal-search, task and help services,
 but **does not expose safe-browser opening**. Write workflows return a draft;
 the external agent must obtain user approval before calling `apply_draft`, or use
-`deny_draft` when declined. An explicit `refresh_feed` call with **Refresh feeds**
-permission runs immediately and reports whether refresh succeeded.
+`deny_draft` when declined. An explicit `refresh_feed` call runs immediately
+with the connected user's access and reports whether refresh succeeded.
 `refresh_feeds` refreshes all accessible active feeds, or selected `feed_ids`,
 and reports partial failures and paused feeds. For “refresh and show new topics”,
 set `show_new_topics: true`: results include exact `new_item_ids` inserted by
@@ -214,12 +215,36 @@ Search is limited to stored Nightfeed content; unrelated questions stay outside
 the assistant's scope. The answering model interprets uncertain requests with
 conversation context; exact read shortcuts use the same underlying tools.
 
-Feed-restricted keys can read/search/edit their permitted feeds and preview their
-existing source URLs. Creating feeds, inspecting arbitrary source pages and
-changing source URLs require unrestricted feed access. Global settings cannot be
-combined with feed restrictions. Scope checks also run when drafts are applied.
-Disable MCP or revoke its API key to remove external access. Use HTTPS outside a
-trusted local network.
+MCP inherits the authenticated Nightfeed owner's application access through the
+available tools. Account administration, saved secrets, and browser/device actions
+remain in Nightfeed's UI. OAuth uses one delegation scope, `nightfeed:access`;
+there are no separate MCP read/write/settings permissions to configure.
+
+Access tokens last 15 minutes. Refresh tokens rotate on every exchange; reusing
+an old refresh token revokes that connection. Connections have no scheduled expiry.
+**Settings → Security → Connected applications**
+lists connections and lets you revoke them immediately. Password or security
+configuration changes invalidate existing connections. Disabling MCP or changing
+its public URL revokes connections. Proposals belong to the connection that created
+them; another client cannot apply them.
+
+OAuth requires HTTPS and a fixed public origin. Behind a TLS reverse proxy,
+configure the trusted proxy settings so Nightfeed sees the HTTPS scheme. You can
+override the configured origin with `NIGHTFEED_OAUTH_ISSUER=https://nightfeed.example.com`.
+The issuer must be an origin without a path, query or fragment. Proxy access logs
+should redact OAuth query strings and never log authorization headers or token
+request/response bodies. Public endpoints include
+`/.well-known/oauth-protected-resource/mcp`,
+`/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/token` and
+`/oauth/revoke`. Consent at `/oauth/authorize` uses the normal browser login and CSRF.
+
+**Upgrade requirement:** existing MCP API-key connections must reconnect using
+OAuth. Old MCP-only key permissions no longer grant access, and cannot be selected
+when creating a key. RSS and existing API credentials keep their existing scopes.
+For ChatGPT, select OAuth and DCR/automatic registration; for Claude, select
+"Register automatically". This implementation does not advertise CIMD registration.
+Registered client callbacks must use HTTPS, except for native applications using
+an HTTP loopback IP callback. Every callback is matched exactly, including its port.
 
 Streaming chat keeps an HTTP connection open while provider/tool work runs. Reverse
 proxies should allow a several-minute request timeout and disable response buffering
@@ -676,4 +701,4 @@ Saved credentials are encrypted in SQLite using a Fernet key stored next to the 
 
 To manage credentials externally, configure an environment variable such as `DOWNLOADER_PASSWORD` on the Nightfeed server and enter its name in the profile. This takes precedence over the saved secret. A blank credential input preserves the saved secret; the clear checkbox removes it.
 
-Nightfeed has no user-account system: users with access can configure destinations and send files. Protect exposed deployments with an authenticated reverse proxy or a trusted private network. Downloader mutation endpoints require a signed page token and reject cross-origin requests. Reload pages older than 24 hours before making changes.
+Nightfeed requires owner sign-in to configure destinations and send files. Protect exposed deployments with HTTPS and the configured authentication settings. Downloader mutation endpoints require a signed page token and reject cross-origin requests. Reload pages older than 24 hours before making changes.

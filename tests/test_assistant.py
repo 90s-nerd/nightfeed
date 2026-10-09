@@ -48,17 +48,12 @@ class AssistantTests(unittest.TestCase):
         config, _ = self.services.config(values)
         return core.create_profile(self.db, config)
 
-    def key(self, scopes=('mcp:read', 'mcp:write'), feed_ids=()):
-        raw = 'nf_test_' + str(time.time_ns())
-        with closing(core.connect_db(self.db)) as conn:
-            conn.execute('INSERT INTO auth_api_keys(user_id,name,token_hash,prefix,scopes,feed_ids,created) VALUES(?,?,?,?,?,?,?)',
-                         (1, 'MCP fixture', fingerprint(raw), raw[:11], json.dumps(scopes), json.dumps(feed_ids), time.time()))
-            conn.execute('UPDATE assistant_config SET mcp_enabled=1')
-            conn.commit()
-        return raw
+    def oauth_token(self):
+        from oauth_support import connect_client
+        return connect_client(self.app, self.client, self.db)
 
     def mcp(self, key, method, params=None):
-        return self.app.test_client().post('/mcp', json=dict(jsonrpc='2.0', id=1, method=method, params=params or {}),
+        return self.app.test_client().post('/mcp', base_url='https://localhost', json=dict(jsonrpc='2.0', id=1, method=method, params=params or {}),
                     headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json, text/event-stream'})
 
     def test_chat_requires_tested_provider_and_csrf(self):
@@ -81,9 +76,9 @@ class AssistantTests(unittest.TestCase):
         self.assertNotIn(b'token=private', response.data)
         events = response.json
         self.assertTrue(any(e['kind']=='tool_call' and e['status']=='error' for e in events))
-        key = self.key()
+        key = self.oauth_token()
         denied = self.app.test_client().get('/settings/ai/audit', headers={'Authorization':'Bearer '+key})
-        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.status_code, 401)
         self.assertEqual(self.client.get('/settings/ai/audit').status_code, 200)
 
     def test_settings_patch_preserves_password_and_detects_stale_draft(self):
@@ -229,7 +224,7 @@ class AssistantTests(unittest.TestCase):
         feed = self.create_feed()
         private = self.create_feed(feed_title='Private')
         self.seed_notifications(feed.id, 2); self.seed_notifications(private.id, 3)
-        restricted = Services(self.db, Access('key:1', ('mcp:read','mcp:write'), (feed.id,)))
+        restricted = Services(self.db, Access('key:1', ('app:read','app:write'), (feed.id,)))
         self.assertEqual(restricted.call('get_app_state', {})['unread_notifications'], 2)
         notices = restricted.call('list_notifications', {})
         for name, args in [('get_notification',dict(notification_id=5)), ('propose_notification_action',dict(action='delete',notification_id=5)), ('list_notifications',dict(feed_id=private.id))]:
@@ -237,7 +232,7 @@ class AssistantTests(unittest.TestCase):
         draft = restricted.call('propose_notification_action',dict(action='mark_all_read'))
         restricted.apply(draft['draft_id'])
         self.assertEqual(core.count_unread_notifications(self.db), 3)
-        readonly = Services(self.db, Access('key:2', ('mcp:read',)))
+        readonly = Services(self.db, Access('key:2', ('app:read',)))
         with self.assertRaises(ValueError): readonly.call('propose_notification_action',dict(action='mark_all_read'))
         self.assertEqual(self.services.call('get_notification',dict(notification_id=notices['items'][0]['id']))['read'], True)
         with closing(core.connect_db(self.db)) as conn:
@@ -267,7 +262,7 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(result['total_count'], 104)
         self.assertEqual(result['returned_count'], 25)
         self.assertTrue(result['truncated'])
-        restricted = Services(self.db, Access('key:1', ('mcp:read',), (first.id,)))
+        restricted = Services(self.db, Access('key:1', ('app:read',), (first.id,)))
         self.assertEqual(restricted.call('count_topics', {})['total_count'], 104)
         with self.assertRaises(ValueError):
             restricted.call('count_topics', dict(feed_id=other.id))
@@ -279,7 +274,7 @@ class AssistantTests(unittest.TestCase):
             for index,stamp in enumerate(['2026-03-08T04:59:59+00:00','2026-03-08T05:00:00+00:00','2026-03-09T03:59:59+00:00','2026-03-09T04:00:00+00:00']):
                 conn.execute('INSERT INTO feed_items(profile_id,title,link,summary,discovered_at) VALUES(?,?,?,?,?)',(feed.id,'Linux',f'https://example.com/{index}','',stamp))
             conn.execute('INSERT INTO feed_items(profile_id,title,link,summary,discovered_at) VALUES(?,?,?,?,?)',(other.id,'Linux','https://example.com/private','','2026-03-08T12:00:00+00:00'));conn.commit()
-        restricted=Services(self.db,Access('key:1',('mcp:read',),(feed.id,)))
+        restricted=Services(self.db,Access('key:1',('app:read',),(feed.id,)))
         counted=restricted.call('count_topics',dict(added_on='2026-03-08'))
         found=restricted.call('search_topics',dict(query='',added_on='2026-03-08'))
         self.assertEqual(counted['total_count'],2);self.assertEqual(found['total_count'],2)
@@ -334,7 +329,7 @@ class AssistantTests(unittest.TestCase):
             for feed in (first, second):
                 conn.execute('INSERT INTO feed_items(profile_id,title,link,summary,discovered_at) VALUES(?,?,?,?,?)', (feed.id, 'Linux', 'https://example.com/' + str(feed.id), '', core.utcnow_text()))
             conn.commit()
-        restricted = Services(self.db, Access('key:1', ('mcp:read', 'mcp:write'), (first.id,)))
+        restricted = Services(self.db, Access('key:1', ('app:read', 'app:write'), (first.id,)))
         self.assertEqual(len(restricted.call('search_topics', dict(query='Linux'))['items']), 1)
         with self.assertRaises(ValueError):
             restricted.call('get_feed', dict(feed_id=second.id))
@@ -346,45 +341,46 @@ class AssistantTests(unittest.TestCase):
             restricted.call('preview_feed', dict(feed_id=first.id, config=dict(source_url='https://other.example/')))
 
     def test_mcp_initialize_tools_permissions_and_no_browser(self):
-        key = self.key(('mcp:read',))
+        key = self.oauth_token()
         result = self.mcp(key, 'initialize', dict(protocolVersion='2025-06-18', capabilities={}, clientInfo=dict(name='test', version='1')))
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json['result']['protocolVersion'], '2025-06-18')
         names = {t['name'] for t in self.mcp(key, 'tools/list').json['result']['tools']}
         self.assertIn('search_topics', names)
-        self.assertNotIn('apply_draft', names)
+        self.assertIn('apply_draft', names)
         self.assertNotIn('open_safe_browser', names)
         self.assertNotIn('web_search', names)
         response = self.mcp(key, 'tools/call', dict(name='propose_feed_change', arguments=dict(config=CONFIG)))
-        self.assertTrue(response.json['result']['isError'])
+        self.assertFalse(response.json['result']['isError'])
         self.assertEqual(self.client.post('/mcp', json={}).status_code, 401)
 
     def test_mcp_write_roundtrip_without_ai_configured(self):
-        key = self.key()
+        key = self.oauth_token()
         self.assertIsNone(ai.connection(self.db))
         draft = self.mcp(key, 'tools/call', dict(name='propose_feed_change', arguments=dict(config=CONFIG))).json['result']['structuredContent']
         result = self.mcp(key, 'tools/call', dict(name='apply_draft', arguments=dict(draft_id=draft['draft_id']))).json['result']
         self.assertFalse(result['isError'])
         self.assertEqual(len(core.list_profiles(self.db)), 1)
 
-    def test_settings_only_key_can_apply_timezone_but_not_feed(self):
-        key = self.key(('mcp:read', 'mcp:settings'))
+    def test_oauth_owner_can_apply_timezone(self):
+        key = self.oauth_token()
         draft = self.mcp(key, 'tools/call', dict(name='propose_timezone', arguments=dict(timezone_name='Europe/London'))).json['result']['structuredContent']
         response = self.mcp(key, 'tools/call', dict(name='apply_draft', arguments=dict(draft_id=draft['draft_id'])))
         self.assertFalse(response.json['result']['isError'])
 
     def test_mcp_bad_protocol_origin_revocation_and_disabled(self):
-        key = self.key()
+        key = self.oauth_token()
         headers = {'Authorization': 'Bearer ' + key, 'Accept':'application/json, text/event-stream'}
         client = self.app.test_client()
-        self.assertEqual(client.post('/mcp', json={}, headers=dict(headers, Origin='https://evil.example')).status_code, 403)
-        self.assertEqual(client.post('/mcp', json={}, headers=dict(headers, **{'MCP-Protocol-Version':'bad'})).status_code, 400)
-        self.assertEqual(client.get('/mcp', headers=headers).status_code, 405)
+        self.assertEqual(client.post('/mcp', base_url='https://localhost', json={}, headers=dict(headers, Origin='https://evil.example')).status_code, 403)
+        self.assertEqual(client.post('/mcp', base_url='https://localhost', json={}, headers=dict(headers, **{'MCP-Protocol-Version':'bad'})).status_code, 400)
+        self.assertEqual(client.get('/mcp', base_url='https://localhost', headers=headers).status_code, 405)
         with closing(core.connect_db(self.db)) as conn:
             conn.execute('UPDATE assistant_config SET mcp_enabled=0'); conn.commit()
         self.assertEqual(self.mcp(key, 'ping').status_code, 404)
         with closing(core.connect_db(self.db)) as conn:
-            conn.execute('UPDATE auth_api_keys SET revoked=1'); conn.commit()
+            conn.execute('UPDATE assistant_config SET mcp_enabled=1')
+            conn.execute('UPDATE auth_oauth_grants SET revoked=1'); conn.commit()
         self.assertEqual(self.mcp(key, 'ping').status_code, 401)
 
     def test_stop_releases_busy_state_and_fences_late_worker_actions(self):
@@ -507,7 +503,7 @@ class AssistantTests(unittest.TestCase):
             self.assertFalse(ai.explicit_refresh_request(text),text)
         self.assertNotIn('refresh_feed',{t['name'] for t in definitions(self.access)})
         self.assertIn('refresh_feed',{t['name'] for t in definitions(Access('key:1',('feeds:refresh',)))})
-        self.assertNotIn('refresh_feed',{t['name'] for t in definitions(Access('key:1',('mcp:read',)))})
+        self.assertNotIn('refresh_feed',{t['name'] for t in definitions(Access('key:1',('app:read',)))})
         with self.assertRaises(ValueError):self.services.call('refresh_feed',dict(feed_id=1))
 
     def test_chat_image_request_over_64kb_is_accepted_and_invalid_images_are_not_saved(self):
@@ -616,7 +612,7 @@ class AssistantTests(unittest.TestCase):
         self.assertIn('too large', response.json['error'])
         response = self.client.post('/settings/api-keys', data=dict(key_label='Invalid MCP', current_password='test-owner-passphrase-only', scopes=['mcp:write']))
         self.assertEqual(response.status_code, 400)
-        self.assertIn(b'also require MCP read', response.data)
+        self.assertIn(b'select at least one permission', response.data)
 
     def test_creation_seeds_all_matches_and_edit_does_not_import_preview(self):
         html = ''.join(f'<article><a href="/{index}">Item {index}</a></article>' for index in range(8))

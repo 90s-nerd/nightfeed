@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 {% block title %}API keys · Nightfeed{% endblock %}
-{% block content %}<div class="account-page keys-page"><section class="surface section"><h1>API keys</h1><a class="btn btn-secondary" href="{{ url_for('auth.security') }}">Back to security</a>
+{% block content %}<div class="account-page keys-page"><section class="surface section"><div class="account-page-heading"><h1>API keys</h1><div class="button-row"><a class="btn btn-secondary" href="{{ url_for('auth.security') }}">Back to security</a></div></div>
 {% if error %}<p role="alert">{{ error }}</p>{% endif %}
 {% if new_key %}<div role="status"><h2>Save your new key</h2><p>This secret is shown only once. Store it in your client's password manager or secret store.</p><code style="overflow-wrap:anywhere">{{ new_key }}</code></div>{% endif %}
 <details class="key-usage"><summary>How to use an API key</summary><p>Send <code>Authorization: Bearer YOUR_KEY</code> or <code>X-API-Key: YOUR_KEY</code>. RSS readers can use HTTP Basic authentication with username <code>apikey</code> and the key as their password. Keys in URL query strings are not accepted.</p></details>

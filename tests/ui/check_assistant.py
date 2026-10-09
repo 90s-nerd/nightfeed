@@ -271,6 +271,7 @@ with TemporaryDirectory(dir=ROOT / '.test-preview') as temp:
                 page.screenshot(path=str(ROOT / '.test-preview/assistant-endpoint-help-mobile-dark.png'))
                 page.get_by_label('Help with API base URL',exact=True).click()
                 page.get_by_label('Enable MCP endpoint').check()
+                page.get_by_label('Public Nightfeed URL').fill('https://nightfeed.example.com')
                 page.get_by_role('button', name='Save MCP settings').click()
                 assert ai.settings(db)['mcp_enabled'] == 1
                 assert errors == [], errors

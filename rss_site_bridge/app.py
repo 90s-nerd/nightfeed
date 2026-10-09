@@ -827,6 +827,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     register_push(app)
     from .assistant import register as register_assistant
     register_assistant(app)
+    from .oauth import register as register_oauth
+    register_oauth(app)
     from .tasks import register as register_tasks
     register_tasks(app)
     topic_signer = URLSafeTimedSerializer(encryption_key(Path(app.config["DATABASE_PATH"])), salt="nightfeed-topic-seen")

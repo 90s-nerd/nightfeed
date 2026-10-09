@@ -38,12 +38,16 @@
   <section class="surface section">
     <h2>Connect an external agent with MCP</h2>
     <p>MCP works independently of the built-in AI connection. It provides feed setup, previews, edits, internal search and help. It does not open the safe browser.</p>
-    <form method="post" class="ai-form"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="action" value="mcp"><label class="check-option"><input type="checkbox" name="mcp_enabled" value="1" {% if assistant_config.mcp_enabled %}checked{% endif %}>Enable MCP endpoint</label><button class="btn btn-primary">Save MCP settings</button></form>
-    <p>In your agent, choose <strong>Streamable HTTP</strong> and use:</p><code class="ai-endpoint">{{ request.host_url.rstrip('/') }}/mcp</code>
-    <p>Create a dedicated API key with <strong>MCP read</strong>. Add <strong>MCP write</strong> to create/edit feeds, <strong>Refresh feeds</strong> to request refreshes, or <strong>MCP settings</strong> for non-secret global app settings.</p>
-    <p>Configure the header <code>Authorization: Bearer YOUR_KEY</code>. Use HTTPS outside your trusted local network. Clients must support custom Bearer headers; OAuth discovery is not provided.</p>
-    <div class="button-row"><a class="btn btn-secondary" href="/settings/api-keys">Manage API keys</a></div>
-    <p class="meta">Feed restrictions apply to MCP reads and writes. Creating feeds and inspecting arbitrary source pages require unrestricted feed access. Global settings cannot be used with feed restrictions. Your external agent should ask for approval before calling apply_draft.</p>
+    <form method="post" class="ai-form"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="action" value="mcp">
+      <label class="check-option"><input type="checkbox" name="mcp_enabled" value="1" {% if assistant_config.mcp_enabled %}checked{% endif %}>Enable MCP endpoint</label>
+      <div class="field"><label for="mcp-public-url">Public Nightfeed URL</label><input id="mcp-public-url" name="mcp_public_url" type="url" value="{{ assistant_config.mcp_public_url }}" placeholder="https://nightfeed.example.com" maxlength="512"><small>Use the public HTTPS address without a path. Changing this address or disabling MCP revokes existing connections.</small></div>
+      {% if assistant_config.mcp_url_from_environment %}<p class="meta">The server environment overrides this address with {{ assistant_config.mcp_effective_url }}.</p>{% endif %}
+      <button class="btn btn-primary">Save MCP settings</button>
+    </form>
+    <p>In your agent, choose <strong>Streamable HTTP</strong> with <strong>OAuth</strong> authentication and automatic client registration. Use:</p><code class="ai-endpoint">{{ assistant_config.mcp_effective_url or request.host_url.rstrip('/') }}/mcp</code>
+    <p>Sign in using your Nightfeed password or SSO, then approve the connection. MCP uses your account access through the available tools. API keys are for RSS readers and the existing API.</p>
+    <div class="button-row"><a class="btn btn-secondary" href="{{ url_for('oauth.connections') }}">Connected applications</a></div>
+    <p class="meta">Your external agent should ask for approval before applying a proposal. Access tokens last 15 minutes and refresh automatically. Connections stay active until revoked or authentication settings change.</p>
   </section>
 </div>
 {% endblock %}

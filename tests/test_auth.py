@@ -151,7 +151,13 @@ class AuthTests(unittest.TestCase):
                 for method in rule.methods - {'OPTIONS'}:
                     with self.subTest(endpoint=rule.endpoint, method=method):
                         response = client.open(path, method=method)
-                        self.assertIn(response.status_code, (301, 302, 401))
+                        from rss_site_bridge.oauth import PUBLIC as OAUTH_PUBLIC
+                        if rule.endpoint in OAUTH_PUBLIC or rule.endpoint == 'assistant.mcp':
+                            # Protocol discovery/token routes are public, but the
+                            # default-disabled MCP feature exposes no endpoints.
+                            self.assertEqual(response.status_code,404)
+                        else:
+                            self.assertIn(response.status_code, (301, 302, 401))
                         self.assertNotIn(b'PRIVATE_', response.data)
                         self.assertEqual(response.headers['Cache-Control'], 'no-store, private')
         check()
@@ -515,6 +521,34 @@ class OIDCTests(unittest.TestCase):
         calls = [v for v in self.requests if v[1].endswith('/token')]
         self.assertIn('code_verifier', str(calls))
         self.assertEqual(self.callback().status_code, 401)
+
+    def test_mcp_consent_resumes_after_oidc_sign_in(self):
+        from oauth_support import ISSUER, CALLBACK, VERIFIER, register_client, exchange
+        from authlib.oauth2.rfc7636 import create_s256_code_challenge
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlencode
+        self.configure()
+        with closing(connect(self.db)) as conn:
+            conn.execute('UPDATE assistant_config SET mcp_enabled=1,mcp_public_url=?',(ISSUER,))
+            conn.commit()
+        client = register_client(self.app)
+        destination = '/oauth/authorize?' + urlencode(dict(client_id=client['client_id'],redirect_uri=CALLBACK,
+            response_type='code',resource=ISSUER+'/mcp',code_challenge=create_s256_code_challenge(VERIFIER),code_challenge_method='S256'))
+        browser = self.app.test_client()
+        response = browser.get('/auth/oidc',query_string=dict(next=destination),base_url=ISSUER)
+        params = parse_qs(urlsplit(response.location).query)
+        self.nonce = params['nonce'][0]
+        response = browser.get('/auth/oidc/callback',query_string=dict(state=params['state'][0],code='private-auth-code'),base_url=ISSUER)
+        self.assertEqual(response.status_code,302,response.data)
+        self.assertEqual(response.location,destination)
+        response = browser.get(destination,base_url=ISSUER)
+        self.assertEqual(response.status_code,200,response.data)
+        soup=BeautifulSoup(response.data,'html.parser')
+        response=browser.post(destination,base_url=ISSUER,data=dict(decision='allow',
+            consent_ticket=soup.select_one('[name=consent_ticket]')['value'],auth_csrf=soup.select_one('[name=auth_csrf]')['value']))
+        self.assertEqual(response.status_code,302,response.data)
+        code=parse_qs(urlsplit(response.location).query)['code'][0]
+        self.assertEqual(exchange(self.app,client,code).status_code,200)
 
     def test_protocol_rejects_wrong_state_before_token_exchange(self):
         self.configure()

@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block title %}Connected applications · Nightfeed{% endblock %}
+{% block content %}
+<div class="account-page keys-page oauth-page">
+  <section class="surface section">
+  <div class="account-page-heading"><h1>Connected applications</h1><div class="button-row"><a class="btn btn-secondary" href="{{ url_for('auth.security') }}">Back to security</a></div></div>
+  <p>Applications connected through OAuth use your account access through the available MCP tools. Revoking a connection immediately blocks its access and refresh tokens. Connections stay active until revoked or authentication settings change.</p></section>
+  <section class="surface section"><h2>Your connections</h2>
+  {% for grant in grants %}<article class="key-card">
+    <h3>{{ grant.name }}</h3><p>{{ 'Active' if grant.active else 'Inactive' }} · Connected: {{ grant.created|auth_datetime }} UTC</p>
+    <p>{% if grant.expires %}Expires: {{ grant.expires|auth_datetime }} UTC{% else %}No scheduled expiry{% endif %} · Last used: {{ grant.last_used|auth_datetime }}{% if grant.last_used %} UTC{% endif %}</p>
+    <p class="oauth-callback">Callback: <code>{{ grant.callback }}</code></p>
+    {% if not grant.revoked %}<form method="post" action="{{ url_for('oauth.disconnect', grant_id=grant.id) }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-danger">Revoke connection</button></form>{% endif %}
+  </article>{% else %}<p>No connected applications yet.</p>{% endfor %}
+  </section>
+</div>
+{% endblock %}

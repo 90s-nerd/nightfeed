@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block title %}Connect application · Nightfeed{% endblock %}
+{% block content %}
+<div class="account-page compact-page oauth-page"><section class="surface section">
+  <h1>Connect {{ client.name }} to Nightfeed?</h1>
+  <p>You are signed in as <strong>{{ auth_user.name }}</strong>.</p>
+  <p>This application will use the available MCP tools with your Nightfeed account access. It can read stored content, manage feeds and topic watches, refresh feeds, and change non-secret app settings.</p>
+  <p>Changes use proposals that the application applies after your approval. Account credentials and saved secrets are managed in Nightfeed.</p>
+  <p>Application callback: <code class="oauth-callback">{{ callback }}</code></p>
+  <p class="meta">Application names are supplied by the application. Only connect applications you trust. You can revoke this connection in Connected applications.</p>
+  <form method="post">
+    <input type="hidden" name="auth_csrf" value="{{ auth_csrf }}">
+    <input type="hidden" name="consent_ticket" value="{{ consent_ticket }}">
+    <div class="button-row"><button class="btn btn-primary" name="decision" value="allow">Allow connection</button><button class="btn btn-secondary" name="decision" value="deny">Cancel</button></div>
+  </form>
+</section></div>
+{% endblock %}

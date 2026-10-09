@@ -183,7 +183,7 @@ def get_task(db, access, identity):
 
 
 def save(db, access, value, identity=None, revision=None, *, conn=None, setup_id=None):
-    access.permit('mcp:write')
+    access.permit('app:write')
     if identity and conn is not None:
         row=conn.execute('SELECT * FROM topic_tasks WHERE id=? AND principal=?',(identity,owner(db,access))).fetchone()
         if not row or not permitted(row,access): raise ValueError('Task not found.')
@@ -238,7 +238,7 @@ def validate_resume(conn, task):
 
 
 def change_state(db,access,identity,action):
-    access.permit('mcp:write');get_task(db,access,identity)
+    access.permit('app:write');get_task(db,access,identity)
     if action not in ('pause','resume','archive'): raise ValueError('Choose pause, resume, or archive.')
     with closing(connect(db)) as conn:
         conn.execute('BEGIN IMMEDIATE')

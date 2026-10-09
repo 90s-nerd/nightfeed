@@ -9,7 +9,7 @@ WORKDIR /app
 
 RUN mkdir -p /app/data
 
-COPY pyproject.toml setup.py README.md ./
+COPY pyproject.toml setup.py README.md LICENSE.md ./
 COPY rss_site_bridge ./rss_site_bridge
 COPY wsgi.py ./
 

@@ -100,17 +100,13 @@ class TaskTests(unittest.TestCase):
         task=tasks.get_task(self.db,self.access,result['task_id'])
         state=service.call('propose_task_state',dict(task_id=task['id'],action='pause'));service.apply(state['draft_id']);self.assertEqual(tasks.get_task(self.db,self.access,task['id'])['state'],'paused')
 
-    def test_http_mcp_tasks_share_owner_and_enforce_feed_scope(self):
-        from rss_site_bridge.auth import fingerprint
-        raw='nf_tasks_fixture'
-        with closing(core.connect_db(self.db)) as conn:
-            conn.execute('INSERT INTO auth_api_keys(user_id,name,token_hash,prefix,scopes,feed_ids,created) VALUES(?,?,?,?,?,?,?)',
-                         (1,'Task fixture',fingerprint(raw),raw[:11],json.dumps(['mcp:read','mcp:write']),json.dumps([self.feed.id]),time.time()))
-            conn.execute('UPDATE assistant_config SET mcp_enabled=1');conn.commit()
+    def test_http_mcp_tasks_inherit_owner_access(self):
+        from oauth_support import connect_client
+        raw=connect_client(self.app,self.client,self.db)
         def call(name,arguments):
-            response=self.app.test_client().post('/mcp',json=dict(jsonrpc='2.0',id=1,method='tools/call',params=dict(name=name,arguments=arguments)),headers={'Authorization':'Bearer '+raw,'Accept':'application/json, text/event-stream'})
+            response=self.app.test_client().post('/mcp',base_url='https://localhost',json=dict(jsonrpc='2.0',id=1,method='tools/call',params=dict(name=name,arguments=arguments)),headers={'Authorization':'Bearer '+raw,'Accept':'application/json, text/event-stream'})
             self.assertEqual(response.status_code,200);return response.json['result']
-        self.assertTrue(call('propose_task',dict(config=WATCH))['isError'])
+        self.assertFalse(call('propose_task',dict(config=WATCH))['isError'])
         draft=call('propose_task',dict(config=dict(WATCH,feed_ids=[self.feed.id])))['structuredContent']
         self.assertEqual(tasks.list_tasks(self.db,self.access),[])
         applied=call('apply_draft',dict(draft_id=draft['draft_id']));self.assertFalse(applied['isError'])

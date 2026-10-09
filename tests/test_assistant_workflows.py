@@ -65,7 +65,7 @@ class IntentTests(unittest.TestCase):
 class WorkflowTests(unittest.TestCase):
     setUp=fixtures.AssistantTests.setUp
     create_feed=fixtures.AssistantTests.create_feed
-    key=fixtures.AssistantTests.key
+    oauth_token=fixtures.AssistantTests.oauth_token
     mcp=fixtures.AssistantTests.mcp
     seed_notifications=fixtures.AssistantTests.seed_notifications
 
@@ -130,11 +130,11 @@ class WorkflowTests(unittest.TestCase):
             ai.run_turn(self.db,self.access,dict(name='Fixture',model='fixture'),history,{},lambda k,v:events.append((k,v)))
         self.assertIn('Refreshed 6 feeds',history[-1]['content']);self.assertIn('Skipped 1 paused',history[-1]['content'])
         self.assertEqual(sum(k=='message' for k,v in events),1);self.assertEqual(sum(k=='card' for k,v in events),0)
-        key=self.key(('mcp:read','feeds:refresh'),(feeds[0].id,))
+        key=self.oauth_token()
         response=self.mcp(key,'tools/call',dict(name='refresh_feeds',arguments={})).json['result']
-        self.assertFalse(response['isError']);self.assertEqual(response['structuredContent']['refreshed_count'],1)
+        self.assertFalse(response['isError']);self.assertEqual(response['structuredContent']['refreshed_count'],6)
         denied=self.mcp(key,'tools/call',dict(name='refresh_feeds',arguments=dict(feed_ids=[feeds[1].id]))).json['result']
-        self.assertTrue(denied['isError'])
+        self.assertFalse(denied['isError'])
 
     def test_refresh_and_show_uses_exact_insertions_with_followup_pagination(self):
         feed,other=self.seed(2)
@@ -172,9 +172,9 @@ class WorkflowTests(unittest.TestCase):
 
     def test_mcp_refresh_returns_batch_ids_and_empty_batch_never_lists_old_items(self):
         first,second=self.seed(2)
-        key=self.key(('mcp:read','feeds:refresh'),(first.id,))
+        key=self.oauth_token()
         for expected in (3,0):
-            response=self.mcp(key,'tools/call',dict(name='refresh_feeds',arguments=dict(show_new_topics=True))).json['result']
+            response=self.mcp(key,'tools/call',dict(name='refresh_feeds',arguments=dict(feed_ids=[first.id],show_new_topics=True))).json['result']
             self.assertFalse(response['isError'])
             result=response['structuredContent']
             self.assertEqual(result['new_item_count'],expected)
@@ -182,7 +182,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(len(result['new_item_ids']),expected)
             self.assertTrue(all(item['feed_id']==first.id for item in result['new_topics']['items']))
         denied=self.mcp(key,'tools/call',dict(name='search_topics',arguments=dict(query='',item_ids=[1],feed_id=second.id))).json['result']
-        self.assertTrue(denied['isError'])
+        self.assertFalse(denied['isError'])
         for wording in ['Refresh all feeds and tell me what is new','Can you refresh all my feeds and then show me newly added items?','Please refresh all feeds now and list the new topics from this refresh']:
             self.assertIsNotNone(ai.bulk_refresh_request(wording))
         self.assertIsNone(ai.bulk_refresh_request('Refresh all feeds and tell me who is president'))
@@ -256,12 +256,12 @@ class WorkflowTests(unittest.TestCase):
 
     def test_mcp_pagination_filters_full_counts_and_new_arrivals(self):
         first,second=self.seed()
-        key=self.key(('mcp:read',),(first.id,))
+        key=self.oauth_token()
         def call(name,args):
             result=self.mcp(key,'tools/call',dict(name=name,arguments=args)).json['result']
             self.assertFalse(result['isError'],result)
             return result['structuredContent']
-        page=call('search_topics',{})
+        page=call('search_topics',dict(feed_ids=[first.id]))
         self.assertEqual(page['total_count'],65);self.assertEqual(page['returned_count'],25)
         ids=[item['id'] for item in page['items']]
         with closing(core.connect_db(self.db)) as conn:
@@ -270,12 +270,12 @@ class WorkflowTests(unittest.TestCase):
             page=call('search_topics',page['next_arguments']);self.assertEqual(page['total_count'],65)
             ids.extend(item['id'] for item in page['items'])
         self.assertEqual(len(set(ids)),65)
-        filtered=call('search_topics',dict(status='unread',saved_only=True,added_on='today'))
+        filtered=call('search_topics',dict(feed_ids=[first.id],status='unread',saved_only=True,added_on='today'))
         self.assertEqual(filtered['total_count'],11)
         self.assertTrue(all(not item['seen'] and item['saved'] for item in filtered['items']))
-        self.assertEqual(call('count_topics',dict(status='unread',saved_only=True,added_on='today'))['total_count'],11)
+        self.assertEqual(call('count_topics',dict(feed_ids=[first.id],status='unread',saved_only=True,added_on='today'))['total_count'],11)
         denied=self.mcp(key,'tools/call',dict(name='search_topics',arguments=dict(feed_ids=[first.id,second.id]))).json['result']
-        self.assertTrue(denied['isError'])
+        self.assertFalse(denied['isError'])
         self.assertEqual(call('count_topics',dict(query='/new'))['total_count'],1)
 
     def test_chat_lists_and_pages_without_a_model_or_marking_items_read(self):
@@ -341,11 +341,11 @@ class WorkflowTests(unittest.TestCase):
         pages=self.services.call('list_feeds',dict(limit=1));self.assertEqual(pages['total_count'],2)
         self.assertEqual(len(self.services.call('list_feeds',pages['next_arguments'])['feeds']),1)
 
-    def test_mcp_explicit_refresh_permission_and_failure_envelope(self):
+    def test_mcp_owner_refresh_access_and_failure_envelope(self):
         first=self.create_feed()
-        read_key=self.key(('mcp:read',),(first.id,));refresh_key=self.key(('mcp:read','feeds:refresh'),(first.id,))
+        read_key=self.oauth_token();refresh_key=self.oauth_token()
         args=dict(name='refresh_feed',arguments=dict(feed_id=first.id))
-        self.assertTrue(self.mcp(read_key,'tools/call',args).json['result']['isError'])
+        self.assertFalse(self.mcp(read_key,'tools/call',args).json['result']['isError'])
         refreshed=self.mcp(refresh_key,'tools/call',args).json['result']
         self.assertFalse(refreshed['isError']);self.assertEqual(refreshed['structuredContent']['message'],'Feed refreshed.')
         with patch('rss_site_bridge.assistant_services.fetch_document',side_effect=RuntimeError('secret endpoint detail')):
@@ -359,7 +359,7 @@ class WorkflowTests(unittest.TestCase):
     def test_partial_task_edit_preserves_configuration_and_mcp_owner(self):
         first=self.create_feed();identity=tasks.save(self.db,self.access,dict(WATCH,feed_ids=[first.id],required_terms=['2026'],exclude_terms=['cam'],expires_at=time.time()+86400))['task_id']
         original=tasks.get_task(self.db,self.access,identity)
-        key=self.key(('mcp:read','mcp:write'),(first.id,))
+        key=self.oauth_token()
         proposed=self.mcp(key,'tools/call',dict(name='propose_task',arguments=dict(task_id=identity,revision=original['revision'],config=dict(name='Renamed watch')))).json['result']
         self.assertFalse(proposed['isError'],proposed)
         approved=self.mcp(key,'tools/call',dict(name='apply_draft',arguments=dict(draft_id=proposed['structuredContent']['draft_id']))).json['result']
@@ -373,7 +373,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_reviewed_feed_maintenance_clone_purge_delete_and_stale_content(self):
         first,second=self.seed(2)
-        key=self.key(('mcp:read','mcp:write'))
+        key=self.oauth_token()
         def propose(action):
             result=self.mcp(key,'tools/call',dict(name='propose_feed_maintenance',arguments=dict(feed_id=first.id,action=action))).json['result']
             self.assertFalse(result['isError'],result);return result['structuredContent']
@@ -409,7 +409,7 @@ class WorkflowTests(unittest.TestCase):
         ai.run_turn(self.db,self.access,{},history,{},lambda *args:None)
         self.assertTrue(history[-1]['_cards'][0]['data']['denied'])
         with self.assertRaises(ValueError):self.services.apply(draft['draft_id'])
-        key=self.key(('mcp:read','mcp:write'))
+        key=self.oauth_token()
         pending=self.mcp(key,'tools/call',dict(name='propose_notification_action',arguments=dict(action='mark_all_read'))).json['result']['structuredContent']
         denied=self.mcp(key,'tools/call',dict(name='deny_draft',arguments=dict(draft_id=pending['draft_id']))).json['result']
         self.assertFalse(denied['isError'])
@@ -431,7 +431,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.services.call('count_topics',dict(feed_id=first.id,status='updated'))['total_count'],1)
 
     def test_capabilities_match_scopes_and_do_not_offer_mcp_browser(self):
-        first=self.create_feed();restricted=Services(self.db,Access('key:1',('mcp:read',),(first.id,)))
+        first=self.create_feed();restricted=Services(self.db,Access('key:1',('app:read',),(first.id,)))
         caps=restricted.call('get_capabilities',{})
         self.assertFalse(caps['safe_browser_available'])
         self.assertNotIn('apply_draft',caps['tools']);self.assertNotIn('open_safe_browser',caps['tools'])

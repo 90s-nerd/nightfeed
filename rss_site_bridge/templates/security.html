@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Security · Nightfeed{% endblock %}
 {% block content %}<div class="account-page security-page"><section class="surface section"><h1>Security and sign in</h1>
-<div class="button-row"><a class="btn btn-secondary" href="{{ url_for('auth.profile') }}">Profile</a><a class="btn btn-secondary" href="{{ url_for('auth.password_page') }}">Change password</a><a class="btn btn-secondary" href="{{ url_for('auth.api_keys') }}">API keys</a><a class="btn btn-secondary" href="/settings">Back to settings</a></div>
+<div class="button-row"><a class="btn btn-secondary" href="{{ url_for('auth.profile') }}">Profile</a><a class="btn btn-secondary" href="{{ url_for('auth.password_page') }}">Change password</a><a class="btn btn-secondary" href="{{ url_for('auth.api_keys') }}">API keys</a><a class="btn btn-secondary" href="{{ url_for('oauth.connections') }}">Connected applications</a><a class="btn btn-secondary" href="/settings">Back to settings</a></div>
 {% if error %}<p role="alert">{{ error }}</p>{% endif %}{% if saved %}<p role="status">Security settings saved. Other sessions have been signed out.</p>{% endif %}
 {% if request.args.get('password_changed') %}<p role="status">Password changed. Other sessions have been signed out.</p>{% endif %}
 {% if request.args.get('oidc_linked') %}<p role="status">Your SSO identity is linked. Other sessions have been signed out.</p>{% endif %}

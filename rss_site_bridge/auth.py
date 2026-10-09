@@ -41,16 +41,25 @@ DEFAULTS = dict(session_minutes=720, idle_minutes=30, lockout_attempts=5,
                 trusted_proxies='', proxy_hops=0)
 SCOPES = {'rss:read': 'Read RSS XML', 'feeds:read': 'Read feed list through API',
           'topics:read': 'Read topics through API', 'notifications:read': 'Read notifications through API',
-          'feeds:refresh': 'Refresh feeds through API',
-          'mcp:read': 'MCP: read feeds, search content, help and previews',
-          'mcp:write': 'MCP: prepare and apply feed changes',
-          'mcp:settings': 'MCP: read and change non-secret global app settings'}
+          'feeds:refresh': 'Refresh feeds through API'}
 PUBLIC = {'auth.login', 'auth.setup', 'auth.oidc_start', 'auth.oidc_callback',
           'static', 'push.manifest', 'push.worker'}
 
 
 def fingerprint(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def user_capabilities(user):
+    # Nightfeed currently has one owner. Additional roles need resource policy
+    # before being enabled; unknown roles receive no application capabilities.
+    return ('app:read', 'app:write', 'app:settings', 'feeds:refresh') if user and user['role'] == 'owner' else ()
+
+
+def revoke_application_grants(conn, user_id):
+    # Offline recovery also operates on databases created before OAuth existed.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='auth_oauth_grants'").fetchone():
+        conn.execute('UPDATE auth_oauth_grants SET revoked=1 WHERE user_id=?', (user_id,))
 
 
 def equal(left, right):
@@ -100,6 +109,12 @@ def initialize(db):
         if 'oidc_name' not in {row['name'] for row in conn.execute('PRAGMA table_info(auth_users)')}:
             conn.execute("ALTER TABLE auth_users ADD COLUMN oidc_name TEXT NOT NULL DEFAULT ''")
         conn.execute('INSERT OR IGNORE INTO auth_config VALUES(1,?)', (json.dumps(DEFAULTS),))
+        # Remove obsolete MCP permissions without disturbing RSS/API access on
+        # mixed-use credentials. MCP-only keys no longer have a usable permission.
+        for row in conn.execute("SELECT id,scopes FROM auth_api_keys WHERE scopes LIKE '%mcp:%'").fetchall():
+            scopes = [scope for scope in json.loads(row['scopes']) if scope not in ('mcp:read', 'mcp:write', 'mcp:settings')]
+            conn.execute('UPDATE auth_api_keys SET scopes=?,revoked=CASE WHEN ? THEN revoked ELSE 1 END WHERE id=?',
+                         (json.dumps(scopes), bool(scopes), row['id']))
         conn.commit()
     if not owner(db):
         setup_token(db)
@@ -378,7 +393,16 @@ def register(app):
                 return jsonify(error='Request is too large.'), 413
         g.auth_user = None
         g.api_key = None
+        g.oauth_grant = None
         g.auth_settings = settings(db)
+        from . import oauth
+        if request.endpoint == 'assistant.mcp':
+            return oauth.authenticate_mcp(db)
+        # OAuth protocol endpoints authenticate clients/grants themselves; browser
+        # consent and connection management still use the normal session and CSRF.
+        if request.endpoint in oauth.PUBLIC:
+            request.max_content_length = 16384
+            return None
         now = time.time()
         supplied_key = request.headers.get('X-API-Key', '')
         authorization = request.authorization
@@ -401,8 +425,6 @@ def register(app):
                 required = {'feed_route': 'rss:read', 'auth.api_feeds': 'feeds:read',
                             'auth.api_topics': 'topics:read', 'auth.api_notifications': 'notifications:read',
                             'auth.api_refresh': 'feeds:refresh'}.get(request.endpoint)
-                if request.endpoint == 'assistant.mcp':
-                    required = 'mcp:read'
                 if not required or required not in api_key['scopes']:
                     return jsonify(error='API key does not permit this endpoint.'), 403
                 if request.endpoint == 'feed_route':
@@ -600,6 +622,7 @@ def register(app):
                             conn.execute('INSERT INTO auth_identities VALUES(?,?,?)', (cfg['issuer'], cfg['subject'], g.auth_user['id']))
                         # Settings change revokes every other session, including old OIDC sessions.
                         conn.execute('DELETE FROM auth_sessions WHERE token_hash<>?', (fingerprint(request.cookies.get(COOKIE, '')),))
+                        revoke_application_grants(conn, g.auth_user['id'])
                         audit(conn, 'security_updated', g.auth_user['id'])
                         conn.commit()
                     g.auth_settings, saved = cfg, True
@@ -626,6 +649,7 @@ def register(app):
             conn.execute('BEGIN IMMEDIATE')
             conn.execute('UPDATE auth_users SET password_hash=? WHERE id=?', (hashed, g.auth_user['id']))
             conn.execute('DELETE FROM auth_sessions WHERE user_id=?', (g.auth_user['id'],))
+            revoke_application_grants(conn, g.auth_user['id'])
             audit(conn, 'password_changed', g.auth_user['id'])
             conn.commit()
         return sign_in(owner(db), 'password', '/settings/security?password_changed=1')
@@ -655,10 +679,6 @@ def register(app):
                     scopes = request.form.getlist('scopes')
                     if not name or len(name) > 100 or not scopes or any(v not in SCOPES for v in scopes):
                         raise ValueError('Enter a key name and select at least one permission.')
-                    if any(v in scopes for v in ('mcp:write', 'mcp:settings')) and 'mcp:read' not in scopes:
-                        raise ValueError('MCP write/settings permissions also require MCP read.')
-                    if 'mcp:settings' in scopes and request.form.getlist('feed_ids'):
-                        raise ValueError('Global MCP settings cannot be combined with feed restrictions.')
                     feed_ids = list(set(int(v) for v in request.form.getlist('feed_ids')))
                     expiry = request.form.get('expires', '')
                     expires = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc).timestamp() if expiry else None
@@ -804,6 +824,7 @@ def register(app):
                     conn.execute('DELETE FROM auth_identities WHERE user_id=?', (link_user,))
                     conn.execute('INSERT INTO auth_identities VALUES(?,?,?)', (claims['iss'], claims['sub'], link_user))
                     conn.execute('DELETE FROM auth_sessions WHERE token_hash<>?', (fingerprint(request.cookies.get(COOKIE, '')),))
+                    revoke_application_grants(conn, link_user)
                     audit(conn, 'oidc_identity_linked', link_user)
                     conn.commit()
                 return redirect(url_for('auth.security', oidc_linked=1))
@@ -849,6 +870,7 @@ def main():
         conn.execute('DELETE FROM auth_sessions')
         if hashed:
             conn.execute('UPDATE auth_users SET password_hash=? WHERE id=?', (hashed, user['id']))
+            revoke_application_grants(conn, user['id'])
         audit(conn, 'offline_' + args.action, user['id'], ip='console')
         conn.commit()
     print('Recovery complete. All sessions were revoked.')

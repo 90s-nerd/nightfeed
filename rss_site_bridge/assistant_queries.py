@@ -59,7 +59,7 @@ def topics(db, access, arguments, *, count=False):
     if arguments.get('feed_id') and arguments.get('feed_ids'):
         raise ValueError('Choose feed_id or feed_ids, not both.')
     selected=arguments.get('feed_ids') or ([arguments['feed_id']] if arguments.get('feed_id') else list(access.feed_ids))
-    for identity in selected: access.permit('mcp:read',identity)
+    for identity in selected: access.permit('app:read',identity)
     query=arguments.get('query',''); status=arguments.get('status','all')
     clauses=['(instr(lower(i.title),lower(?))>0 OR instr(lower(i.summary),lower(?))>0 OR instr(lower(i.link),lower(?))>0)']
     values=[query]*3
