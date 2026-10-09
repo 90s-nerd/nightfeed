@@ -241,6 +241,15 @@
     }
   }
 
+  const focusLinkedItem = () => {
+    const item = document.querySelector('[data-selected-item]');
+    if (!item) return;
+    item.focus({preventScroll: true});
+    item.scrollIntoView({block: 'center', behavior: 'instant'});
+  };
+  // Run after browser scroll restoration, including reloads and history returns.
+  window.addEventListener('pageshow', () => requestAnimationFrame(focusLinkedItem));
+
   // Delegation survives in-place refreshes of the RSS view.
   document.addEventListener('click', async event => {
     const button = event.target.closest('[data-copy-feed-url]');
@@ -269,6 +278,7 @@
       const doc = new DOMParser().parseFromString(await updated.text(), 'text/html');
       document.querySelector('[data-feed-status]').replaceChildren(...doc.querySelector('[data-feed-status]').childNodes);
       if (!document.querySelector('[data-feed-editor]')) document.querySelector('[data-feed-content]').replaceChildren(...doc.querySelector('[data-feed-content]').childNodes);
+      focusLinkedItem();
       window.nightfeedUnread(payload.unread_notifications);
       window.nightfeedStatus(status, payload.message);
     } catch (error) { status.classList.add('editor-notice-error'); window.nightfeedStatus(status, error.message, 'error'); }

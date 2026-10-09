@@ -1116,6 +1116,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         preview: list[FeedEntry] | None = None,
         preview_error: str | None = None,
         purged: bool = False,
+        selected_item_id: int | None = None,
+        selected_item_page: int | None = None,
     ) -> str:
         settings = getattr(g, "app_settings", AppSettings())
         view = request.args.get("view", "items")
@@ -1123,6 +1125,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             view = "configuration"
         if view not in {"items", "configuration", "rss"}:
             view = "items"
+        if selected_item_id is not None:
+            view = "items"
+        page = selected_item_page or pagination_page(profile.item_count)
         form = {
             name: getattr(profile, name)
             for name in load_form()
@@ -1135,8 +1140,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "detail.html",
             profiles=list_profiles(Path(app.config["DATABASE_PATH"])),
             profile=profile,
-            items=list_feed_items(Path(app.config["DATABASE_PATH"]), profile.id, 25, (pagination_page(profile.item_count) - 1) * 25),
-            page=pagination_page(profile.item_count),
+            items=list_feed_items(Path(app.config["DATABASE_PATH"]), profile.id, 25, (page - 1) * 25),
+            page=page,
+            selected_item_id=selected_item_id,
             pages=max(1, (profile.item_count + 24) // 25),
             feed_url=build_feed_url(request.url_root, profile.feed_token, settings.public_base_url),
             edit_error=edit_error,
@@ -1612,6 +1618,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if profile is None:
             log_event(logging.WARNING, "profile_detail_failed", profile_id=profile_id, error="Profile not found.")
             return Response("Profile not found.", status=404, mimetype="text/plain; charset=utf-8")
+        selected_item_id = None
+        selected_item_page = None
+        if "item" in request.args:
+            value = request.args.get("item", "")
+            if not re.fullmatch(r"[1-9][0-9]{0,18}", value) or int(value) >= 2**63:
+                return Response("Invalid item ID.", status=400, mimetype="text/plain; charset=utf-8")
+            selected_item_id = int(value)
+            selected_item_page = feed_item_page(Path(app.config["DATABASE_PATH"]), profile_id, selected_item_id)
+            if selected_item_page is None:
+                return Response("Item not found in this feed.", status=404, mimetype="text/plain; charset=utf-8")
         edit_form: dict[str, str] = {}
         preview: list[FeedEntry] = []
         preview_error = None
@@ -1631,6 +1647,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             preview=preview,
             preview_error=preview_error,
             purged=request.args.get("purged") == "1",
+            selected_item_id=selected_item_id,
+            selected_item_page=selected_item_page,
         )
 
     def safe_return_destination(value: str | None, profile_id: int | None) -> str:
@@ -3655,6 +3673,24 @@ def list_feed_items(db_path: Path, profile_id: int, limit: int, offset: int = 0)
         )
         for row in rows
     ]
+
+
+def feed_item_page(db_path: Path, profile_id: int, item_id: int) -> int | None:
+    """Locate a stored item using the same ordering as list_feed_items."""
+    with closing(connect_db(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(earlier.id) AS preceding
+            FROM feed_items target
+            LEFT JOIN feed_items earlier ON earlier.profile_id = target.profile_id
+                AND (earlier.discovered_at > target.discovered_at
+                     OR (earlier.discovered_at = target.discovered_at AND earlier.id < target.id))
+            WHERE target.profile_id = ? AND target.id = ?
+            GROUP BY target.id
+            """,
+            (profile_id, item_id),
+        ).fetchone()
+    return row["preceding"] // 25 + 1 if row is not None else None
 
 
 def get_feed_item(db_path: Path, profile_id: int, item_id: int) -> FeedEntry | None:

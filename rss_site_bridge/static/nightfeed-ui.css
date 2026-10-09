@@ -468,3 +468,5 @@ body .settings-toggle-control { appearance: auto; width: 20px; height: 20px; fle
   .push-settings .push-guide-link { align-self: flex-start; }
   .push-guide-dialog { padding: 20px; }
 }
+
+.item-card.item-deep-link { outline: 2px solid var(--nf-focus); outline-offset: 3px; scroll-margin-block: 80px; }
