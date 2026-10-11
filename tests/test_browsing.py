@@ -78,6 +78,16 @@ class BrowsingTests(unittest.TestCase):
             self.assertIsNone(get_safe_browser_session("blank", self.profile.id, 1))
             self.assertIsNone(get_safe_browser_session("topic"))
 
+    def test_link_inspection_preserves_metadata_and_session_scope(self):
+        session = Mock()
+        session.execute.return_value = {"downloads": [], "context_link": {"url": "https://example.org/path?x=1&y=2", "text": "Example"}}
+        with patch("rss_site_bridge.app.get_safe_browser_session", return_value=session) as lookup:
+            result = self.client.post('/safe-browser/blank/command', json={"action": "contextmenu", "x": 20, "y": 30})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json['context_link']['url'], 'https://example.org/path?x=1&y=2')
+        session.execute.assert_called_once_with('contextmenu', x=20, y=30)
+        lookup.assert_called_once_with('blank', None, None)
+
     def test_standalone_start_failure_shows_recovery(self):
         with patch("rss_site_bridge.app.create_safe_browser_session", side_effect=RuntimeError("Chromium unavailable")):
             response = self.client.get("/safe-browser")

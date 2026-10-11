@@ -393,6 +393,11 @@ body .settings-toggle-control:checked::after { background: var(--nf-onPrimary); 
 .notification-choice > .check-option, .settings-tls-row > .check-option { display: inline-flex; align-items: baseline; }
 .notification-choice > .check-option input, .settings-tls-row > .check-option input { align-self: flex-start; }
 .safe-browser-hint { color: var(--nf-secondary); font-size: 13px; line-height: 20px; }
+.safe-browser-typing { display: flex; gap: 8px; padding: 8px 12px; flex-wrap: wrap; }
+.safe-browser-typing input { flex: 1; min-width: 140px; min-height: 44px; font-size: 16px; border: 1px solid var(--nf-controlBorder); border-radius: 12px; background: var(--nf-surface); color: var(--nf-text); padding: 8px; }
+.safe-browser-link-dialog input { width: 100%; min-width: 0; margin: 12px 0; font-size: 16px; }
+.safe-browser-link-dialog p { overflow-wrap: anywhere; }
+.safe-browser-loading { pointer-events: none; }
 .safe-browser-empty { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 24px; text-align: center; background: var(--nf-surface); }
 .safe-browser-empty[hidden] { display: none; }
 .safe-browser-empty p { max-width: 480px; color: var(--nf-secondary); margin-top: 12px; }

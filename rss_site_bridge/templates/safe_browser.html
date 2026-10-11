@@ -9,7 +9,7 @@
 {% block page_header %}
 <header class="topbar">
   <div class="page-title">
-    <div class="help-heading"><h1>{{ 'Safe Browser' if standalone else 'Isolated browser' }}</h1><details class="ui-hint"><summary aria-label="Help with Safe Browser">?</summary><div class="ui-hint-content">This page runs in a separate browser session. Paste a public HTTP or HTTPS URL into the address bar, then click Go. Click to type and scroll to move through the page. Remote screenshots do not expose page text to screen readers; Open original provides direct access.</div></details></div>
+    <div class="help-heading"><h1>{{ 'Safe Browser' if standalone else 'Isolated browser' }}</h1><details class="ui-hint"><summary aria-label="Help with Safe Browser">?</summary><div class="ui-hint-content">This page runs in a separate browser session. Paste a public HTTP or HTTPS URL into the address bar, then click Go. Tap a website field to open your keyboard, or use the typing bar. Use Enter to submit and Next field to move between fields. Hold a link or right-click it to copy its address. Captured magnets appear in Downloads to review and send. Scroll to move through the page. Remote screenshots do not expose page text to screen readers; Open original provides direct access.</div></details></div>
     <p>{{ 'Browse a website in an isolated session.' if standalone else item.title }}</p>
   </div>
   <div class="topbar-actions">
@@ -93,6 +93,12 @@ playwright install chromium</pre>
     <span><strong data-browser-popups>0</strong> popups stopped</span>
   </div>
 
+  <div class="safe-browser-typing">
+    <input type="text" data-browser-typing aria-label="Type in selected website field" placeholder="Tap a website field, then type here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button class="btn btn-secondary" type="button" data-browser-enter>Enter</button>
+    <button class="btn btn-secondary" type="button" data-browser-tab>Next field</button>
+  </div>
+
   <div class="safe-browser-viewport" data-browser-viewport>
     <img
       src="{{ browser_base }}/screenshot"
@@ -105,6 +111,18 @@ playwright install chromium</pre>
   </div>
 
 </section>
+
+<dialog class="downloader-dialog safe-browser-link-dialog" data-browser-link-dialog aria-labelledby="browser-link-title">
+  <div class="section"><h2 id="browser-link-title">Link options</h2>
+    <p data-browser-link-text></p>
+    <input type="text" readonly data-browser-link-url aria-label="Link address">
+    <div class="button-row">
+      <button class="btn btn-primary" type="button" data-browser-link-copy>Copy link</button>
+      <button class="btn btn-secondary" type="button" data-browser-link-open>Open in safe browser</button>
+      <button class="btn btn-secondary" type="button" data-browser-link-close>Close</button>
+    </div>
+  </div>
+</dialog>
 
 
 <dialog class="downloader-dialog" data-downloader-dialog aria-labelledby="send-title">
@@ -129,6 +147,52 @@ playwright install chromium</pre>
     if (!browser) return;
 
     const screen = browser.querySelector("[data-browser-screen]");
+    const typing = browser.querySelector('[data-browser-typing]');
+    const linkDialog = document.querySelector('[data-browser-link-dialog]');
+    const linkUrl = linkDialog.querySelector('[data-browser-link-url]');
+    let contextPoint = null, longPressTimer = null, composing = false;
+    // A sentinel lets mobile keyboards report deletion even after sent text is cleared.
+    const resetTyping = () => { typing.value = ' '; typing.setSelectionRange(1, 1); };
+    typing.addEventListener('focus', resetTyping);
+    typing.addEventListener('blur', () => { typing.value = ''; });
+    typing.addEventListener('compositionstart', () => { composing = true; });
+    const sendTyping = event => {
+      if (composing || event.isComposing) return;
+      if (event.inputType?.startsWith('delete') || !typing.value) command('key', {key: 'Backspace'});
+      else {
+        const value = typing.value.startsWith(' ') ? typing.value.slice(1) : typing.value;
+        if (value) command('text', {text: value});
+      }
+      resetTyping();
+    };
+    typing.addEventListener('input', sendTyping);
+    typing.addEventListener('compositionend', event => { composing = false; sendTyping(event); });
+    typing.addEventListener('keydown', event => {
+      if (event.isComposing) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault(); command('key', {key: (event.metaKey ? 'Meta' : 'Control') + '+A'}); return;
+      }
+      if (['Enter', 'Tab', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Delete', 'Backspace'].includes(event.key)) {
+        event.preventDefault(); command('key', {key: event.shiftKey ? `Shift+${event.key}` : event.key});
+      }
+    });
+    browser.querySelector('[data-browser-enter]').addEventListener('click', () => command('key', {key:'Enter'}));
+    browser.querySelector('[data-browser-tab]').addEventListener('click', () => { typing.focus(); command('key', {key:'Tab'}); });
+    linkDialog.querySelector('[data-browser-link-close]').addEventListener('click', () => linkDialog.close());
+    linkDialog.querySelector('[data-browser-link-copy]').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(linkUrl.value);
+        window.showRefreshToast('Link copied.', 'success'); linkDialog.close();
+      } catch (_) {
+        linkUrl.focus(); linkUrl.select();
+        window.showRefreshToast('Select and copy the link address.', 'error');
+      }
+    });
+    linkDialog.querySelector('[data-browser-link-open]').addEventListener('click', () => {
+      linkDialog.close();
+      if (/^magnet:/i.test(linkUrl.value)) command('click', contextPoint);
+      else command('navigate', {url:linkUrl.value});
+    });
     const loading = browser.querySelector("[data-browser-loading]");
     const address = browser.querySelector("[data-browser-address]");
     let addressEdited = address.value !== address.defaultValue;
@@ -272,6 +336,7 @@ playwright install chromium</pre>
     let touchStartY = 0;
     let touchLastY = 0;
     let touchMoved = false;
+    let touchClick = false;
     let suppressNextClick = false;
 
     const setDownloadPopover = (open) => {
@@ -445,7 +510,23 @@ playwright install chromium</pre>
         const state = await response.json();
         if (!response.ok) { if(response.status === 410) endSession(); throw new Error(state.error || 'Browser command failed.'); }
         if (['navigate', 'back', 'forward', 'reload'].includes(action)) addressEdited = false;
+        if (['navigate', 'back', 'forward', 'reload', 'viewport'].includes(action)) typing.blur();
         renderState(state);
+        if (state.focused_input) {
+          typing.type = state.focused_input.password ? 'password' : 'text';
+          typing.inputMode = state.focused_input.inputmode || 'text';
+          if (!state.focused_input.editable && document.activeElement === typing) typing.blur();
+        }
+        if (action === 'contextmenu') {
+          if (state.context_link) {
+            linkUrl.value = state.context_link.url;
+            linkDialog.querySelector('[data-browser-link-text]').textContent = state.context_link.text;
+            const open = linkDialog.querySelector('[data-browser-link-open]');
+            open.disabled = !/^(https?:|magnet:)/i.test(linkUrl.value);
+            open.textContent = /^magnet:/i.test(linkUrl.value) ? 'Capture magnet' : 'Open in safe browser';
+            linkDialog.showModal();
+          } else window.showRefreshToast('No link at this position.', 'error');
+        }
         refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
       } catch(error) { loading.textContent = error.message; loading.hidden = false; }
       finally {
@@ -456,8 +537,12 @@ playwright install chromium</pre>
     };
     const command = (action, payload = {}) => {
       lastInteraction = Date.now();
+      if (action === 'text' && payload.text.length > 2000) {
+        for (let offset = 0; offset < payload.text.length; offset += 2000) command('text', {text:payload.text.slice(offset, offset + 2000)});
+        return;
+      }
       const tail = inputQueue.at(-1);
-      if (action === 'text' && tail?.action === 'text') tail.payload.text += payload.text;
+      if (action === 'text' && tail?.action === 'text' && tail.payload.text.length + payload.text.length <= 2000) tail.payload.text += payload.text;
       else inputQueue.push({action, payload});
       drainInputs();
     };
@@ -562,7 +647,9 @@ playwright install chromium</pre>
       const rect = screen.getBoundingClientRect();
       const x = (event.clientX - rect.left) * (viewportWidth / rect.width);
       const y = (event.clientY - rect.top) * (viewportHeight / rect.height);
-      screen.focus();
+      if (touchClick || event.pointerType === 'touch' || event.pointerType === 'pen' || event.sourceCapabilities?.firesTouchEvents) typing.focus({preventScroll:true});
+      else screen.focus();
+      touchClick = false;
       const ripple = document.createElement('span'); ripple.className = 'safe-click-feedback';
       ripple.style.left = `${event.clientX - rect.left}px`; ripple.style.top = `${event.clientY - rect.top}px`;
       screen.parentElement.append(ripple); setTimeout(() => ripple.remove(), 450);
@@ -578,15 +665,25 @@ playwright install chromium</pre>
     }, {passive: false});
 
     screen.addEventListener("pointerdown", (event) => {
-      if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+      if (event.pointerType !== "touch" && event.pointerType !== "pen") {
+        suppressNextClick = false;
+        return;
+      }
       touchPointerId = event.pointerId;
       touchStartX = event.clientX;
       touchStartY = event.clientY;
       touchLastY = event.clientY;
       touchMoved = false;
+      touchClick = false;
       suppressNextClick = false;
       screen.setPointerCapture?.(event.pointerId);
       screen.focus({preventScroll: true});
+      clearTimeout(longPressTimer);
+      longPressTimer = setTimeout(() => {
+        if (touchMoved || touchPointerId === null) return;
+        suppressNextClick = true;
+        openLinkMenu(event.clientX, event.clientY);
+      }, 550);
     });
 
     screen.addEventListener("pointermove", (event) => {
@@ -595,6 +692,7 @@ playwright install chromium</pre>
       const distance = Math.hypot(event.clientX - touchStartX, event.clientY - touchStartY);
       if (!touchMoved && distance < 6) return;
       touchMoved = true;
+      clearTimeout(longPressTimer);
       suppressNextClick = true;
       screen.classList.add("is-touch-scrolling");
       const rect = screen.getBoundingClientRect();
@@ -608,6 +706,7 @@ playwright install chromium</pre>
 
     const finishTouchScroll = (event) => {
       if (event.pointerId !== touchPointerId) return;
+      clearTimeout(longPressTimer);
       if (screen.hasPointerCapture?.(event.pointerId)) {
         screen.releasePointerCapture(event.pointerId);
       }
@@ -615,14 +714,29 @@ playwright install chromium</pre>
       screen.classList.remove("is-touch-scrolling");
       if (event.type === "pointercancel") {
         suppressNextClick = false;
-      } else if (touchMoved) {
+      } else if (touchMoved || suppressNextClick) {
         scheduleScrollFlush(0);
         window.setTimeout(() => { suppressNextClick = false; }, 500);
+      } else {
+        touchClick = true;
+        window.setTimeout(() => { touchClick = false; }, 500);
       }
     };
 
     screen.addEventListener("pointerup", finishTouchScroll);
     screen.addEventListener("pointercancel", finishTouchScroll);
+
+    const openLinkMenu = (clientX, clientY) => {
+      const rect = screen.getBoundingClientRect();
+      contextPoint = {x:(clientX-rect.left)*viewportWidth/rect.width, y:(clientY-rect.top)*viewportHeight/rect.height};
+      typing.blur(); command('contextmenu', contextPoint);
+    };
+    screen.addEventListener('contextmenu', event => {
+      event.preventDefault(); clearTimeout(longPressTimer);
+      if (suppressNextClick) return;
+      suppressNextClick = touchPointerId !== null;
+      openLinkMenu(event.clientX, event.clientY);
+    });
 
     const namedKeys = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
     screen.addEventListener("keydown", (event) => {
@@ -637,7 +751,7 @@ playwright install chromium</pre>
         command("key", {key: modifiers.join("+")});
       } else if (namedKeys.has(event.key)) {
         event.preventDefault();
-        command("key", {key: event.key});
+        command("key", {key: event.shiftKey ? `Shift+${event.key}` : event.key});
       } else if (event.key === " ") {
         event.preventDefault();
         command("key", {key: "Space"});

@@ -20,6 +20,8 @@ logging.disable(logging.CRITICAL)
 original_route = Page.route
 original_launch = BrowserType.launch
 MAGNET = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=Fixture%20magnet'
+BUTTON_MAGNET = 'magnet:?xt=urn:btih:' + 'b' * 40 + '&dn=Button%20magnet'
+LOCATION_MAGNET = 'magnet:?xt=urn:btih:' + 'c' * 40 + '&dn=Location%20magnet'
 
 
 class FixtureDownloader:
@@ -50,7 +52,16 @@ def fixture_route(page, pattern, handler, **kwargs):
         if route.request.url == 'https://safe-browser.example.test/':
             route.fulfill(content_type='text/html', body=f'''<title>Browser fixture</title><h1>Website loaded</h1>
                 <a target="_blank" href="{MAGNET}" style="position:absolute;left:10px;top:100px;width:280px;height:40px"><span>Send this magnet</span></a>
-                <a href="/fixture.torrent" style="position:absolute;left:10px;top:160px;width:280px;height:40px">Download torrent file</a>''')
+                <a href="/fixture.torrent" style="position:absolute;left:10px;top:160px;width:280px;height:40px">Download torrent file</a>
+                <form onsubmit="event.preventDefault();document.title='Submitted:'+document.querySelector('#entry').value">
+                  <input id="entry" aria-label="Remote text" oninput="document.title='Entry:'+this.value" style="position:absolute;left:10px;top:220px;width:250px;height:35px">
+                  <input type="email" oninput="document.title='Email:'+this.value" style="position:absolute;left:10px;top:500px;width:250px;height:35px">
+                  <button type="submit" hidden>Submit</button>
+                </form>
+                <button onclick="window.open('{BUTTON_MAGNET}')" style="position:absolute;left:10px;top:280px;height:35px">Button magnet</button>
+                <button onclick="location.href='{LOCATION_MAGNET}'" style="position:absolute;left:10px;top:340px;height:35px">Location magnet</button>
+                <a href="/next?x=1&amp;y=2" style="position:absolute;left:10px;top:400px;height:35px"><span>Copy this link</span></a>
+                <div style="height:1800px"></div>''')
         elif route.request.url == 'https://safe-browser.example.test/fixture.torrent':
             route.fulfill(content_type='application/x-bittorrent', headers={'Content-Disposition': 'attachment; filename=fixture.torrent'},
                           body=b'd4:infod6:lengthi1e4:name7:Fixture12:piece lengthi16384e6:pieces20:xxxxxxxxxxxxxxxxxxxxee')
@@ -78,7 +89,7 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 with closing(d.connect(app.config['DATABASE_PATH'])) as connection:
                     connection.execute('UPDATE downloaders SET enabled=1, enable_magnets=1')
                     connection.commit()
-                context = browser.new_context(viewport={'width': width, 'height': 900})
+                context = browser.new_context(viewport={'width': width, 'height': 900}, has_touch=True)
                 page = context.new_page()
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
@@ -105,8 +116,52 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 state = page.request.get(origin + state_url).json()
                 screen = page.locator('[data-browser-screen]')
                 box = screen.bounding_box()
-                click = {'x': 30 * box['width'] / state['viewport_width'], 'y': 110 * box['height'] / state['viewport_height']}
-                screen.click(position=click)
+                def remote_position(x, y):
+                    current = screen.bounding_box()
+                    return {'x': x * current['width'] / state['viewport_width'], 'y': y * current['height'] / state['viewport_height']}
+                def click_remote(x, y):
+                    screen.click(position=remote_position(x, y))
+                typing = page.locator('[data-browser-typing]')
+                # Touch focus must happen in the gesture, before waiting for the server.
+                pos = remote_position(30, 235)
+                screen.tap(position=pos)
+                expect(typing).to_be_focused()
+                typing.press_sequentially('hello')
+                typing.press('Backspace')
+                typing.press_sequentially('é')
+                expect(page.locator('[data-browser-title]')).to_have_text('Entry:hellé')
+                typing.dispatch_event('compositionstart')
+                typing.evaluate("el => {el.value=' 日本';}")
+                typing.dispatch_event('compositionend', {'data':'日本'})
+                typing.dispatch_event('input', {'inputType':'insertText','data':'日本'})
+                expect(page.locator('[data-browser-title]')).to_have_text('Entry:hellé日本')
+                page.locator('[data-browser-enter]').click()
+                expect(page.locator('[data-browser-title]')).to_have_text('Submitted:hellé日本')
+                page.locator('[data-browser-tab]').click()
+                expect(typing).to_have_attribute('inputmode', 'email')
+                typing.press_sequentially('test@example.org')
+                expect(page.locator('[data-browser-title]')).to_have_text('Email:test@example.org')
+                assert not page.evaluate('document.documentElement.scrollWidth > innerWidth + 1')
+                page.screenshot(path=str(ROOT / f'.test-preview/safe-browser-input-{width}.png'))
+                # Exercise long press: inspecting must preserve the current URL.
+                pos = remote_position(30, 410)
+                box = screen.bounding_box()
+                touch_session = context.new_cdp_session(page)
+                touch_session.send('Input.dispatchTouchEvent', {'type':'touchStart', 'touchPoints':[{'x':box['x']+pos['x'], 'y':box['y']+pos['y']}]})
+                expect(page.locator('[data-browser-link-dialog]')).to_be_visible()
+                touch_session.send('Input.dispatchTouchEvent', {'type':'touchEnd', 'touchPoints':[]})
+                touch_session.detach()
+                expect(page.locator('[data-browser-link-url]')).to_have_value('https://safe-browser.example.test/next?x=1&y=2')
+                expect(address).to_have_value('https://safe-browser.example.test/')
+                page.context.grant_permissions(['clipboard-read', 'clipboard-write'])
+                page.locator('[data-browser-link-copy]').click()
+                expect(page.locator('[data-browser-link-dialog]')).to_be_hidden()
+                assert page.evaluate('navigator.clipboard.readText()') == 'https://safe-browser.example.test/next?x=1&y=2'
+                screen.click(position=remote_position(30, 410), button='right')
+                expect(page.locator('[data-browser-link-dialog]')).to_be_visible()
+                expect(page.locator('[data-browser-link-url]')).to_have_value('https://safe-browser.example.test/next?x=1&y=2')
+                page.locator('[data-browser-link-close]').click()
+                click_remote(30, 110)
                 expect(page.locator('.safe-browser-download-name')).to_have_text('Fixture magnet')
                 expect(page.locator('[data-browser-original]')).to_have_attribute('href', 'https://safe-browser.example.test/')
                 expect(page.get_by_role('link', name='Save file', exact=True)).to_have_count(0)
@@ -119,15 +174,27 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 expect(page.locator('[data-download-submission]')).to_contain_text('Added to Fixture')
                 assert FixtureDownloader.added == [(MAGNET, 'Movies', True)]
                 page.get_by_role('button', name='Downloads', exact=False).click()
-                screen.click(position=click)
+                click_remote(30, 110)
                 expect(page.locator('.safe-browser-download-name')).to_have_count(1)
+                assert len(FixtureDownloader.added) == 1
+                if page.locator('[data-browser-download-popover]').is_visible():
+                    page.get_by_role('button', name='Downloads', exact=False).click()
+                click_remote(30, 290)
+                expect(page.locator('.safe-browser-download-name')).to_have_count(2)
+                page.get_by_role('button', name='Downloads', exact=False).click()
+                click_remote(30, 350)
+                expect(page.locator('.safe-browser-download-name')).to_have_count(3)
                 assert len(FixtureDownloader.added) == 1
                 page.screenshot(path=str(ROOT / f'.test-preview/safe-browser-magnet-{width}.png'))
                 if page.locator('[data-browser-download-popover]').is_visible():
                     page.get_by_role('button', name='Downloads', exact=False).click()
-                screen.click(position={'x': 30 * box['width'] / state['viewport_width'], 'y': 170 * box['height'] / state['viewport_height']})
-                expect(page.get_by_role('link', name='Save file', exact=True)).to_have_count(1, timeout=15000)
-                expect(page.locator('.safe-browser-download-name')).to_have_count(2)
+                click_remote(30, 170)
+                try:
+                    expect(page.get_by_role('link', name='Save file', exact=True)).to_have_count(1, timeout=15000)
+                except AssertionError:
+                    print('Download failure state:', page.request.get(origin + state_url).json(), 'UI errors:', errors, flush=True)
+                    raise
+                expect(page.locator('.safe-browser-download-name')).to_have_count(4)
                 assert len(FixtureDownloader.added) == 1
                 with closing(d.connect(app.config['DATABASE_PATH'])) as connection:
                     connection.execute('UPDATE downloaders SET enable_magnets=0')
@@ -153,4 +220,4 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
         for session in list(_safe_browser_sessions.values()):
             session.stop()
         server.shutdown()
-print('PASS: desktop/mobile blank startup, navigation, magnet capture/review/submission, duplicate clicks, private URL blocking, back, and close.')
+print('PASS: desktop/mobile form typing, deletion, Unicode/IME, Enter, Next field, email keyboard mode, long-press/right-click link copying, anchor/JavaScript magnets, submission, duplicate prevention, file downloads, private URL blocking, navigation, and close.')

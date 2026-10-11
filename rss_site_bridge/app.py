@@ -369,8 +369,16 @@ class SafeBrowserSession:
                 context.add_init_script(
                     """
                     (() => {
-                      document.addEventListener('click', (event) => {
-                        const link = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+                      const originalOpen = window.open;
+                      window.open = function(url, ...args) {
+                        if (/^magnet:/i.test(String(url))) {
+                          window.__nightfeedCaptureMagnet(String(url)).catch(() => {});
+                          return null;
+                        }
+                        return originalOpen.call(this, url, ...args);
+                      };
+                      window.addEventListener('click', (event) => {
+                        const link = event.composedPath().find(node => node.matches?.('a[href]'));
                         if (link && /^magnet:/i.test(link.href)) {
                           event.preventDefault();
                           event.stopImmediatePropagation();
@@ -387,6 +395,11 @@ class SafeBrowserSession:
                     """
                 )
                 page = context.new_page()
+                navigation_events = context.new_cdp_session(page)
+                navigation_events.send("Page.enable")
+                navigation_events.on("Page.frameRequestedNavigation", lambda event: (
+                    capture_magnet(None, event["url"]) if event.get("url", "").lower().startswith("magnet:") else None
+                ))
                 page.set_default_navigation_timeout(15000)
                 page.set_default_timeout(15000)
 
@@ -456,6 +469,48 @@ class SafeBrowserSession:
 
                 scroll_target_x = SAFE_BROWSER_VIEWPORT["width"] / 2
                 scroll_target_y = SAFE_BROWSER_VIEWPORT["height"] / 2
+
+                def focused_input():
+                    for frame in page.frames:
+                        try:
+                            info = frame.evaluate("""() => {
+                          let el = document.activeElement;
+                          while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+                          const editable = el && !el.disabled && !el.readOnly &&
+                            (el.isContentEditable || el.tagName === 'TEXTAREA' ||
+                             (el.tagName === 'INPUT' && ['text','search','email','url','tel','number','password'].includes(el.type)));
+                          return editable ? {editable: true, password: el.type === 'password', inputmode: el.inputMode ||
+                            ({email:'email',url:'url',tel:'tel',number:'decimal'}[el.type] || 'text')} : null;
+                            }""")
+                        except PlaywrightError:
+                            # Navigation can replace a frame while focus is being inspected.
+                            continue
+                        if info:
+                            return info
+                    return {"editable": False}
+
+                def link_at_point(x, y):
+                    # Frame bounding boxes use main-frame coordinates, including nested frames.
+                    for frame in reversed(page.frames):
+                        offset_x = offset_y = 0
+                        if frame != page.main_frame:
+                            box = frame.frame_element().bounding_box()
+                            if not box or not (box['x'] <= x < box['x'] + box['width'] and box['y'] <= y < box['y'] + box['height']):
+                                continue
+                            offset_x, offset_y = box['x'], box['y']
+                        link = frame.evaluate("""({x,y}) => {
+                          let el = document.elementFromPoint(x,y);
+                          while (el?.shadowRoot) {
+                            const child = el.shadowRoot.elementFromPoint(x,y);
+                            if (!child || child === el) break;
+                            el = child;
+                          }
+                          const anchor = el?.closest('a[href]');
+                          return anchor ? {url: anchor.href, text: (anchor.textContent || anchor.href).trim().slice(0,300)} : null;
+                        }""", {"x": x - offset_x, "y": y - offset_y})
+                        if link:
+                            return link
+                    return None
 
                 def scroll_state() -> dict[str, float]:
                     return page.evaluate(
@@ -549,6 +604,10 @@ class SafeBrowserSession:
                             last_user_interaction = time.monotonic()
                             page.mouse.click(float(payload["x"]), float(payload["y"]))
                             result = state()
+                            result["focused_input"] = focused_input()
+                        elif action == "contextmenu":
+                            result = state()
+                            result["context_link"] = link_at_point(float(payload["x"]), float(payload["y"]))
                         elif action == "scroll":
                             viewport = page.viewport_size or SAFE_BROWSER_VIEWPORT
                             scroll_target_x = min(max(float(payload.get("x", scroll_target_x)), 0), viewport["width"] - 1)
@@ -570,6 +629,7 @@ class SafeBrowserSession:
                                 raise ValueError("A key is required.")
                             page.keyboard.press(key)
                             result = state()
+                            result["focused_input"] = focused_input()
                         elif action == "text":
                             last_user_interaction = time.monotonic()
                             page.keyboard.insert_text(str(payload.get("text", ""))[:2000])
@@ -1787,7 +1847,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if not isinstance(payload, dict):
             return jsonify({"error": "Browser command must be a JSON object."}), 400
         action = str(payload.pop("action", ""))
-        if action not in {"click", "scroll", "key", "text", "back", "forward", "reload", "navigate", "viewport"}:
+        if action not in {"click", "contextmenu", "scroll", "key", "text", "back", "forward", "reload", "navigate", "viewport"}:
             return jsonify({"error": "Unsupported browser action."}), 400
         try:
             return jsonify(safe_state_with_downloaders(safe_session.execute(action, **payload)))
