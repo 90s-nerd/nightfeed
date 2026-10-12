@@ -98,7 +98,11 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 expect(page.get_by_role('link', name='Safe Browser', exact=True)).to_be_visible()
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth + 1')
                 page.get_by_role('link', name='Safe Browser', exact=True).click()
-                address = page.get_by_role('textbox', name='Browser address')
+                address = page.get_by_role('textbox', name='Website URL')
+                typing_tools = page.locator('[data-browser-typing-tools]')
+                expect(typing_tools).to_be_hidden()
+                expect(address).to_have_attribute('inputmode', 'url')
+                expect(address).to_have_attribute('autocomplete', 'off')
                 expect(address).to_have_value('')
                 expect(page.locator('[data-browser-empty]')).to_be_visible()
                 expect(page.locator('[data-browser-original]')).to_be_hidden()
@@ -122,9 +126,31 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 def click_remote(x, y):
                     screen.click(position=remote_position(x, y))
                 typing = page.locator('[data-browser-typing]')
-                # Touch focus must happen in the gesture, before waiting for the server.
+                click_remote(30, 30)
+                expect(typing_tools).to_be_hidden()
+                # A delayed field-selection reply must not reopen controls over the URL field.
+                page.evaluate("""() => {
+                    window.typingTestFetch = window.fetch;
+                    window.delayedTypingReplyDone = false;
+                    window.fetch = async (...args) => {
+                      const response = await window.typingTestFetch(...args);
+                      if (String(args[0]).endsWith('/command') && JSON.parse(args[1].body).action === 'click') {
+                        await new Promise(resolve => setTimeout(resolve, 800));
+                        window.delayedTypingReplyDone = true;
+                      }
+                      return response;
+                    };
+                }""")
+                screen.tap(position=remote_position(30, 235))
+                address.focus()
+                page.wait_for_function('() => window.delayedTypingReplyDone')
+                page.wait_for_timeout(100)
+                expect(typing_tools).to_be_hidden()
+                page.evaluate('window.fetch = window.typingTestFetch')
+                # Show controls only after confirming an editable remote field.
                 pos = remote_position(30, 235)
                 screen.tap(position=pos)
+                expect(typing_tools).to_be_visible()
                 expect(typing).to_be_focused()
                 typing.press_sequentially('hello')
                 typing.press('Backspace')
@@ -141,6 +167,14 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 expect(typing).to_have_attribute('inputmode', 'email')
                 typing.press_sequentially('test@example.org')
                 expect(page.locator('[data-browser-title]')).to_have_text('Email:test@example.org')
+                page.locator('[data-browser-typing-done]').click()
+                expect(typing_tools).to_be_hidden()
+                screen.tap(position=remote_position(30, 235))
+                expect(typing_tools).to_be_visible()
+                address.focus()
+                expect(typing_tools).to_be_hidden()
+                screen.tap(position=remote_position(30, 235))
+                expect(typing_tools).to_be_visible()
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth + 1')
                 page.screenshot(path=str(ROOT / f'.test-preview/safe-browser-input-{width}.png'))
                 # Exercise long press: inspecting must preserve the current URL.
@@ -149,6 +183,7 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 touch_session = context.new_cdp_session(page)
                 touch_session.send('Input.dispatchTouchEvent', {'type':'touchStart', 'touchPoints':[{'x':box['x']+pos['x'], 'y':box['y']+pos['y']}]})
                 expect(page.locator('[data-browser-link-dialog]')).to_be_visible()
+                expect(typing_tools).to_be_hidden()
                 touch_session.send('Input.dispatchTouchEvent', {'type':'touchEnd', 'touchPoints':[]})
                 touch_session.detach()
                 expect(page.locator('[data-browser-link-url]')).to_have_value('https://safe-browser.example.test/next?x=1&y=2')
