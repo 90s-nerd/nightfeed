@@ -20,7 +20,7 @@ with TemporaryDirectory() as temp:
     errors=[]
     try:
         with sync_playwright() as pw:
-            browser=pw.chromium.launch(channel='chrome',headless=True)
+            browser=pw.chromium.launch(headless=True)
             page=browser.new_page(); authenticate_page(page, app, origin);page.on('pageerror',lambda e:errors.append(str(e)))
             for theme in ['light','dark']:
                 page.goto(origin+'/settings');page.locator('[data-appearance]').select_option(theme)
@@ -37,9 +37,9 @@ with TemporaryDirectory() as temp:
                     expect(first.get_by_role('button',name='Delete',exact=True)).to_be_focused()
                     assert first.get_by_role('button',name='Delete',exact=True).evaluate("el => getComputedStyle(el).color !== getComputedStyle(el.closest('.row-menu-content').querySelector('button')).color")
                     page.keyboard.press('Escape');expect(menu).to_be_hidden();expect(summary).to_be_focused()
-                    summary.click();page.locator('.page-title p').click();expect(menu).to_be_hidden()
+                    summary.click();page.locator('.topbar').click(position={'x':page.locator('.topbar').bounding_box()['width']-1,'y':1});expect(menu).to_be_hidden()
                     summary.click();rows.nth(1).locator('summary').focus();page.keyboard.press('Enter');expect(menu).to_be_hidden()
-                    page.locator('.page-title p').click()
+                    page.locator('.topbar').click(position={'x':page.locator('.topbar').bounding_box()['width']-1,'y':1})
                     assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
                     page.screenshot(path=f'.test-preview/refreshed-ui/compact-notifications-{width}-{theme}.png')
             page.goto(origin+'/notifications?status=all')

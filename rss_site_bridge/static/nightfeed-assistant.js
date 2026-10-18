@@ -246,7 +246,6 @@
       if (!replay && ['system','light','dark'].includes(data.browser_action?.appearance)) document.dispatchEvent(new CustomEvent('nightfeed:appearance',{detail:data.browser_action.appearance}));
       if (!replay && data.browser_action?.unread_notifications !== undefined) {
         const action=data.browser_action; window.nightfeedUnread?.(action.unread_notifications);
-        document.querySelectorAll('[data-notification-count]').forEach(el => { el.textContent = `${action.unread_notifications} unread notifications.`; });
         for (const id of action.notification_ids || []) {
           const row=document.querySelector(`[data-notification-id="${id}"]`); if (!row) continue;
           if (action.notification_action?.startsWith('delete') || new URL(location.href).searchParams.get('status') === 'unread') row.remove();
