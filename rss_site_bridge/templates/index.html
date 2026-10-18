@@ -4,10 +4,7 @@
 
 {% block page_header %}
 <header class="topbar">
-  <div class="page-title">
-    <h1 class="sr-only">Feeds</h1><p><span data-feed-count>{{ profiles|length }}</span> feeds</p>
-
-  </div>
+  <h1 class="sr-only">Feeds</h1>
   <div class="topbar-actions">
     <a class="btn btn-primary" href="/compose">Create feed</a>
   </div>
@@ -116,7 +113,6 @@
     const cloneButton = document.getElementById("feed-context-clone");
     const deleteButton = document.getElementById("feed-context-delete");
     const cards = document.querySelectorAll("[data-profile-card]");
-    const feedCount = document.querySelector("[data-feed-count]");
     const csrfSafeHeaders = {"X-Requested-With": "XMLHttpRequest"};
     let activeCard = null;
     let menuTrigger = null;
@@ -298,9 +294,6 @@
         }
         card.remove();
         const remainingCards = document.querySelectorAll("[data-profile-card]");
-        if (feedCount) {
-          feedCount.textContent = String(remainingCards.length);
-        }
         if (!remainingCards.length) {
           window.location.reload();
         }

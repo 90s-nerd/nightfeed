@@ -235,7 +235,7 @@ body .settings-toggle-control:checked::after { background: var(--nf-onPrimary); 
   .nav-list { position: fixed; bottom: 0; left: 0; right: 0; z-index: 50; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; padding: 4px max(4px, env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left)); background: var(--nf-surface); border-top: 1px solid var(--nf-border); }
   .nav-link { flex-direction: column; justify-content: center; padding: 4px 0; gap: 2px; font-size: 12px; line-height: 16px; min-height: 48px; position: relative; }
   .nav-link.active { background: transparent; color: var(--nf-primary); }
-  .nav-link .pill { position: absolute; top: 0; right: 4px; padding: 0 4px; font-size: 13px; }
+  .nav-link .pill { position: absolute; top: 0; right: 4px; justify-content: center; box-sizing: border-box; min-width: 20px; height: 20px; min-height: 20px; padding: 0 5px; font-size: 12px; line-height: 1; }
   .main { padding: calc(92px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) calc(88px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
   .focused-browser .main { padding-top: 28px; }
   .page-title h1 { font-size: 28px; line-height: 34px; }
@@ -309,6 +309,7 @@ body .settings-toggle-control:checked::after { background: var(--nf-onPrimary); 
   .search-settings-dialog { position: absolute; top: calc(100% + 8px); right: 0; left: auto; bottom: auto; margin: 0; width: min(440px, 100%); max-height: min(520px, 65dvh); z-index: 30; border-radius: 16px; box-shadow: var(--shadow); }
 }
 .search-settings > .search-settings-panel { position: absolute; top: 48px; right: 0; z-index: 30; width: min(360px, calc(100vw - 40px)); padding: 20px; background: var(--nf-surface); border: 1px solid var(--nf-border); border-radius: 16px; box-shadow: var(--shadow); }
+.settings-version { margin-top: 24px; padding-block: 8px; text-align: center; }
 .settings-frame { padding: 24px; }
 .settings-section { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(0, 2fr); gap: 24px; padding: 24px 0; border-bottom: 1px solid var(--nf-border); }
 .settings-section:first-child { padding-top: 0; }

@@ -16,6 +16,7 @@ from email.utils import formataddr, parseaddr
 from fnmatch import fnmatchcase
 from html import escape
 from pathlib import Path
+from importlib.metadata import PackageNotFoundError, version as package_version
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from typing import Any, Callable, Iterable
@@ -920,6 +921,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         raise RuntimeError("Flask is required to run the web application.")
 
     app = Flask(__name__)
+    try:
+        app.jinja_env.globals["app_version"] = package_version("nightfeed")
+    except PackageNotFoundError:
+        app.jinja_env.globals["app_version"] = "development"
 
     db_path = Path(os.environ.get("NIGHTFEED_DATABASE_PATH", "data/rss_site_bridge.db"))
     start_scheduler = os.environ.get("NIGHTFEED_START_SCHEDULER", "1").strip().lower() not in {
