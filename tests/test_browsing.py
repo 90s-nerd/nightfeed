@@ -22,6 +22,20 @@ class BrowsingTests(unittest.TestCase):
         self.config = FeedRequest("Alpha", "https://example.com", "article", "a", "a", "", 1, 60, "http", cron_expression="0 9 * * mon-fri", schedule_timezone="America/Chicago", priority=80)
         self.profile = create_profile(self.db, self.config)
 
+    def test_browser_address_normalization_preserves_schemes_and_validation(self):
+        from rss_site_bridge.app import normalize_browser_url, is_safe_browser_url
+        for raw, expected in [
+            (' google.com ', 'https://google.com'),
+            ('example.com/path?q=a#b', 'https://example.com/path?q=a#b'),
+            ('//example.com/path', 'https://example.com/path'),
+            ('http://example.com', 'http://example.com'),
+            ('javascript:alert(1)', 'javascript:alert(1)'),
+            ('', ''),
+        ]:
+            self.assertEqual(normalize_browser_url(raw), expected)
+        for raw in ['localhost', '127.0.0.1', '//192.168.1.1', 'javascript:alert(1)', 'file:///tmp/test']:
+            self.assertFalse(is_safe_browser_url(normalize_browser_url(raw)))
+
     def test_safe_browser_returns_to_exact_origin_without_confirmation(self):
         self.seed()
         timeline = f"/?q=Topic&sort=priority&feed={self.profile.id}&feed=999&page=2"
@@ -116,6 +130,36 @@ class BrowsingTests(unittest.TestCase):
         self.assertEqual(first.mimetype, "image/jpeg")
         self.assertEqual(unchanged.status_code, 304)
         self.assertEqual(unchanged.data, b"")
+
+    def test_live_browser_read_errors_do_not_expire_the_session(self):
+        session = Mock(closed=False)
+        for endpoint, recovered in [('state', {'url': 'https://example.org', 'downloads': []}), ('screenshot', b'jpeg')]:
+            session.execute.side_effect = [RuntimeError('Page is navigating'), recovered]
+            with self.subTest(endpoint=endpoint), patch('rss_site_bridge.app.get_safe_browser_session', return_value=session):
+                response = self.client.get('/safe-browser/live/' + endpoint)
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.headers['Retry-After'], '1')
+                self.assertEqual(self.client.get('/safe-browser/live/' + endpoint).status_code, 200)
+                session.stop.assert_not_called()
+
+    def test_browser_closed_during_read_returns_gone(self):
+        session = Mock(closed=True)
+        session.execute.side_effect = RuntimeError('Browser closed')
+        with patch('rss_site_bridge.app.get_safe_browser_session', return_value=session):
+            for endpoint in ['state', 'screenshot']:
+                self.assertEqual(self.client.get('/safe-browser/closed/' + endpoint).status_code, 410)
+
+    def test_enter_error_is_not_replayed_and_session_remains_readable(self):
+        session = Mock(closed=False)
+        session.execute.side_effect = [RuntimeError('Page is navigating'), {'url': 'https://example.org/results', 'downloads': []}]
+        with patch('rss_site_bridge.app.get_safe_browser_session', return_value=session):
+            response = self.client.post('/safe-browser/live/command', json={'action': 'key', 'key': 'Enter'})
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(self.client.get('/safe-browser/live/state').status_code, 200)
+        self.assertEqual(session.execute.call_args_list[0].args, ('key',))
+        self.assertEqual(session.execute.call_args_list[0].kwargs, {'key': 'Enter'})
+        self.assertEqual(session.execute.call_count, 2)
+        session.stop.assert_not_called()
 
     def test_same_name_download_handles_survive_reverse_completion_order(self):
         first, second = Mock(suggested_filename='same.bin'), Mock(suggested_filename='same.bin')

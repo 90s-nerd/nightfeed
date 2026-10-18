@@ -9,7 +9,7 @@
 {% block page_header %}
 <header class="topbar">
   <div class="page-title">
-    <div class="help-heading"><h1>{{ 'Safe Browser' if standalone else 'Isolated browser' }}</h1><details class="ui-hint"><summary aria-label="Help with Safe Browser">?</summary><div class="ui-hint-content">This page runs in a separate browser session. Paste a public HTTP or HTTPS URL into the address bar, then click Go. Tap an editable website field to reveal the typing controls. If your phone keyboard does not open, tap the revealed typing field. Done hides the controls. Use Enter to submit and Next field to move between fields. Hold a link or right-click it to copy its address. Captured magnets appear in Downloads to review and send. Scroll to move through the page. Remote screenshots do not expose page text to screen readers; Open original provides direct access.</div></details></div>
+    <div class="help-heading"><h1>{{ 'Safe Browser' if standalone else 'Isolated browser' }}</h1><details class="ui-hint"><summary aria-label="Help with Safe Browser">?</summary><div class="ui-hint-content">This page runs in a separate browser session. Enter a public website address, then click Go. Addresses without a scheme use HTTPS. Tap an editable website field to reveal the typing controls. If your phone keyboard does not open, tap the revealed typing field. Done hides the controls. Use Enter to submit and Next field to move between fields. Hold a link or right-click it to copy its address. Captured magnets appear in Downloads to review and send. Scroll to move through the page. Remote screenshots do not expose page text to screen readers; Open original provides direct access.</div></details></div>
     <p>{{ 'Browse a website in an isolated session.' if standalone else item.title }}</p>
   </div>
   <div class="topbar-actions">
@@ -55,7 +55,7 @@ playwright install chromium</pre>
       <button class="btn btn-secondary" type="button" data-browser-action="reload" aria-label="Reload">↻</button>
     </div>
     <form class="safe-browser-address" data-browser-address-form autocomplete="off">
-      <input id="safe-browser-url" name="website_url" type="url" inputmode="url" enterkeyhint="go" value="{{ '' if standalone else item.link }}" placeholder="https://example.com" aria-label="Website URL" data-browser-address autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required {% if standalone %}autofocus{% endif %}>
+      <input id="safe-browser-url" name="website_url" type="text" inputmode="url" enterkeyhint="go" value="{{ '' if standalone else item.link }}" placeholder="https://example.com" aria-label="Website URL" data-browser-address autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required {% if standalone %}autofocus{% endif %}>
       <button class="btn btn-primary" type="submit">Go</button>
     </form>
     <div class="safe-browser-toolbar-actions">
@@ -151,32 +151,31 @@ playwright install chromium</pre>
     const typing = browser.querySelector('[data-browser-typing]');
     const typingTools = browser.querySelector('[data-browser-typing-tools]');
     let typingEpoch = 0;
-    const hideTyping = () => { typingEpoch++; typing.blur(); typingTools.hidden = true; };
+    const hideTyping = () => { typingEpoch++; typing.blur(); typingTools.hidden = true; typing.value = ''; };
+    let lastPageIdentity = null;
     const linkDialog = document.querySelector('[data-browser-link-dialog]');
     const linkUrl = linkDialog.querySelector('[data-browser-link-url]');
     let contextPoint = null, longPressTimer = null, composing = false;
-    // A sentinel lets mobile keyboards report deletion even after sent text is cleared.
-    const resetTyping = () => { typing.value = ' '; typing.setSelectionRange(1, 1); };
-    typing.addEventListener('focus', resetTyping);
-    typing.addEventListener('blur', () => { typing.value = ''; });
+    let typingRevision = 0;
+    const syncTyping = info => {
+      if (!info?.editable || composing) return;
+      typing.type = info.password ? 'password' : 'text';
+      typing.inputMode = info.inputmode || 'text';
+      typing.value = info.value || '';
+      if (Number.isInteger(info.selection_start)) typing.setSelectionRange(info.selection_start, info.selection_end);
+    };
     typing.addEventListener('compositionstart', () => { composing = true; });
     const sendTyping = event => {
       if (composing || event.isComposing) return;
-      if (event.inputType?.startsWith('delete') || !typing.value) command('key', {key: 'Backspace'});
-      else {
-        const value = typing.value.startsWith(' ') ? typing.value.slice(1) : typing.value;
-        if (value) command('text', {text: value});
-      }
-      resetTyping();
+      typingRevision++;
+      command('edit', {text: typing.value, selection_start: typing.selectionStart ?? typing.value.length,
+        selection_end: typing.selectionEnd ?? typing.value.length});
     };
     typing.addEventListener('input', sendTyping);
-    typing.addEventListener('compositionend', event => { composing = false; sendTyping(event); });
+    typing.addEventListener('compositionend', sendTypingEvent => { composing = false; sendTyping(sendTypingEvent); });
     typing.addEventListener('keydown', event => {
       if (event.isComposing) return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
-        event.preventDefault(); command('key', {key: (event.metaKey ? 'Meta' : 'Control') + '+A'}); return;
-      }
-      if (['Enter', 'Tab', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Delete', 'Backspace'].includes(event.key)) {
+      if (['Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         event.preventDefault(); command('key', {key: event.shiftKey ? `Shift+${event.key}` : event.key});
       }
     });
@@ -372,6 +371,12 @@ playwright install chromium</pre>
       if (state.magnet_error && state.magnet_error !== lastMagnetError) window.showRefreshToast(state.magnet_error, 'error');
       lastMagnetError = state.magnet_error || '';
       const currentUrl = state.url === 'about:blank' ? '' : (state.url || '');
+      const pageIdentity = `${state.document_id || ''}:${currentUrl}`;
+      // Submission can navigate after its command reply, including reloading the same URL.
+      // Polls must dismiss stale controls without reopening them for destination autofocus.
+      if ((lastPageIdentity !== null && pageIdentity !== lastPageIdentity)
+          || (!typingTools.hidden && state.focused_input?.editable === false)) hideTyping();
+      lastPageIdentity = pageIdentity;
       if (!addressEdited) address.value = currentUrl;
       const empty = browser.querySelector('[data-browser-empty]');
       if (empty) empty.hidden = Boolean(currentUrl);
@@ -379,6 +384,9 @@ playwright install chromium</pre>
       original.hidden = !/^https?:\/\//i.test(currentUrl);
       if (!original.hidden) original.href = currentUrl;
       title.textContent = state.title || currentUrl || "Ready to browse";
+      browser.querySelector('[data-browser-action="back"]').disabled = !state.can_go_back;
+      browser.querySelector('[data-browser-action="forward"]').disabled = !state.can_go_forward;
+      if (!typingTools.hidden && document.activeElement !== typing && !inputQueue.length) syncTyping(state.focused_input);
       blocked.textContent = state.blocked_requests || 0;
       popups.textContent = state.popup_attempts || 0;
       viewportWidth = Number(state.viewport_width) || viewportWidth;
@@ -507,7 +515,7 @@ playwright install chromium</pre>
     const drainInputs = async () => {
       if (busy || polling || ended || !inputQueue.length) return;
       busy = true;
-      const {action, payload, editingEpoch} = inputQueue.shift();
+      const {action, payload, editingEpoch, revision} = inputQueue.shift();
       const timer = setTimeout(() => {loading.textContent = action === 'click' ? 'Opening…' : 'Updating…'; loading.hidden = false;}, 180);
       try {
         const response = await fetch(browser.dataset.commandUrl, {
@@ -518,12 +526,11 @@ playwright install chromium</pre>
         if (!response.ok) { if(response.status === 410) endSession(); throw new Error(state.error || 'Browser command failed.'); }
         if (['navigate', 'back', 'forward', 'reload'].includes(action)) addressEdited = false;
         renderState(state);
-        if (state.focused_input && editingEpoch === typingEpoch) {
+        if (state.focused_input && editingEpoch === typingEpoch && ['click', 'key', 'text', 'edit'].includes(action)) {
           typingTools.hidden = !state.focused_input.editable;
-          typing.type = state.focused_input.password ? 'password' : 'text';
-          typing.inputMode = state.focused_input.inputmode || 'text';
+          if (revision === typingRevision && !(action === 'edit' && document.activeElement === typing)) syncTyping(state.focused_input);
           if (!state.focused_input.editable) typing.blur();
-          else if (action === 'click' && payload.focusTyping && document.activeElement === screen) typing.focus({preventScroll:true});
+          else if (action === 'click' && document.activeElement === screen) typing.focus({preventScroll:true});
         }
         if (action === 'contextmenu') {
           if (state.context_link) {
@@ -552,7 +559,8 @@ playwright install chromium</pre>
       }
       const tail = inputQueue.at(-1);
       if (action === 'text' && tail?.action === 'text' && tail.payload.text.length + payload.text.length <= 2000) tail.payload.text += payload.text;
-      else inputQueue.push({action, payload, editingEpoch: typingEpoch});
+      else if (action === 'edit' && tail?.action === 'edit') { tail.payload = payload; tail.revision = typingRevision; }
+      else inputQueue.push({action, payload, editingEpoch: typingEpoch, revision: typingRevision});
       drainInputs();
     };
 
