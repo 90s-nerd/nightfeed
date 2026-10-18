@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from playwright.sync_api import BrowserType, Page, sync_playwright, expect
+from playwright.sync_api import CDPSession, Error as PlaywrightError, Page, sync_playwright, expect
 from werkzeug.serving import make_server
 from rss_site_bridge.app import _safe_browser_sessions
 from rss_site_bridge import downloaders as d
@@ -18,7 +18,6 @@ from ui_auth_support import create_ui_app, authenticate_page
 
 logging.disable(logging.CRITICAL)
 original_route = Page.route
-original_launch = BrowserType.launch
 MAGNET = 'magnet:?xt=urn:btih:' + 'a' * 40 + '&dn=Fixture%20magnet'
 BUTTON_MAGNET = 'magnet:?xt=urn:btih:' + 'b' * 40 + '&dn=Button%20magnet'
 LOCATION_MAGNET = 'magnet:?xt=urn:btih:' + 'c' * 40 + '&dn=Location%20magnet'
@@ -43,10 +42,6 @@ class FixtureDownloader:
         self.added.append((data, category, start))
 
 
-def launch_chrome(browser_type, **kwargs):
-    return original_launch(browser_type, channel='chrome', **kwargs)
-
-
 def fixture_route(page, pattern, handler, **kwargs):
     def handle(route):
         if route.request.url == 'https://safe-browser.example.test/':
@@ -62,6 +57,29 @@ def fixture_route(page, pattern, handler, **kwargs):
                 <button onclick="location.href='{LOCATION_MAGNET}'" style="position:absolute;left:10px;top:340px;height:35px">Location magnet</button>
                 <a href="/next?x=1&amp;y=2" style="position:absolute;left:10px;top:400px;height:35px"><span>Copy this link</span></a>
                 <div style="height:1800px"></div>''')
+        elif route.request.url.startswith('https://safe-browser.example.test/submission?'):
+            mode = route.request.url.split('mode=')[-1]
+            action = {
+                'navigate': "setTimeout(() => location.assign('/submitted'), 800)",
+                'reload': "setTimeout(() => location.reload(), 800)",
+                'blur': "setTimeout(() => document.querySelector('#entry').blur(), 800)",
+                'recover': "setTimeout(() => location.assign('/redirect'), 100)",
+            }.get(mode, '')
+            field = ('<textarea id="entry" oninput="document.title=\'Lines:\'+this.value.split(String.fromCharCode(10)).length"'
+                     if mode == 'multiline' else '<input id="entry" autofocus type="' + ('email' if mode == 'invalid' else 'text') + '" required oninvalid="document.title=\'Validation failed\'"')
+            field += ' style="position:absolute;left:10px;top:20px;width:260px;height:70px">'
+            if mode == 'multiline':
+                field += '</textarea>'
+            route.fulfill(content_type='text/html', body=f'''<title>Submission fixture</title>
+                <form onsubmit="event.preventDefault();{action}">{field}<button hidden>Submit</button></form>''')
+        elif route.request.url == 'https://safe-browser.example.test/redirect':
+            route.fulfill(content_type='text/html', body="<script>location.replace('https://safe-browser-results.example.org/submitted')</script>")
+        elif route.request.url == 'https://safe-browser-results.example.org/submitted':
+            route.fulfill(content_type='text/html', body='<title>Cross-site result</title><input autofocus value="New result field">')
+        elif route.request.url == 'https://safe-browser.example.test/submitted':
+            route.fulfill(content_type='text/html', body='<title>Submission complete</title><input autofocus value="New page field">')
+        elif route.request.url.startswith('https://safe-browser.example.test/next'):
+            route.fulfill(content_type='text/html', body='<title>Next page</title><h1>Next page</h1>')
         elif route.request.url == 'https://safe-browser.example.test/fixture.torrent':
             route.fulfill(content_type='application/x-bittorrent', headers={'Content-Disposition': 'attachment; filename=fixture.torrent'},
                           body=b'd4:infod6:lengthi1e4:name7:Fixture12:piece lengthi16384e6:pieces20:xxxxxxxxxxxxxxxxxxxxee')
@@ -70,7 +88,7 @@ def fixture_route(page, pattern, handler, **kwargs):
     return original_route(page, pattern, handle, **kwargs)
 
 
-with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), patch.object(BrowserType, 'launch', launch_chrome), patch.dict(d.ADAPTERS, qbittorrent=FixtureDownloader):
+with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), patch.dict(d.ADAPTERS, qbittorrent=FixtureDownloader):
     app = create_ui_app({'DATABASE_PATH': Path(temp) / 'browser.db', 'START_SCHEDULER': False, 'TESTING': True})
     values = dict(name='Fixture', kind='qbittorrent', enabled='1', base_url='https://downloader.example.test', auth_mode='none',
                   timeout='15', extensions='.torrent', default_category='Movies', require_category='1', start_immediately='1', enable_magnets='1', button_label='Queue at home')
@@ -106,10 +124,12 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 expect(address).to_have_value('')
                 expect(page.locator('[data-browser-empty]')).to_be_visible()
                 expect(page.locator('[data-browser-original]')).to_be_hidden()
-                address.fill('https://safe-browser.example.test/')
+                expect(page.get_by_role('button', name='Back', exact=True)).to_be_disabled()
+                expect(page.get_by_role('button', name='Forward', exact=True)).to_be_disabled()
+                address.fill('safe-browser.example.test/')
                 # Polling must preserve the URL before submission.
                 page.wait_for_timeout(2600)
-                expect(address).to_have_value('https://safe-browser.example.test/')
+                expect(address).to_have_value('safe-browser.example.test/')
                 page.screenshot(path=str(ROOT / f'.test-preview/safe-browser-blank-{width}.png'))
                 page.get_by_role('button', name='Go', exact=True).click()
                 expect(page.locator('[data-browser-title]')).to_have_text('Browser fixture')
@@ -156,10 +176,17 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 typing.press('Backspace')
                 typing.press_sequentially('é')
                 expect(page.locator('[data-browser-title]')).to_have_text('Entry:hellé')
+                expect(typing).to_have_value('hellé')
                 typing.dispatch_event('compositionstart')
-                typing.evaluate("el => {el.value=' 日本';}")
+                typing.evaluate("el => {el.value='hellé日本';}")
                 typing.dispatch_event('compositionend', {'data':'日本'})
                 typing.dispatch_event('input', {'inputType':'insertText','data':'日本'})
+                expect(page.locator('[data-browser-title]')).to_have_text('Entry:hellé日本')
+                expect(typing).to_have_value('hellé日本')
+                typing.press('Home')
+                typing.press_sequentially('X')
+                expect(page.locator('[data-browser-title]')).to_have_text('Entry:Xhellé日本')
+                typing.press('Backspace')
                 expect(page.locator('[data-browser-title]')).to_have_text('Entry:hellé日本')
                 page.locator('[data-browser-enter]').click()
                 expect(page.locator('[data-browser-title]')).to_have_text('Submitted:hellé日本')
@@ -169,7 +196,9 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 expect(page.locator('[data-browser-title]')).to_have_text('Email:test@example.org')
                 page.locator('[data-browser-typing-done]').click()
                 expect(typing_tools).to_be_hidden()
-                screen.tap(position=remote_position(30, 235))
+                click_remote(30, 235)
+                expect(typing).to_be_focused()
+                expect(typing).to_have_value('hellé日本')
                 expect(typing_tools).to_be_visible()
                 address.focus()
                 expect(typing_tools).to_be_hidden()
@@ -245,6 +274,109 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
                 page.get_by_role('button', name='Back', exact=True).click()
                 expect(address).to_have_value('')
                 expect(page.locator('[data-browser-empty]')).to_be_visible()
+                expect(page.get_by_role('button', name='Back', exact=True)).to_be_disabled()
+                expect(page.get_by_role('button', name='Forward', exact=True)).to_be_enabled()
+                page.get_by_role('button', name='Forward', exact=True).click()
+                expect(address).to_have_value('https://safe-browser.example.test/')
+                expect(page.get_by_role('button', name='Forward', exact=True)).to_be_disabled()
+                click_remote(30, 410)
+                expect(page.locator('[data-browser-title]')).to_have_text('Next page')
+                page.get_by_role('button', name='Back', exact=True).click()
+                expect(page.locator('[data-browser-title]')).to_have_text('Browser fixture')
+                page.get_by_role('button', name='Forward', exact=True).click()
+                expect(page.locator('[data-browser-title]')).to_have_text('Next page')
+                page.get_by_role('button', name='Back', exact=True).click()
+                expect(page.locator('[data-browser-title]')).to_have_text('Browser fixture')
+                address.fill('safe-browser.example.test/#branch')
+                page.get_by_role('button', name='Go', exact=True).click()
+                expect(page.get_by_role('button', name='Forward', exact=True)).to_be_disabled()
+                # Enter replies before these delayed actions: polling must retire the old field.
+                for mode in ('navigate', 'reload', 'blur', 'invalid', 'multiline'):
+                    address.fill('safe-browser.example.test/submission?mode=' + mode)
+                    page.get_by_role('button', name='Go', exact=True).click()
+                    expect(address).to_have_value('https://safe-browser.example.test/submission?mode=' + mode)
+                    expect(page.locator('[data-browser-title]')).to_have_text('Submission fixture')
+                    click_remote(30, 40)
+                    expect(typing).to_be_focused()
+                    typing.press_sequentially('line' if mode == 'multiline' else 'invalid' if mode == 'invalid' else 'search')
+                    before = page.request.get(origin + state_url).json()
+                    if mode == 'reload':
+                        typing.press('Enter')
+                    else:
+                        page.locator('[data-browser-enter]').click()
+                    if mode in ('navigate', 'reload', 'blur'):
+                        expect(typing_tools).to_be_hidden(timeout=10000)
+                        assert not typing.evaluate('el => el === document.activeElement')
+                        expect(typing).to_have_value('')
+                        if mode == 'navigate':
+                            expect(page.locator('[data-browser-title]')).to_have_text('Submission complete')
+                        elif mode == 'reload':
+                            after = page.request.get(origin + state_url).json()
+                            assert after['url'] == before['url']
+                            assert after['document_id'] != before['document_id']
+                        # A destination autofocus must not reopen the dismissed panel.
+                        page.wait_for_timeout(2200)
+                        expect(typing_tools).to_be_hidden()
+                    elif mode == 'invalid':
+                        expect(page.locator('[data-browser-title]')).to_have_text('Validation failed')
+                        page.wait_for_timeout(2200)
+                        expect(typing_tools).to_be_visible()
+                        expect(typing).to_have_value('invalid')
+                    else:
+                        expect(page.locator('[data-browser-title]')).to_have_text('Lines:2')
+                        page.wait_for_timeout(2200)
+                        expect(typing_tools).to_be_visible()
+                    page.screenshot(path=str(ROOT / f'.test-preview/safe-browser-submit-{mode}-{width}.png'))
+                # Reproduce a delivered Enter whose reply and subsequent reads fail during a redirect.
+                address.fill('safe-browser.example.test/submission?mode=recover')
+                page.get_by_role('button', name='Go', exact=True).click()
+                expect(address).to_have_value('https://safe-browser.example.test/submission?mode=recover')
+                click_remote(30, 40)
+                expect(typing).to_be_focused()
+                typing.press_sequentially('search once')
+                session_id = state_url.split('/')[-2]
+                remote_session = _safe_browser_sessions[session_id]
+                original_execute = remote_session.execute
+                failures = {'history': 0, 'screenshot': 0}
+                original_cdp_send = CDPSession.send
+                def transient_history(cdp_session, method, *args, **kwargs):
+                    if method == 'Page.getNavigationHistory' and failures['history']:
+                        failures['history'] -= 1
+                        raise PlaywrightError('CDPSession.send: Protocol error (Page.getNavigationHistory): Not attached to an active page')
+                    return original_cdp_send(cdp_session, method, *args, **kwargs)
+                enter_calls = []
+                responses = []
+                def transient_navigation(action, **payload):
+                    if action == 'key' and payload.get('key') == 'Enter':
+                        enter_calls.append(action)
+                        original_execute(action, **payload)
+                        failures.update(history=7, screenshot=2)
+                        raise RuntimeError('Navigation replaced the active renderer after Enter')
+                    if failures.get(action, 0):
+                        failures[action] -= 1
+                        raise RuntimeError('Navigation replaced the active renderer during ' + action)
+                    return original_execute(action, **payload)
+                def record_response(response):
+                    if '/safe-browser/' + session_id + '/' in response.url:
+                        responses.append((response.url.rsplit('/', 1)[-1], response.status))
+                page.on('response', record_response)
+                with patch.object(remote_session, 'execute', side_effect=transient_navigation), patch.object(CDPSession, 'send', transient_history):
+                    page.locator('[data-browser-enter]').click()
+                    expect(page.locator('[data-browser-title]')).to_have_text('Cross-site result', timeout=15000)
+                    expect(page.locator('[data-browser-loading]')).to_be_hidden(timeout=15000)
+                    expect(page.locator('[data-session-ended]')).to_be_hidden()
+                    expect(typing_tools).to_be_hidden()
+                    assert enter_calls == ['key'], 'Enter must never be replayed after an uncertain reply'
+                    assert failures == {'history': 0, 'screenshot': 0}, failures
+                    assert ('command', 400) in responses, responses
+                    assert ('state', 503) in responses, responses
+                    assert ('screenshot', 503) in responses, responses
+                    assert _safe_browser_sessions[session_id] is remote_session and not remote_session.closed
+                    assert page.request.get(origin + state_url).status == 200
+                    screenshot_url = page.locator('[data-safe-browser]').get_attribute('data-screenshot-url')
+                    assert page.request.get(origin + screenshot_url).status == 200
+                page.remove_listener('response', record_response)
+                page.screenshot(path=str(ROOT / f'.test-preview/safe-browser-enter-recovery-{width}.png'))
                 page.once('dialog', lambda dialog: dialog.accept())
                 page.get_by_role('button', name='Close session', exact=True).click()
                 expect(page).to_have_url(origin + '/', timeout=15000)
@@ -255,4 +387,4 @@ with TemporaryDirectory() as temp, patch.object(Page, 'route', fixture_route), p
         for session in list(_safe_browser_sessions.values()):
             session.stop()
         server.shutdown()
-print('PASS: desktop/mobile form typing, deletion, Unicode/IME, Enter, Next field, email keyboard mode, long-press/right-click link copying, anchor/JavaScript magnets, submission, duplicate prevention, file downloads, private URL blocking, navigation, and close.')
+print('PASS: desktop/mobile form typing, deletion, Unicode/IME, Enter, Next field, email keyboard mode, long-press/right-click link copying, anchor/JavaScript magnets, submission, duplicate prevention, file downloads, private URL blocking, navigation, delayed submission/navigation, same-URL reload, focus loss, validation, multiline Enter, cross-site Enter recovery without replay or session expiry, and close.')
