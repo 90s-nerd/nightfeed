@@ -312,16 +312,17 @@ separately if a key may have been exposed.
 
 ### OpenID Connect / Authelia
 
-Under **Settings → Security**, enter the exact HTTPS issuer, client ID, client secret,
-and callback URL (`https://your-nightfeed-host/auth/oidc/callback`). Register a
+Under **Settings → Security**, enter the exact HTTPS issuer, client ID, and client secret.
+The callback URL is filled from the current site address and can be overridden.
+Register a
 confidential authorization-code client at your provider with that exact redirect URI,
 `openid profile` scopes and PKCE S256. The default token authentication method is
 `client_secret_basic`. See [Authelia client configuration](https://www.authelia.com/configuration/identity-providers/openid-connect/clients/).
 
 Discovery uses `<issuer>/.well-known/openid-configuration`. Alternatively turn off
 discovery and supply HTTPS authorization, token and JWKS endpoints. TLS certificate
-verification is required. Save the settings, then **Link owner SSO identity** after
-confirming your Nightfeed password and signing into your own provider account. You
+verification is required. Save the settings, then use **Link owner SSO identity**
+and sign into your own provider account. You
 may also enter the exact owner `sub` manually. Only that issuer/subject pair can log
 in; usernames and email addresses do not grant access. Authelia subjects are stable
 identifiers whose behavior depends on its client configuration; see its
@@ -334,7 +335,9 @@ session first; provider sign-out depends on that provider's logout URL. Protect 
 with the provider's MFA policy. The authorization flow validates state, PKCE, nonce,
 signature, issuer, audience and expiry; provider tokens are not persisted.
 
-Keep the local password for security changes and recovery. Set
+Saving security settings and linking SSO use your signed-in owner session; no
+additional password confirmation is needed. Keep the local password for local
+sign-in, password changes, and recovery. Set
 `NIGHTFEED_FORCE_LOGIN_FORM=1` and restart the container to restore local login even
 when the form is hidden and automatic SSO is enabled. This restores the form without
 bypassing password verification or lockout. `/auth/login?sso=off` pauses auto-redirect

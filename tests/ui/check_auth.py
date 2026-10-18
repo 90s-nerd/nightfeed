@@ -81,7 +81,7 @@ with TemporaryDirectory(dir='.test-preview') as temp:
    page.screenshot(path='.test-preview/auth-security-mobile.png',full_page=True)
    page.set_viewport_size({'width':1280,'height':900})
    page.screenshot(path='.test-preview/auth-security-desktop.png',full_page=True)
-   page.get_by_label('Current password to confirm changes').fill('browser fixture passphrase')
+   expect(page.get_by_label('Current password to confirm changes')).to_have_count(0)
    page.get_by_role('button',name='Save security settings').click()
    expect(page.get_by_role('status').filter(has_text='Security settings saved')).to_be_visible()
    # Exercise JS fetch through the global session CSRF wrapper.
