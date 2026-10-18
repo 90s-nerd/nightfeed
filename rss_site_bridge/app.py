@@ -395,6 +395,14 @@ class SafeBrowserSession:
                     """
                 )
                 page = context.new_page()
+                document_id = 0
+
+                def document_navigated(frame):
+                    nonlocal document_id
+                    if frame == page.main_frame:
+                        document_id += 1
+
+                page.on("framenavigated", document_navigated)
                 navigation_events = context.new_cdp_session(page)
                 navigation_events.send("Page.enable")
                 navigation_events.on("Page.frameRequestedNavigation", lambda event: (
@@ -480,7 +488,9 @@ class SafeBrowserSession:
                             (el.isContentEditable || el.tagName === 'TEXTAREA' ||
                              (el.tagName === 'INPUT' && ['text','search','email','url','tel','number','password'].includes(el.type)));
                           return editable ? {editable: true, password: el.type === 'password', inputmode: el.inputMode ||
-                            ({email:'email',url:'url',tel:'tel',number:'decimal'}[el.type] || 'text')} : null;
+                            ({email:'email',url:'url',tel:'tel',number:'decimal'}[el.type] || 'text'),
+                            value: el.isContentEditable ? el.innerText : el.value,
+                            selection_start: el.selectionStart, selection_end: el.selectionEnd} : null;
                             }""")
                         except PlaywrightError:
                             # Navigation can replace a frame while focus is being inspected.
@@ -549,10 +559,23 @@ class SafeBrowserSession:
                         # A click may start navigation before its new document exists.
                         scroll = {"x": 0, "y": 0, "max_x": 0, "max_y": 0}
                         title = "Opening page…"
+                    # A cross-site submission can replace Chromium's active renderer.
+                    # Retry only metadata reads, never the input that triggered navigation.
+                    for attempt in range(3):
+                        try:
+                            history = navigation_events.send("Page.getNavigationHistory")
+                            break
+                        except PlaywrightError:
+                            if attempt == 2 or page.is_closed():
+                                raise
+                            page.wait_for_timeout(50)
                     return {
                         "url": "" if page.url == "about:blank" else page.url,
                         "title": title,
-                        "can_go_back": True,
+                        "document_id": document_id,
+                        "can_go_back": history["currentIndex"] > 0,
+                        "can_go_forward": history["currentIndex"] < len(history["entries"]) - 1,
+                        "focused_input": focused_input(),
                         "popup_attempts": popup_attempts,
                         "blocked_requests": blocked_requests,
                         "magnet_error": magnet_error,
@@ -634,6 +657,30 @@ class SafeBrowserSession:
                             last_user_interaction = time.monotonic()
                             page.keyboard.insert_text(str(payload.get("text", ""))[:2000])
                             result = state()
+                        elif action == "edit":
+                            last_user_interaction = time.monotonic()
+                            text = str(payload.get("text", ""))
+                            if len(text) > 100000:
+                                raise ValueError("The selected field exceeds the typing limit.")
+                            for frame in page.frames:
+                                handle = frame.evaluate_handle("""() => {
+                                  let el = document.activeElement;
+                                  while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+                                  return el;
+                                }""")
+                                try:
+                                    element = handle.as_element()
+                                    if element and element.evaluate("el => el.matches('input, textarea') || el.isContentEditable") and element.is_editable():
+                                        element.fill(text)
+                                        element.evaluate("""(el, selection) => {
+                                          if (['text','search','url','tel','password'].includes(el.type) || el.tagName === 'TEXTAREA')
+                                            el.setSelectionRange(selection.start, selection.end);
+                                        }""", {"start": int(payload.get("selection_start", len(text))),
+                                              "end": int(payload.get("selection_end", len(text)))})
+                                        break
+                                finally:
+                                    handle.dispose()
+                            result = state()
                         elif action == "back":
                             page.go_back(wait_until="domcontentloaded")
                             result = state()
@@ -645,7 +692,7 @@ class SafeBrowserSession:
                             result = state()
                         elif action == "navigate":
                             last_user_interaction = time.monotonic()
-                            target = str(payload.get("url", "")).strip()
+                            target = normalize_browser_url(str(payload.get("url", "")))
                             if not is_safe_browser_url(target):
                                 raise ValueError("Only public http or https URLs can be opened.")
                             page.goto(target, wait_until="domcontentloaded")
@@ -804,6 +851,15 @@ def request_client_ip() -> str | None:
 
 def source_host(source_url: str) -> str:
     return urlparse(source_url).netloc
+
+
+def normalize_browser_url(value: str) -> str:
+    value = value.strip()
+    if value.startswith("//"):
+        return "https:" + value
+    if value and "://" not in value and not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", value):
+        return "https://" + value
+    return value
 
 
 def is_safe_browser_url(value: str) -> bool:
@@ -1805,7 +1861,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         try:
             screenshot = safe_session.execute("screenshot")
         except RuntimeError as exc:
-            return Response(str(exc), status=410, mimetype="text/plain; charset=utf-8")
+            status = 410 if safe_session.closed else 503
+            log_event(logging.WARNING, "safe_browser_read_failed", action="screenshot",
+                      session_closed=safe_session.closed, error=str(exc).split("\n", 1)[0])
+            return Response(str(exc), status=status, mimetype="text/plain; charset=utf-8",
+                            headers={"Retry-After": "1"} if status == 503 else {})
         frame_tag = hashlib.sha256(screenshot).hexdigest()
         if request.if_none_match.contains(frame_tag):
             response = Response(status=304)
@@ -1835,7 +1895,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             state = safe_session.execute("state")
             return jsonify(safe_state_with_downloaders(state))
         except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 410
+            status = 410 if safe_session.closed else 503
+            log_event(logging.WARNING, "safe_browser_read_failed", action="state",
+                      session_closed=safe_session.closed, error=str(exc).split("\n", 1)[0])
+            return jsonify({"error": str(exc)}), status, {"Retry-After": "1"} if status == 503 else {}
 
     @app.post("/safe-browser/<session_id>/command", defaults={"profile_id": None, "item_id": None})
     @app.post("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/command")
@@ -1847,12 +1910,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if not isinstance(payload, dict):
             return jsonify({"error": "Browser command must be a JSON object."}), 400
         action = str(payload.pop("action", ""))
-        if action not in {"click", "contextmenu", "scroll", "key", "text", "back", "forward", "reload", "navigate", "viewport"}:
+        if action not in {"click", "contextmenu", "scroll", "key", "text", "edit", "back", "forward", "reload", "navigate", "viewport"}:
             return jsonify({"error": "Unsupported browser action."}), 400
         try:
             return jsonify(safe_state_with_downloaders(safe_session.execute(action, **payload)))
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 400
+            log_event(logging.WARNING, "safe_browser_command_failed", action=action,
+                      session_closed=safe_session.closed, error=str(exc).split("\n", 1)[0])
+            return jsonify({"error": str(exc)}), 410 if safe_session.closed else 400
 
     @app.get("/safe-browser/<session_id>/downloads/<download_id>", defaults={"profile_id": None, "item_id": None})
     @app.get("/profiles/<int:profile_id>/items/<int:item_id>/safe/<session_id>/downloads/<download_id>")
