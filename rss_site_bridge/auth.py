@@ -572,7 +572,8 @@ def register(app):
         if g.auth_user:
             return redirect('/')
         cfg, error = g.auth_settings, None
-        show_form = force_form or not cfg['disable_form'] or not cfg['oidc_enabled']
+        sso_ready = cfg['oidc_enabled'] and bool(cfg['subject'])
+        show_form = force_form or not cfg['disable_form'] or not sso_ready
         if request.method == 'POST':
             if not show_form:
                 abort(403)
@@ -582,7 +583,7 @@ def register(app):
             if authenticate_password(candidate, request.form.get('password', ''), cfg):
                 return sign_in(user, 'password', request.form.get('next'))
             error = 'Sign in failed. Check your credentials or try again after the lockout period.'
-        elif cfg['oidc_enabled'] and cfg['auto_login'] and not force_form and request.args.get('sso') != 'off':
+        elif sso_ready and cfg['auto_login'] and not force_form and request.args.get('sso') != 'off':
             return redirect(url_for('auth.oidc_start', next=safe_next(request.args.get('next'))))
         return render_template('auth.html', mode='login', error=error, show_form=show_form, config=cfg,
                                next=safe_next(request.args.get('next'))), 401 if error else 200
@@ -604,36 +605,57 @@ def register(app):
 
     @bp.route('/settings/security', methods=['GET', 'POST'])
     def security():
+        suggested_callback = url_for('auth.oidc_callback', _external=True, _scheme='https')
+        before = after = None
+        if request.method == 'GET':
+            try:
+                before = int(request.args['activity_before']) if 'activity_before' in request.args else None
+                after = int(request.args['activity_after']) if 'activity_after' in request.args else None
+                if (before is not None and after is not None) or any(
+                        value is not None and not 0 < value < 2**63 for value in (before, after)):
+                    abort(400)
+            except (ValueError, TypeError):
+                abort(400)
         error, saved = None, False
         if request.method == 'POST':
-            if not authenticate_password(g.auth_user, request.form.get('current_password', ''), g.auth_settings):
-                error = 'Current password is incorrect or login is locked.'
-            else:
-                try:
-                    cfg = parse_settings(request.form, g.auth_settings, key)
-                    with closing(connect(db)) as conn:
-                        conn.execute('BEGIN IMMEDIATE')
-                        if (cfg['issuer'], cfg['subject']) != (g.auth_settings['issuer'], g.auth_settings['subject']):
-                            conn.execute("UPDATE auth_users SET oidc_name='' WHERE id=?", (g.auth_user['id'],))
-                            g.auth_user['oidc_name'] = ''
-                        conn.execute('UPDATE auth_config SET value=? WHERE id=1', (json.dumps(cfg),))
-                        conn.execute('DELETE FROM auth_identities WHERE user_id=?', (g.auth_user['id'],))
-                        if cfg['oidc_enabled'] and cfg['subject']:
-                            conn.execute('INSERT INTO auth_identities VALUES(?,?,?)', (cfg['issuer'], cfg['subject'], g.auth_user['id']))
-                        # Settings change revokes every other session, including old OIDC sessions.
-                        conn.execute('DELETE FROM auth_sessions WHERE token_hash<>?', (fingerprint(request.cookies.get(COOKIE, '')),))
-                        revoke_application_grants(conn, g.auth_user['id'])
-                        audit(conn, 'security_updated', g.auth_user['id'])
-                        conn.commit()
-                    g.auth_settings, saved = cfg, True
-                except ValueError as exc:
-                    error = str(exc)
+            try:
+                form = request.form.copy()
+                if not form.get('redirect_uri', '').strip():
+                    form['redirect_uri'] = suggested_callback
+                cfg = parse_settings(form, g.auth_settings, key)
+                with closing(connect(db)) as conn:
+                    conn.execute('BEGIN IMMEDIATE')
+                    if (cfg['issuer'], cfg['subject']) != (g.auth_settings['issuer'], g.auth_settings['subject']):
+                        conn.execute("UPDATE auth_users SET oidc_name='' WHERE id=?", (g.auth_user['id'],))
+                        g.auth_user['oidc_name'] = ''
+                    conn.execute('UPDATE auth_config SET value=? WHERE id=1', (json.dumps(cfg),))
+                    conn.execute('DELETE FROM auth_identities WHERE user_id=?', (g.auth_user['id'],))
+                    if cfg['oidc_enabled'] and cfg['subject']:
+                        conn.execute('INSERT INTO auth_identities VALUES(?,?,?)', (cfg['issuer'], cfg['subject'], g.auth_user['id']))
+                    # Settings change revokes every other session, including old OIDC sessions.
+                    conn.execute('DELETE FROM auth_sessions WHERE token_hash<>?', (fingerprint(request.cookies.get(COOKIE, '')),))
+                    revoke_application_grants(conn, g.auth_user['id'])
+                    audit(conn, 'security_updated', g.auth_user['id'])
+                    conn.commit()
+                g.auth_settings, saved = cfg, True
+            except ValueError as exc:
+                error = str(exc)
         cfg = dict(g.auth_settings)
+        cfg['redirect_uri'] = cfg['redirect_uri'] or suggested_callback
         cfg['has_secret'] = bool(cfg.pop('client_secret', ''))
         with closing(connect(db)) as conn:
-            events = conn.execute('SELECT at,event,ip FROM auth_audit ORDER BY id DESC LIMIT 20').fetchall()
+            if after is not None:
+                events = list(reversed(conn.execute('SELECT id,at,event,ip FROM auth_audit WHERE id>? ORDER BY id ASC LIMIT 5', (after,)).fetchall()))
+            elif before is not None:
+                events = conn.execute('SELECT id,at,event,ip FROM auth_audit WHERE id<? ORDER BY id DESC LIMIT 5', (before,)).fetchall()
+            else:
+                events = conn.execute('SELECT id,at,event,ip FROM auth_audit ORDER BY id DESC LIMIT 5').fetchall()
+            newer = events[0]['id'] if events and conn.execute('SELECT 1 FROM auth_audit WHERE id>? LIMIT 1', (events[0]['id'],)).fetchone() else None
+            older = events[-1]['id'] if events and conn.execute('SELECT 1 FROM auth_audit WHERE id<? LIMIT 1', (events[-1]['id'],)).fetchone() else None
             locks = conn.execute('SELECT key,locked_until FROM auth_failures WHERE locked_until=-1 OR locked_until>?', (time.time(),)).fetchall()
-        return render_template('security.html', config=cfg, error=error, saved=saved, events=events, locks=locks, force_form=force_form), 400 if error else 200
+        return render_template('security.html', config=cfg, error=error, saved=saved, events=events,
+                               newer=newer, older=older, activity_paged=before is not None or after is not None,
+                               locks=locks, force_form=force_form), 400 if error else 200
 
     @bp.post('/auth/password')
     def change_password():
@@ -744,7 +766,9 @@ def register(app):
         from authlib.integrations.flask_client import OAuth
         oauth = OAuth(app)
         kwargs = dict(client_id=cfg['client_id'], client_secret=Fernet(key).decrypt(cfg['client_secret'].encode()).decode(),
-                      client_kwargs=dict(scope='openid profile', code_challenge_method='S256', timeout=15),
+                      # Authlib forwards default_timeout to every provider request,
+                      # including discovery and JWKS; timeout is ignored here.
+                      client_kwargs=dict(scope='openid profile', code_challenge_method='S256', default_timeout=15),
                       issuer=cfg['issuer'])
         if cfg['discovery']:
             kwargs['server_metadata_url'] = cfg['issuer'].rstrip('/') + '/.well-known/openid-configuration'
@@ -769,6 +793,8 @@ def register(app):
         cfg = g.auth_settings
         if not owner(db) or not cfg['oidc_enabled']:
             abort(404)
+        if not link_user and not cfg['subject']:
+            return render_template('auth.html', mode='error', error='SSO setup is incomplete. Sign in locally and link your SSO identity in Security settings.'), 409
         session['oidc_next'] = safe_next(request.args.get('next'))
         session['oidc_config'] = fingerprint(json.dumps(cfg, sort_keys=True))
         session['oidc_started'] = time.time()
@@ -787,13 +813,17 @@ def register(app):
 
     @bp.post('/auth/oidc/link')
     def oidc_link():
-        if not authenticate_password(g.auth_user, request.form.get('current_password', ''), g.auth_settings):
-            return jsonify(error='Current password is incorrect or login is locked.'), 400
-        return begin_oidc(g.auth_user['id'])
+        response = begin_oidc(g.auth_user['id'])
+        if getattr(response, 'status_code', None) == 302:
+            # Finish the same-origin form submission before navigating to SSO.
+            # Browsers apply form-action CSP to HTTP redirect chains too.
+            return render_template('auth.html', mode='redirect', redirect_url=response.location)
+        return response
 
     @bp.get('/auth/oidc/callback')
     def oidc_callback():
         cfg = g.auth_settings
+        stage = 'flow_validation'
         try:
             expected = session.pop('oidc_config', '')
             started = session.pop('oidc_started', 0)
@@ -802,11 +832,16 @@ def register(app):
                     or not equal(expected, fingerprint(json.dumps(cfg, sort_keys=True)))):
                 raise ValueError('Stale OIDC flow')
             # Authlib validates state, PKCE, signature, issuer, audience, expiry and nonce.
-            token = oidc_client(cfg).authorize_access_token()
+            stage = 'provider_discovery'
+            client = oidc_client(cfg)
+            stage = 'token_validation'
+            token = client.authorize_access_token()
+            stage = 'identity_validation'
             claims = token.get('userinfo')
             if not claims or claims.get('iss') != cfg['issuer'] or not isinstance(claims.get('sub'), str) or not claims['sub'] or len(claims['sub']) > 255:
                 raise ValueError('Invalid owner identity')
             if link_user:
+                stage = 'owner_link'
                 if not g.auth_user or g.auth_user['id'] != link_user:
                     raise ValueError('Owner session expired during linking')
                 with closing(connect(db)) as conn:
@@ -828,16 +863,29 @@ def register(app):
                     audit(conn, 'oidc_identity_linked', link_user)
                     conn.commit()
                 return redirect(url_for('auth.security', oidc_linked=1))
+            stage = 'owner_subject' if cfg['subject'] else 'owner_not_linked'
             if claims.get('sub') != cfg['subject']:
                 raise ValueError('Identity does not match owner')
+            stage = 'identity_lookup'
             with closing(connect(db)) as conn:
                 identity = conn.execute('SELECT user_id FROM auth_identities WHERE issuer=? AND subject=?', (claims['iss'], claims['sub'])).fetchone()
             user = owner(db)
             if not identity or identity['user_id'] != user['id']:
                 raise ValueError('Unknown identity')
+            stage = 'session_creation'
             return sign_in(user, 'oidc', session.pop('oidc_next', '/'), expected_config=fingerprint(json.dumps(cfg, sort_keys=True)), oidc_name=provider_name(claims))
-        except Exception:
+        except Exception as error:
             # Never log codes, provider responses, claims, tokens or secrets.
+            provider_error = getattr(error, 'error', '')
+            if provider_error not in {'invalid_client', 'invalid_grant', 'invalid_request',
+                                      'unauthorized_client', 'unsupported_grant_type',
+                                      'invalid_scope', 'access_denied', 'server_error',
+                                      'temporarily_unavailable'}:
+                provider_error = 'other'
+            logging.getLogger('nightfeed').warning('oidc_callback_failed', extra={
+                'event': 'oidc_callback_failed',
+                'fields': {'stage': stage, 'exception_type': type(error).__name__,
+                           'provider_error': provider_error}})
             session.clear()
             with closing(connect(db)) as conn:
                 audit(conn, 'oidc_failed')

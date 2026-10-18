@@ -32,7 +32,7 @@
 <label>Owner subject (sub, optional until linked)<input name="subject" value="{{ config.subject }}" maxlength="255"></label>
 <small>After saving SSO settings, use “Link owner SSO identity” below to securely capture your provider subject, or enter its exact value here. Other provider users cannot sign in. Use your provider's MFA policy to protect SSO.</small>
 <label>Callback URL<input name="redirect_uri" type="url" value="{{ config.redirect_uri }}" placeholder="https://nightfeed.example.com/auth/oidc/callback"></label>
-<small>Register this exact URL with the provider. Use authorization code flow, PKCE S256 and a confidential client.</small>
+<small>Filled automatically from this site's address. Register this exact URL with your provider. You can edit it if your public address differs. Use authorization code flow, PKCE S256 and a confidential client.</small>
 <label><input type="checkbox" name="discovery" {% if config.discovery %}checked{% endif %}>Discover endpoints automatically from the issuer</label>
 <label>Authorization endpoint (manual mode)<input name="authorization_endpoint" type="url" value="{{ config.authorization_endpoint }}"></label>
 <label>Token endpoint (manual mode)<input name="token_endpoint" type="url" value="{{ config.token_endpoint }}"></label>
@@ -40,16 +40,21 @@
 <label>Logout endpoint (optional)<input name="logout_endpoint" type="url" value="{{ config.logout_endpoint }}"></label>
 <small>Nightfeed always revokes its session first, then redirects here after an SSO logout. Configure the provider URL and any required return parameters. Provider logout behavior varies.</small>
 <label>Login button text<input name="button_text" value="{{ config.button_text }}" maxlength="255"></label>
-<label><input type="checkbox" name="auto_login" {% if config.auto_login %}checked{% endif %}>Automatically redirect to SSO</label>
-<label><input type="checkbox" name="disable_form" {% if config.disable_form %}checked{% endif %}>Disable local login form</label>
-<small>Keep your local password for recovery and security changes. To restore local sign in, set NIGHTFEED_FORCE_LOGIN_FORM=1 in Docker and restart Nightfeed.</small>
+<label><input type="checkbox" name="auto_login" {% if config.auto_login and config.subject %}checked{% endif %} {% if not config.subject %}disabled{% endif %}>Automatically redirect to SSO</label>
+<label><input type="checkbox" name="disable_form" {% if config.disable_form and config.subject %}checked{% endif %} {% if not config.subject %}disabled{% endif %}>Disable local login form</label>
+{% if not config.subject %}<small>Link your owner SSO identity below before enabling automatic SSO or disabling local sign-in.</small>{% endif %}
+<small>Keep your local password for sign-in and recovery. To restore local sign in, set NIGHTFEED_FORCE_LOGIN_FORM=1 in Docker and restart Nightfeed.</small>
 </fieldset>
-<label>Current password to confirm changes<input type="password" name="current_password" required autocomplete="new-password" data-lpignore="true" data-1p-ignore maxlength="256"></label>
 <button class="btn btn-primary">Save security settings</button>
 </form>
-{% if config.oidc_enabled %}<h2>Link owner SSO identity</h2><p>Sign in to your own provider account to link it to this Nightfeed owner. This replaces the previous SSO identity and signs out other sessions.</p><form method="post" action="{{ url_for('auth.oidc_link') }}" class="security-form"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><label>Current Nightfeed password<input type="password" name="current_password" required autocomplete="new-password" data-lpignore="true" data-1p-ignore maxlength="256"></label><button class="btn btn-secondary">Link owner SSO identity</button></form>{% endif %}</section>
+{% if config.oidc_enabled %}<h2>Link owner SSO identity</h2><p>Sign in to your own provider account to link it to this Nightfeed owner. This replaces the previous SSO identity and signs out other sessions.</p><form method="post" action="{{ url_for('auth.oidc_link') }}" class="security-form"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-secondary">Link owner SSO identity</button></form>{% endif %}</section>
 <section class="surface section"><h2>Active lockouts</h2>{% for lock in locks %}<p>{{ lock.key }} · {{ 'Manual unlock required' if lock.locked_until == -1 else 'Timed lockout' }}</p>{% else %}<p>No active lockouts.</p>{% endfor %}
 <form method="post" action="{{ url_for('auth.unlock') }}"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><button class="btn btn-secondary">Unlock password sign in</button></form></section>
-<section class="surface section"><h2>Recent security activity</h2><table class="security-events"><thead><tr><th>Time (UTC)</th><th>Event</th><th>Client IP</th></tr></thead><tbody>{% for event in events %}<tr><td>{{ event.at|auth_datetime }}</td><td>{{ event.event }}</td><td>{{ event.ip }}</td></tr>{% endfor %}</tbody></table></section>
+<section class="surface section" id="security-activity"><h2>Recent security activity</h2><table class="security-events"><thead><tr><th>Time (UTC)</th><th>Event</th><th>Client IP</th></tr></thead><tbody>{% for event in events %}<tr><td>{{ event.at|auth_datetime }}</td><td>{{ event.event }}</td><td>{{ event.ip }}</td></tr>{% else %}<tr><td colspan="3">No security activity on this page.</td></tr>{% endfor %}</tbody></table>
+<nav class="security-pagination" aria-label="Security activity pagination"><span>5 events per page</span><div class="security-pagination-links">
+{% if newer %}<a class="btn btn-secondary" href="{{ url_for('auth.security', activity_after=newer, _anchor='security-activity') }}">Newer</a>{% endif %}
+{% if older %}<a class="btn btn-secondary" href="{{ url_for('auth.security', activity_before=older, _anchor='security-activity') }}">Older</a>{% endif %}
+{% if activity_paged %}<a class="btn btn-secondary" href="{{ url_for('auth.security', _anchor='security-activity') }}">Latest activity</a>{% endif %}
+</div></nav></section>
 {% include 'components/unsaved_dialog.html' %}
 </div>{% endblock %}

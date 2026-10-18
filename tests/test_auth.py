@@ -16,6 +16,7 @@ from cryptography.fernet import Fernet
 from joserfc import jwt
 from joserfc.jwk import RSAKey
 from requests import Response
+from requests.exceptions import Timeout
 
 from rss_site_bridge.app import create_app, create_profile, create_notification, FeedRequest
 from rss_site_bridge.auth import (COOKIE, DEFAULTS, PUBLIC, SCOPES, connect, encryption_key,
@@ -421,21 +422,91 @@ class AuthTests(unittest.TestCase):
         token = self.make_key(scopes=tuple(SCOPES))
         self.assertEqual(self.app.test_client().get('/future/feature', headers=self.headers(token)).status_code, 403)
 
-    def test_security_changes_require_password_and_revoke_other_sessions(self):
+    def test_security_changes_use_owner_session_and_revoke_other_sessions(self):
         self.onboard()
         other = self.app.test_client()
         self.login(other)
         data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
-        data.update(auto_unlock='on', discovery='on', current_password='wrong')
-        self.assertEqual(self.post('/settings/security', data).status_code, 400)
-        data.update(current_password=PASSWORD, trusted_proxies='10.0.0.2', proxy_hops='1')
+        data.update(auto_unlock='on', discovery='on', trusted_proxies='10.0.0.2', proxy_hops='1')
+        self.assertEqual(self.app.test_client().post('/settings/security', data=data).status_code, 401)
+        self.assertEqual(self.client.post('/settings/security', data=data).status_code, 403)
         self.assertEqual(self.post('/settings/security', data).status_code, 200)
         self.assertEqual(other.get('/').status_code, 302)
         self.assertEqual(settings(self.db)['trusted_proxies'], '10.0.0.2/32')
+        page = BeautifulSoup(self.client.get('/settings/security').data, 'html.parser')
+        self.assertIsNone(page.find('input', attrs={'name': 'current_password'}))
+
+    def test_callback_url_is_suggested_saved_when_blank_and_overridable(self):
+        self.onboard()
+        response = self.client.get('/settings/security', headers={'X-Forwarded-Host': 'untrusted.test'})
+        page = BeautifulSoup(response.data, 'html.parser')
+        self.assertEqual(page.find('input', attrs={'name': 'redirect_uri'})['value'],
+                         'https://localhost/auth/oidc/callback')
+        data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
+        data.update(auto_unlock='on', discovery='on', current_password=PASSWORD, redirect_uri='')
+        self.assertEqual(self.post('/settings/security', data).status_code, 200)
+        self.assertEqual(settings(self.db)['redirect_uri'], 'https://localhost/auth/oidc/callback')
+        data['redirect_uri'] = 'https://public.example.test/auth/oidc/callback'
+        self.assertEqual(self.post('/settings/security', data).status_code, 200)
+        self.assertEqual(settings(self.db)['redirect_uri'], data['redirect_uri'])
+        page = BeautifulSoup(self.client.get('/settings/security').data, 'html.parser')
+        self.assertEqual(page.find('input', attrs={'name': 'redirect_uri'})['value'], data['redirect_uri'])
+
+    def test_sso_owner_session_can_save_security_without_local_password(self):
+        self.onboard()
+        with closing(connect(self.db)) as conn:
+            conn.execute("UPDATE auth_sessions SET method='oidc' WHERE token_hash=?",
+                         (fingerprint(self.client.get_cookie(COOKIE).value),))
+            conn.commit()
+        data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
+        data.update(auto_unlock='on', discovery='on', idle_minutes='45')
+        self.assertEqual(self.post('/settings/security', data).status_code, 200)
+        self.assertEqual(settings(self.db)['idle_minutes'], 45)
+
+    def test_security_activity_pagination_is_bounded_and_stable_during_inserts(self):
+        self.onboard()
+        with closing(connect(self.db)) as conn:
+            conn.execute('DELETE FROM auth_audit')
+            conn.executemany('INSERT INTO auth_audit(at,event,ip) VALUES(?,?,?)',
+                             [(1000, f'event-{i:02}', '127.0.0.1') for i in range(12)])
+            conn.commit()
+
+        def activity(url):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            page = BeautifulSoup(response.data, 'html.parser')
+            rows = [row.find_all('td')[1].text for row in page.select('.security-events tbody tr')]
+            links = {a.text: a['href'] for a in page.select('.security-pagination a')}
+            return rows, links
+
+        first, links = activity('/settings/security')
+        self.assertEqual(first, [f'event-{i:02}' for i in range(11, 6, -1)])
+        self.assertNotIn('Newer', links)
+        with closing(connect(self.db)) as conn:
+            conn.execute('INSERT INTO auth_audit(at,event,ip) VALUES(?,?,?)', (1000, 'event-12', '127.0.0.1'))
+            conn.commit()
+        second, second_links = activity(links['Older'])
+        self.assertEqual(second, [f'event-{i:02}' for i in range(6, 1, -1)])
+        self.assertEqual(activity(second_links['Newer'])[0], first)
+        last, last_links = activity(second_links['Older'])
+        self.assertEqual(last, ['event-01', 'event-00'])
+        self.assertNotIn('Older', last_links)
+        self.assertEqual(activity(last_links['Latest activity'])[0][0], 'event-12')
+
+    def test_security_activity_rejects_invalid_cursors(self):
+        self.onboard()
+        for query in ('activity_before=invalid', 'activity_before=0', 'activity_after=-1',
+                      'activity_after=9223372036854775808', 'activity_before=3&activity_after=1'):
+            with self.subTest(query=query):
+                self.assertEqual(self.client.get('/settings/security?' + query).status_code, 400)
 
     def test_oidc_ui_disable_autologin_and_server_force_override(self):
         self.onboard()
-        self.cfg(oidc_enabled=True, auto_login=True, disable_form=True)
+        self.cfg(oidc_enabled=True, subject='owner-subject', auto_login=True, disable_form=False)
+        client = self.app.test_client()
+        self.assertIn('/auth/oidc', client.get('/auth/login').location)
+        self.assertIn(b'name="password"', client.get('/auth/login?sso=off').data)
+        self.cfg(oidc_enabled=True, subject='owner-subject', auto_login=True, disable_form=True)
         client = self.app.test_client()
         self.assertIn('/auth/oidc', client.get('/auth/login').location)
         page = client.get('/auth/login?sso=off')
@@ -446,6 +517,34 @@ class AuthTests(unittest.TestCase):
         forced = app.test_client()
         self.assertIn(b'name="password"', forced.get('/auth/login').data)
         self.assertEqual(self.post('/auth/login', dict(username='owner', password=PASSWORD), client=forced).status_code, 302)
+
+    def test_unlinked_sso_cannot_hide_local_login_or_start_sign_in(self):
+        self.onboard()
+        self.cfg(oidc_enabled=True, subject='', auto_login=True, disable_form=True)
+        browser = self.app.test_client()
+        response = browser.get('/auth/login')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'name="password"', response.data)
+        page = BeautifulSoup(response.data, 'html.parser')
+        self.assertIsNone(page.find('a', href='/auth/oidc?next=/'))
+        self.assertIn(b'SSO setup is incomplete', response.data)
+        self.assertEqual(browser.get('/auth/oidc').status_code, 409)
+        security = BeautifulSoup(self.client.get('/settings/security').data, 'html.parser')
+        for name in ('auto_login', 'disable_form'):
+            self.assertTrue(security.find('input', attrs={'name': name}).has_attr('disabled'))
+        self.assertEqual(self.post('/auth/login', dict(username='owner', password=PASSWORD), client=browser).status_code, 302)
+
+    def test_settings_reject_lockout_options_until_owner_is_linked(self):
+        self.onboard()
+        data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
+        data.update(oidc_enabled='on', discovery='on', issuer='https://provider.test',
+                    client_id='nightfeed', client_secret='private-client-secret', current_password=PASSWORD)
+        for option in ('auto_login', 'disable_form'):
+            with self.subTest(option=option):
+                response = self.post('/settings/security', data | {option: 'on'})
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(b'Link the owner SSO identity', response.data)
+                self.assertFalse(settings(self.db)[option])
 
 
 class OIDCTests(unittest.TestCase):
@@ -601,6 +700,73 @@ class OIDCTests(unittest.TestCase):
         self.assertEqual(self.callback().status_code, 302)
         self.assertFalse(any('.well-known' in v[1] for v in self.requests))
 
+    def test_provider_requests_have_timeout_in_discovery_and_manual_modes(self):
+        self.configure()
+        for discovery in (True, False):
+            with self.subTest(discovery=discovery):
+                self.cfg(discovery=discovery)
+                self.requests.clear()
+                self.start()
+                self.assertEqual(self.callback().status_code, 302)
+                self.assertTrue(any(url.endswith('/token') for _, url, _ in self.requests))
+                self.assertTrue(any(url.endswith('/jwks') for _, url, _ in self.requests))
+                for _, _, kwargs in self.requests:
+                    self.assertEqual(kwargs.get('timeout'), 15)
+
+    def test_discovery_timeout_returns_safe_error(self):
+        self.configure()
+        with patch('requests.sessions.Session.request', side_effect=Timeout('private-provider-details')):
+            response = self.app.test_client().get('/auth/oidc')
+        self.assertEqual(response.status_code, 502)
+        self.assertIn(b'SSO is unavailable', response.data)
+        self.assertNotIn(b'private-provider-details', response.data)
+
+    def test_callback_provider_timeout_rejects_login(self):
+        self.configure()
+        self.start()
+        with patch('requests.sessions.Session.request', side_effect=Timeout('private-provider-details')):
+            response = self.callback()
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn(b'private-provider-details', response.data)
+        self.assertEqual(self.oidc_browser.get('/').status_code, 302)
+
+    def test_callback_diagnostics_do_not_log_provider_details(self):
+        from authlib.integrations.base_client.errors import OAuthError
+        self.configure()
+        self.start()
+        original = self.provider_request
+
+        def rejected(method, url, **kwargs):
+            if url.endswith('/token'):
+                raise OAuthError(error='private-provider-error', description='private-provider-description')
+            return original(method, url, **kwargs)
+
+        with patch('requests.sessions.Session.request', side_effect=rejected), self.assertLogs('nightfeed', level='WARNING') as logs:
+            response = self.callback()
+        self.assertEqual(response.status_code, 401)
+        record = next(r for r in logs.records if getattr(r, 'event', '') == 'oidc_callback_failed')
+        self.assertEqual(record.fields['stage'], 'token_validation')
+        self.assertEqual(record.fields['provider_error'], 'other')
+        self.assertFalse(record.exc_info)
+        diagnostic = json.dumps(record.fields) + record.getMessage()
+        for private in ('private-provider-error', 'private-provider-description', 'private-auth-code',
+                        'private-client-secret', 'private-access-token'):
+            self.assertNotIn(private, diagnostic)
+
+    def test_callback_diagnoses_unlinked_owner_without_authenticating(self):
+        self.configure()
+        self.start()
+        self.cfg(subject='')
+        # An older version could start a flow before an owner was linked.
+        with self.oidc_browser.session_transaction() as session:
+            session['oidc_config'] = fingerprint(json.dumps(settings(self.db), sort_keys=True))
+        with self.assertLogs('nightfeed', level='WARNING') as logs:
+            response = self.callback()
+        self.assertEqual(response.status_code, 401)
+        record = next(r for r in logs.records if getattr(r, 'event', '') == 'oidc_callback_failed')
+        self.assertEqual(record.fields['stage'], 'owner_not_linked')
+        self.assertEqual(self.oidc_browser.get('/').status_code, 302)
+
     def test_protocol_rejects_metadata_issuer_and_insecure_endpoints(self):
         self.configure()
         for changes in ({'issuer': 'https://evil.test'}, {'token_endpoint': 'http://provider.test/token'},
@@ -619,16 +785,20 @@ class OIDCTests(unittest.TestCase):
             state['oidc_started'] = time.time() - 700
         self.assertEqual(self.callback().status_code, 401)
 
-    def test_protocol_owner_can_link_subject_after_password_confirmation(self):
+    def test_protocol_owner_can_link_subject_with_session_and_csrf(self):
         self.configure()
         self.cfg(subject='')
         with closing(connect(self.db)) as conn:
             conn.execute('DELETE FROM auth_identities')
             conn.commit()
         self.oidc_browser = self.client
-        response = self.post('/auth/oidc/link', dict(current_password=PASSWORD))
-        self.assertEqual(response.status_code, 302)
-        params = parse_qs(urlsplit(response.location).query)
+        response = self.post('/auth/oidc/link')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("form-action 'self'", response.headers['Content-Security-Policy'])
+        page = BeautifulSoup(response.data, 'html.parser')
+        destination = page.find('a', string='Continue to SSO')['href']
+        self.assertEqual(page.find('meta', attrs={'http-equiv': 'refresh'})['content'], '0;url=' + destination)
+        params = parse_qs(urlsplit(destination).query)
         self.state, self.nonce = params['state'][0], params['nonce'][0]
         self.assertEqual(self.callback().status_code, 302)
         self.assertEqual(settings(self.db)['subject'], 'owner-subject')
@@ -638,13 +808,15 @@ class OIDCTests(unittest.TestCase):
     def test_protocol_link_cannot_be_started_without_owner_session(self):
         self.configure()
         self.assertEqual(self.app.test_client().post('/auth/oidc/link').status_code, 401)
-        self.assertEqual(self.post('/auth/oidc/link', dict(current_password='wrong')).status_code, 400)
+        self.assertEqual(self.client.post('/auth/oidc/link').status_code, 403)
 
     def test_protocol_link_rechecks_session_after_provider_exchange(self):
         self.configure()
         self.oidc_browser = self.client
-        response = self.post('/auth/oidc/link', dict(current_password=PASSWORD))
-        params = parse_qs(urlsplit(response.location).query)
+        response = self.post('/auth/oidc/link')
+        self.assertEqual(response.status_code, 200)
+        destination = BeautifulSoup(response.data, 'html.parser').find('a', string='Continue to SSO')['href']
+        params = parse_qs(urlsplit(destination).query)
         self.state, self.nonce = params['state'][0], params['nonce'][0]
         original = self.provider_request
         def revoked(method, url, **kwargs):
