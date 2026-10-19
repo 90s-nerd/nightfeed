@@ -452,6 +452,23 @@ class AuthTests(unittest.TestCase):
         page = BeautifulSoup(self.client.get('/settings/security').data, 'html.parser')
         self.assertEqual(page.find('input', attrs={'name': 'redirect_uri'})['value'], data['redirect_uri'])
 
+    def test_allowed_site_origins_validation_and_storage(self):
+        self.onboard()
+        data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
+        data.update(auto_unlock='on', discovery='on',
+                    allowed_origins='https://PUBLIC.test/, https://internal.test:8443 https://PUBLIC.test')
+        self.post('/settings/security', data)
+        self.assertEqual(settings(self.db)['allowed_origins'],
+                         'https://public.test https://internal.test:8443')
+        for invalid in ('http://public.test', 'https://public.test/path',
+                        'https://public.test?query=1', 'https://user:secret@public.test',
+                        'https://public.test#fragment'):
+            with self.subTest(invalid=invalid):
+                data['allowed_origins'] = invalid
+                self.post('/settings/security', data)
+                self.assertEqual(settings(self.db)['allowed_origins'],
+                                 'https://public.test https://internal.test:8443')
+
     def test_sso_owner_session_can_save_security_without_local_password(self):
         self.onboard()
         with closing(connect(self.db)) as conn:
@@ -630,16 +647,20 @@ class OIDCTests(unittest.TestCase):
         with closing(connect(self.db)) as conn:
             conn.execute('UPDATE assistant_config SET mcp_enabled=1,mcp_public_url=?',(ISSUER,))
             conn.commit()
+        self.cfg(allowed_origins=ISSUER)
         client = register_client(self.app)
         destination = '/oauth/authorize?' + urlencode(dict(client_id=client['client_id'],redirect_uri=CALLBACK,
             response_type='code',resource=ISSUER+'/mcp',code_challenge=create_s256_code_challenge(VERIFIER),code_challenge_method='S256'))
         browser = self.app.test_client()
         response = browser.get('/auth/oidc',query_string=dict(next=destination),base_url=ISSUER)
         params = parse_qs(urlsplit(response.location).query)
+        self.assertEqual(params['redirect_uri'], [ISSUER + '/auth/oidc/callback'])
         self.nonce = params['nonce'][0]
         response = browser.get('/auth/oidc/callback',query_string=dict(state=params['state'][0],code='private-auth-code'),base_url=ISSUER)
         self.assertEqual(response.status_code,302,response.data)
         self.assertEqual(response.location,destination)
+        token_call = next(call for call in self.requests if call[1].endswith('/token'))
+        self.assertEqual(token_call[2]['data']['redirect_uri'], ISSUER + '/auth/oidc/callback')
         response = browser.get(destination,base_url=ISSUER)
         self.assertEqual(response.status_code,200,response.data)
         soup=BeautifulSoup(response.data,'html.parser')
@@ -648,6 +669,17 @@ class OIDCTests(unittest.TestCase):
         self.assertEqual(response.status_code,302,response.data)
         code=parse_qs(urlsplit(response.location).query)['code'][0]
         self.assertEqual(exchange(self.app,client,code).status_code,200)
+
+    def test_oidc_callbacks_use_allowed_origins_without_mcp(self):
+        self.configure()
+        self.cfg(allowed_origins='https://public.test https://internal.test')
+        for origin in ('https://public.test', 'https://internal.test', 'https://untrusted.test'):
+            with self.subTest(origin=origin):
+                response = self.app.test_client().get('/auth/oidc', base_url=origin,
+                    headers={'X-Forwarded-Host': 'public.test'})
+                expected = origin if origin != 'https://untrusted.test' else 'https://localhost'
+                self.assertEqual(parse_qs(urlsplit(response.location).query)['redirect_uri'],
+                                 [expected + '/auth/oidc/callback'])
 
     def test_protocol_rejects_wrong_state_before_token_exchange(self):
         self.configure()

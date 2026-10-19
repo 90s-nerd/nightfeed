@@ -314,6 +314,10 @@ separately if a key may have been exposed.
 
 Under **Settings → Security**, enter the exact HTTPS issuer, client ID, and client secret.
 The callback URL is filled from the current site address and can be overridden.
+For multiple hostnames, enter each HTTPS origin under **Allowed site origins**.
+SSO started on a listed origin uses that origin plus `/auth/oidc/callback`,
+independently of MCP. Register every callback with your provider. Other origins
+continue to use the saved callback, preserving existing single-domain setups.
 Register a
 confidential authorization-code client at your provider with that exact redirect URI,
 `openid profile` scopes and PKCE S256. The default token authentication method is
