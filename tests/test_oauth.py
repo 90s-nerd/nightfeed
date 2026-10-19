@@ -21,6 +21,10 @@ from rss_site_bridge.oauth import validate_issuer
 
 class OAuthTests(unittest.TestCase):
     def setUp(self):
+        scheme_proxy = patch.dict('os.environ', {'NIGHTFEED_TRUSTED_PROXIES': '127.0.0.1/32',
+                                                'NIGHTFEED_TRUSTED_PROXY_HOPS': '0'})
+        scheme_proxy.start()
+        self.addCleanup(scheme_proxy.stop)
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db = Path(self.tmp.name) / 'db'
@@ -28,6 +32,9 @@ class OAuthTests(unittest.TestCase):
         self.browser = authenticated_client(self.app)
         self.client = self.app.test_client()
         self.sql('UPDATE assistant_config SET mcp_enabled=1,mcp_public_url=?', (ISSUER,))
+        from rss_site_bridge.auth import settings as auth_settings
+        self.sql('UPDATE auth_config SET value=? WHERE id=1',
+                 (json.dumps(auth_settings(self.db) | {'allowed_origins': ISSUER}),))
 
     def sql(self, query, args=()):
         with closing(core.connect_db(self.db)) as conn:
@@ -64,8 +71,37 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(metadata['code_challenge_methods_supported'], ['S256'])
         self.assertTrue(metadata['authorization_response_iss_parameter_supported'])
         self.assertEqual(self.client.get('/.well-known/oauth-authorization-server', base_url='https://evil.example').status_code, 400)
+        upstream = self.client.get('/.well-known/oauth-authorization-server', base_url=ISSUER.replace('https:', 'http:'),
+            headers={'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'evil.example'})
+        self.assertEqual(upstream.status_code, 200)
+        self.assertEqual(upstream.json['issuer'], ISSUER)
+        mismatch = self.client.get('/.well-known/oauth-authorization-server', base_url='https://evil.example')
+        self.assertEqual(mismatch.json['expected_origin'], ISSUER)
+        self.assertEqual(mismatch.json['received_origin'], 'https://evil.example')
         for uri in ('http://localhost', 'https://x/path', 'https://x/?a=b', 'https://user@x', 'https://x/#f', 'https://x:bad', 'https://x\\evil'):
             with self.assertRaises(ValueError): validate_issuer(uri)
+
+    def test_wrong_host_authorization_is_rejected_before_login_redirect(self):
+        response = self.client.get('/oauth/authorize', base_url='https://internal.example',
+            headers={'X-Forwarded-Host': urlsplit(ISSUER).netloc})
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn('Location', response.headers)
+        self.assertEqual(response.json['expected_origin'], ISSUER)
+        self.assertEqual(response.json['received_origin'], 'https://internal.example')
+
+    def test_refresh_and_mcp_accept_http_upstream_for_configured_https_site(self):
+        client, token = self.connection()
+        upstream = ISSUER.replace('https:', 'http:')
+        response = self.client.post('/oauth/token', base_url=upstream,
+            headers={'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'evil.example'},
+            data=dict(client_id=client['client_id'], grant_type='refresh_token',
+                      refresh_token=token['refresh_token'], resource=ISSUER + '/mcp'))
+        self.assertEqual(response.status_code, 200, response.data)
+        response = self.client.post('/mcp', base_url=upstream,
+            headers={'Authorization': 'Bearer ' + response.json['access_token'],
+                     'Accept': 'application/json, text/event-stream', 'X-Forwarded-Proto': 'https'},
+            json=dict(jsonrpc='2.0', id=1, method='ping'))
+        self.assertEqual(response.status_code, 200, response.data)
 
     def test_real_flow_inherits_user_and_rejects_other_credentials(self):
         client, token = self.connection()
@@ -251,14 +287,15 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(keys['mcp-only']['revoked'],1)
         self.assertEqual(json.loads(keys['mcp-only']['scopes']),[])
 
-    def test_access_uses_https_and_connections_have_no_scheduled_expiry(self):
+    def test_access_requires_configured_origin_and_connections_have_no_scheduled_expiry(self):
         client, token = self.connection()
         self.assertIsNone(self.sql('SELECT expires FROM auth_oauth_grants')[0]['expires'])
         with patch('rss_site_bridge.oauth.time.time', return_value=time.time() + 31 * 86400):
             renewed = self.refresh(client, token)
         self.assertEqual(renewed.status_code, 200)
         token = renewed.json
-        response = self.client.post('/mcp',headers={'Authorization':'Bearer '+token['access_token']},json={})
+        response = self.client.post('/mcp',base_url='https://unapproved.example',
+            headers={'Authorization':'Bearer '+token['access_token']},json={})
         self.assertEqual(response.status_code,400)
         self.sql('UPDATE auth_oauth_grants SET expires=0')
         self.assertEqual(self.mcp(token['access_token']).status_code,401)

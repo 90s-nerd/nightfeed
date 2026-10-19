@@ -244,3 +244,12 @@ html.auth-checking body > :not(#auth-session-check) { opacity:0; pointer-events:
 
 .oauth-callback { overflow-wrap:anywhere; }
 .oauth-page h1,.oauth-page h3 { overflow-wrap:anywhere; }
+
+.security-entries{grid-column:1/-1;display:grid;gap:12px;min-width:0}
+.security-entry-row{display:grid;gap:10px;align-items:end;min-width:0}
+.security-entry-row label{min-width:0;margin:0}
+.security-entry-row input{width:100%;min-width:0}
+.proxy-entry{grid-template-columns:minmax(0,1fr) 110px 44px 44px}
+.origin-entry{grid-template-columns:minmax(0,1fr) 44px 44px}
+.security-entry-row .entry-icon{width:44px;height:44px;padding:0;font-size:22px;line-height:1}
+@media(max-width:520px){.proxy-entry{grid-template-columns:minmax(0,1fr) 44px 44px}.proxy-entry label:first-child{grid-column:1/-1}.proxy-entry label:nth-child(2){grid-column:1}.proxy-entry .entry-icon{align-self:end}}

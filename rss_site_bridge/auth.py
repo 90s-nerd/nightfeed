@@ -36,9 +36,9 @@ DEFAULTS = dict(session_minutes=720, idle_minutes=30, lockout_attempts=5,
                 lockout_minutes=15, auto_unlock=True, lockout_exclusions='',
                 oidc_enabled=False, oidc_use_name=False, auto_login=False, disable_form=False,
                 button_text='Sign in with SSO', discovery=True, issuer='',
-                client_id='', client_secret='', subject='', redirect_uri='', allowed_origins='',
+                client_id='', client_secret='', subject='', allowed_origins='',
                 authorization_endpoint='', token_endpoint='', jwks_uri='', logout_endpoint='',
-                trusted_proxies='', proxy_hops=0)
+                trusted_proxies='', proxy_hops=0, proxy_rules=[])
 SCOPES = {'rss:read': 'Read RSS XML', 'feeds:read': 'Read feed list through API',
           'topics:read': 'Read topics through API', 'notifications:read': 'Read notifications through API',
           'feeds:refresh': 'Refresh feeds through API'}
@@ -126,10 +126,26 @@ def owner(db):
     return dict(row) if row else None
 
 
+def load_settings(value):
+    cfg = DEFAULTS | json.loads(value)
+    # Import only the approved origin from legacy callback configuration. The
+    # callback itself is always generated from the current approved request.
+    if not cfg['proxy_rules'] and cfg['trusted_proxies']:
+        cfg['proxy_rules'] = [dict(network=value.strip(), hops=cfg['proxy_hops'])
+                              for value in cfg['trusted_proxies'].split(',') if value.strip()]
+    legacy = cfg.pop('redirect_uri', '')
+    if not cfg['allowed_origins'] and legacy:
+        try:
+            cfg['allowed_origins'] = site_origin(https_url(legacy, 'Legacy callback'))
+        except ValueError:
+            pass
+    return cfg
+
+
 def settings(db):
     with closing(connect(db)) as conn:
         row = conn.execute('SELECT value FROM auth_config WHERE id=1').fetchone()
-    return DEFAULTS | json.loads(row['value'])
+    return load_settings(row['value'])
 
 
 def provider_name(claims):
@@ -202,10 +218,54 @@ def https_url(value, label, required=False):
     return value
 
 
+def site_origin(value):
+    parts = urlsplit(value)
+    authority = parts.netloc.lower()
+    if (parts.scheme, parts.port) in {('https', 443), ('http', 80)}:
+        authority = authority.rsplit(':', 1)[0]
+    return parts.scheme + '://' + authority
+
+
+def allowed_site_origin(value):
+    value = value.strip()
+    try:
+        parts = urlsplit(value)
+        parts.port
+    except ValueError:
+        raise ValueError('Invalid allowed site origin.') from None
+    if (parts.scheme not in ('http', 'https') or not parts.hostname
+            or parts.username or parts.password or parts.path not in ('', '/')
+            or parts.query or parts.fragment or len(value) > 2048
+            or re.search(r'[\\\s\x00-\x1f]', value)):
+        raise ValueError('Allowed site origins must be HTTP or HTTPS origins without a path, query or credentials.')
+    return site_origin(value)
+
+
+def proxy_hops_for(cfg, address):
+    rules = cfg['proxy_rules']
+    override = os.environ.get('NIGHTFEED_TRUSTED_PROXY_HOPS')
+    if 'NIGHTFEED_TRUSTED_PROXIES' in os.environ:
+        rules = [dict(network=v.strip(), hops=cfg['proxy_hops'])
+                 for v in os.environ['NIGHTFEED_TRUSTED_PROXIES'].split(',') if v.strip()]
+    try:
+        peer = ipaddress.ip_address(address)
+    except ValueError:
+        return None
+    matches = []
+    for rule in rules:
+        try:
+            network = ipaddress.ip_network(rule['network'], strict=False)
+            if peer in network:
+                matches.append((network.prefixlen, int(override) if override is not None else rule['hops']))
+        except ValueError:
+            continue
+    return max(matches)[1] if matches else None
+
+
 def parse_settings(form, existing, key):
     result = dict(existing)
     for name, low, high in [('session_minutes', 5, 43200), ('idle_minutes', 1, 1440),
-                            ('lockout_attempts', 3, 100), ('lockout_minutes', 1, 10080), ('proxy_hops', 0, 5)]:
+                            ('lockout_attempts', 3, 100), ('lockout_minutes', 1, 10080)]:
         try:
             value = int(form.get(name, ''))
         except (ValueError, TypeError):
@@ -222,33 +282,50 @@ def parse_settings(form, existing, key):
         result['lockout_exclusions'] = ', '.join(str(ipaddress.ip_network(v.strip(), strict=False)) for v in exclusions.split(',') if v.strip())
     except ValueError:
         raise ValueError('Lockout exclusions must be comma-separated IP addresses or CIDR networks.')
-    proxies = str(form.get('trusted_proxies', '')).strip()
-    if len(proxies) > 2048:
-        raise ValueError('Too many trusted proxies.')
-    try:
-        result['trusted_proxies'] = ', '.join(str(ipaddress.ip_network(v.strip(), strict=False)) for v in proxies.split(',') if v.strip())
-    except ValueError:
-        raise ValueError('Trusted proxies must be IP addresses or CIDR networks.')
-    if result['proxy_hops'] and not result['trusted_proxies']:
-        raise ValueError('Configure trusted proxy addresses before enabling forwarded headers.')
+    values = lambda name: form.getlist(name) if hasattr(form, 'getlist') else [form.get(name, '')]
+    if 'proxy_network' in form:
+        networks, counts = values('proxy_network'), values('proxy_hop')
+        if len(networks) != len(counts) or len(networks) > 20:
+            raise ValueError('Use at most 20 proxy rows, each with a hop count.')
+    else:
+        # Accept legacy form submissions while existing installations upgrade.
+        networks = [v.strip() for v in str(form.get('trusted_proxies', '')).split(',') if v.strip()]
+        counts = [form.get('proxy_hops', '0')] * len(networks)
+        if not networks and str(form.get('proxy_hops', '0')) != '0':
+            raise ValueError('Configure trusted proxy addresses before enabling forwarded headers.')
+    if len(networks) > 20:
+        raise ValueError('Use at most 20 proxy rows.')
+    rules = {}
+    for network, count in zip(networks, counts):
+        if not network.strip():
+            continue
+        try:
+            network = str(ipaddress.ip_network(network.strip(), strict=False))
+            hops = int(count)
+        except (ValueError, TypeError):
+            raise ValueError('Each proxy needs a valid IP address or network and a hop count from 0 to 5.') from None
+        if not 0 <= hops <= 5:
+            raise ValueError('Proxy hop counts must be between 0 and 5.')
+        if network in rules and rules[network] != hops:
+            raise ValueError('The same proxy cannot have different hop counts.')
+        rules[network] = hops
+    result['proxy_rules'] = [dict(network=network, hops=hops) for network, hops in rules.items()]
+    result['trusted_proxies'], result['proxy_hops'] = '', 0
     for name in ('client_id', 'subject', 'button_text'):
         value = str(form.get(name, '')).strip()
         if len(value) > 255 or any(ord(c) < 32 for c in value):
             raise ValueError(f'Invalid {name.replace("_", " ")}.')
         result[name] = value
     result['button_text'] = result['button_text'] or DEFAULTS['button_text']
-    for name in ('issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri', 'logout_endpoint', 'redirect_uri'):
+    for name in ('issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri', 'logout_endpoint'):
         result[name] = https_url(str(form.get(name, '')), name.replace('_', ' ').capitalize())
-    origins = str(form.get('allowed_origins', '')).replace(',', ' ').split()
+    origins = ([v.strip() for v in values('allowed_origin') if v.strip()] if 'allowed_origin' in form
+               else str(form.get('allowed_origins', '')).replace(',', ' ').split())
     if len(origins) > 20:
         raise ValueError('Too many allowed site origins.')
     normalized = []
     for origin in origins:
-        value = https_url(origin, 'Allowed site origin')
-        parts = urlsplit(value)
-        if parts.path not in ('', '/') or parts.query or parts.fragment:
-            raise ValueError('Allowed site origins must contain only an HTTPS scheme and host, with an optional port.')
-        normalized.append('https://' + parts.netloc.lower())
+        normalized.append(allowed_site_origin(origin))
     result['allowed_origins'] = ' '.join(dict.fromkeys(normalized))
     secret = str(form.get('client_secret', ''))
     if len(secret) > 4096:
@@ -256,8 +333,8 @@ def parse_settings(form, existing, key):
     if secret:
         result['client_secret'] = Fernet(key).encrypt(secret.encode()).decode()
     if result['oidc_enabled']:
-        if not all(result[name] for name in ('issuer', 'client_id', 'client_secret', 'redirect_uri')):
-            raise ValueError('OIDC requires issuer, client ID, client secret and callback URL.')
+        if not all(result[name] for name in ('issuer', 'client_id', 'client_secret', 'allowed_origins')):
+            raise ValueError('OIDC requires issuer, client ID, client secret and allowed site origins.')
         if not result['subject'] and (result['auto_login'] or result['disable_form']):
             raise ValueError('Link the owner SSO identity before enabling auto login or disabling the local form.')
         if urlsplit(result['issuer']).query:
@@ -321,11 +398,15 @@ def register(app):
 
     def proxy_app(environ, start_response):
         cfg = settings(db)
-        networks = os.environ.get('NIGHTFEED_TRUSTED_PROXIES', cfg['trusted_proxies'])
-        hops = int(os.environ.get('NIGHTFEED_TRUSTED_PROXY_HOPS', cfg['proxy_hops']))
-        trusted = exempt({'lockout_exclusions': networks}, environ.get('REMOTE_ADDR', ''))
-        if hops > 0 and trusted:
-            return ProxyFix(inner_app, x_for=hops, x_proto=hops)(environ, start_response)
+        hops = proxy_hops_for(cfg, environ.get('REMOTE_ADDR', ''))
+        trusted = hops is not None
+        # IP hop count and the original browser scheme are independent. Accept
+        # only a single explicit scheme value from an owner-trusted direct proxy.
+        scheme = environ.get('HTTP_X_FORWARDED_PROTO', '').strip().lower()
+        if trusted:
+            if scheme in ('http', 'https'):
+                environ = dict(environ, HTTP_X_FORWARDED_PROTO=scheme)
+            return ProxyFix(inner_app, x_for=hops, x_proto=int(scheme in ('http', 'https')))(environ, start_response)
         return inner_app(environ, start_response)
 
     app.wsgi_app = proxy_app
@@ -349,7 +430,7 @@ def register(app):
             current = conn.execute('SELECT password_hash FROM auth_users WHERE id=?', (user['id'],)).fetchone()
             if not current or not equal(current['password_hash'], user['password_hash']):
                 abort(401)
-            current_config = DEFAULTS | json.loads(conn.execute('SELECT value FROM auth_config WHERE id=1').fetchone()['value'])
+            current_config = load_settings(conn.execute('SELECT value FROM auth_config WHERE id=1').fetchone()['value'])
             if expected_config and fingerprint(json.dumps(current_config, sort_keys=True)) != expected_config:
                 abort(401)
             if method == 'oidc' and oidc_name is not None:
@@ -407,6 +488,10 @@ def register(app):
         g.oauth_grant = None
         g.auth_settings = settings(db)
         from . import oauth
+        if request.endpoint == 'oauth.authorize':
+            failure = oauth.require_public_origin(db)
+            if failure is not None:
+                return failure
         if request.endpoint == 'assistant.mcp':
             return oauth.authenticate_mcp(db)
         # OAuth protocol endpoints authenticate clients/grants themselves; browser
@@ -522,7 +607,7 @@ def register(app):
             try:
                 with closing(connect(db)) as conn:
                     conn.execute('BEGIN IMMEDIATE')
-                    cfg = DEFAULTS | json.loads(conn.execute('SELECT value FROM auth_config WHERE id=1').fetchone()['value'])
+                    cfg = load_settings(conn.execute('SELECT value FROM auth_config WHERE id=1').fetchone()['value'])
                     managed = request.form.get('oidc_use_name') == 'on'
                     if managed and not (cfg['oidc_enabled'] and cfg['subject']):
                         raise ValueError('Enable SSO and link your owner identity before using the provider name.')
@@ -619,7 +704,7 @@ def register(app):
 
     @bp.route('/settings/security', methods=['GET', 'POST'])
     def security():
-        suggested_callback = url_for('auth.oidc_callback', _external=True, _scheme='https')
+        suggested_origin = site_origin(request.host_url)
         before = after = None
         if request.method == 'GET':
             try:
@@ -634,8 +719,10 @@ def register(app):
         if request.method == 'POST':
             try:
                 form = request.form.copy()
-                if not form.get('redirect_uri', '').strip():
-                    form['redirect_uri'] = suggested_callback
+                # Legacy forms omitted origin rows entirely; new rows are explicit,
+                # so clearing the last row must never silently approve this host.
+                if 'allowed_origin' not in form and 'allowed_origins' not in form:
+                    form['allowed_origin'] = suggested_origin
                 cfg = parse_settings(form, g.auth_settings, key)
                 with closing(connect(db)) as conn:
                     conn.execute('BEGIN IMMEDIATE')
@@ -655,7 +742,6 @@ def register(app):
             except ValueError as exc:
                 error = str(exc)
         cfg = dict(g.auth_settings)
-        cfg['redirect_uri'] = cfg['redirect_uri'] or suggested_callback
         cfg['has_secret'] = bool(cfg.pop('client_secret', ''))
         with closing(connect(db)) as conn:
             if after is not None:
@@ -667,7 +753,7 @@ def register(app):
             newer = events[0]['id'] if events and conn.execute('SELECT 1 FROM auth_audit WHERE id>? LIMIT 1', (events[0]['id'],)).fetchone() else None
             older = events[-1]['id'] if events and conn.execute('SELECT 1 FROM auth_audit WHERE id<? LIMIT 1', (events[-1]['id'],)).fetchone() else None
             locks = conn.execute('SELECT key,locked_until FROM auth_failures WHERE locked_until=-1 OR locked_until>?', (time.time(),)).fetchall()
-        return render_template('security.html', config=cfg, error=error, saved=saved, events=events,
+        return render_template('security.html', config=cfg, suggested_origin=suggested_origin, error=error, saved=saved, events=events,
                                newer=newer, older=older, activity_paged=before is not None or after is not None,
                                locks=locks, force_form=force_form), 400 if error else 200
 
@@ -809,6 +895,19 @@ def register(app):
             abort(404)
         if not link_user and not cfg['subject']:
             return render_template('auth.html', mode='error', error='SSO setup is incomplete. Sign in locally and link your SSO identity in Security settings.'), 409
+        # A callback on another origin loses this browser's host-scoped state.
+        # Never substitute another origin for an unapproved host.
+        incoming = site_origin(request.host_url)
+        origins = {site_origin(origin) for origin in cfg['allowed_origins'].split()}
+        if incoming in origins:
+            redirect_uri = incoming + '/auth/oidc/callback'
+        else:
+            logging.getLogger('nightfeed').warning('oidc_origin_rejected', extra={
+                'event': 'oidc_origin_rejected', 'fields': {'reason': 'unapproved_origin'}})
+            return render_template('auth.html', mode='error', error=(
+                f'SSO is not configured for this site address (Nightfeed sees {incoming}). Ask the instance owner to add '
+                'this exact origin, including its scheme, under Allowed site origins in Security settings, and '
+                'verify the original scheme and Host header supplied by the reverse proxy.')), 409
         session['oidc_next'] = safe_next(request.args.get('next'))
         session['oidc_config'] = fingerprint(json.dumps(cfg, sort_keys=True))
         session['oidc_started'] = time.time()
@@ -816,12 +915,6 @@ def register(app):
         if link_user:
             session['oidc_link_user'] = link_user
         try:
-            # Only owner-approved origins may determine the callback destination.
-            origins = cfg['allowed_origins'].split()
-            incoming = request.host_url.rstrip('/')
-            redirect_uri = cfg['redirect_uri']
-            if incoming in origins:
-                redirect_uri = incoming + '/auth/oidc/callback'
             # Authlib stores this URI with the state and reuses it at token exchange.
             return oidc_client(cfg).authorize_redirect(redirect_uri, nonce=secrets.token_urlsafe(32))
         except Exception:
@@ -871,7 +964,7 @@ def register(app):
                                           (fingerprint(request.cookies.get(COOKIE, '')), link_user, time.time())).fetchone()
                     if not active:
                         raise ValueError('Owner session was revoked during linking')
-                    current = DEFAULTS | json.loads(conn.execute('SELECT value FROM auth_config WHERE id=1').fetchone()['value'])
+                    current = load_settings(conn.execute('SELECT value FROM auth_config WHERE id=1').fetchone()['value'])
                     if fingerprint(json.dumps(current, sort_keys=True)) != expected:
                         raise ValueError('SSO configuration changed')
                     current['subject'] = claims['sub']
