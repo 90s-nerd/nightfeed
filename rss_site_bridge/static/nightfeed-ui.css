@@ -477,3 +477,20 @@ body .settings-toggle-control { appearance: auto; width: 20px; height: 20px; fle
 }
 
 .item-card.item-deep-link { outline: 2px solid var(--nf-focus); outline-offset: 3px; scroll-margin-block: 80px; }
+
+/* Feedback stays on the initiating control; the rest of the page remains usable. */
+.action-pending { position: relative; cursor: progress; }
+.action-pending::after {
+  content: ''; display: inline-block; width: 13px; height: 13px;
+  margin-inline-start: 6px; border: 2px solid currentColor;
+  border-inline-end-color: transparent; border-radius: 50%; vertical-align: middle;
+  animation: action-spin .8s linear infinite;
+}
+.nav-link.action-pending .nav-icon { visibility: hidden; }
+.nav-link.action-pending::after { position: absolute; top: 50%; left: 18px; margin: -8px 0 0; }
+.action-announcement { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@keyframes action-spin { to { transform: rotate(360deg); } }
+@media (max-width: 767px) {
+  .nav-link.action-pending::after { top: 8px; left: calc(50% - 8px); margin: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .action-pending::after { animation: none; } }

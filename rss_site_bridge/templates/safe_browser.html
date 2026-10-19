@@ -516,6 +516,9 @@ playwright install chromium</pre>
       if (busy || polling || ended || !inputQueue.length) return;
       busy = true;
       const {action, payload, editingEpoch, revision} = inputQueue.shift();
+      const actionControl = action === 'navigate' ? browser.querySelector('[data-browser-address-form] button') :
+        ['back', 'forward', 'reload'].includes(action) ? browser.querySelector(`[data-browser-action="${action}"]`) : null;
+      window.nightfeedBusy(actionControl);
       const timer = setTimeout(() => {loading.textContent = action === 'click' ? 'Opening…' : 'Updating…'; loading.hidden = false;}, 180);
       try {
         const response = await fetch(browser.dataset.commandUrl, {
@@ -545,7 +548,7 @@ playwright install chromium</pre>
         refreshScreen().then(() => {loading.hidden = true;}).catch(error => {loading.textContent = error.message; loading.hidden = false;});
       } catch(error) { loading.textContent = error.message; loading.hidden = false; }
       finally {
-        clearTimeout(timer); busy = false;
+        clearTimeout(timer); window.nightfeedBusy(actionControl, false); busy = false;
         if (inputQueue.length) drainInputs();
         else if (Math.abs(pendingScrollDelta) >= .5) scheduleScrollFlush(0);
       }

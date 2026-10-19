@@ -266,7 +266,7 @@
     const refreshForm = event.currentTarget, button = refreshForm.querySelector('button');
     const status = document.querySelector('[data-refresh-result]');
     if (button.disabled) return;
-    button.disabled = true; button.setAttribute('aria-busy', 'true');
+    button.disabled = true; window.nightfeedBusy(button);
     window.clearNightfeedNotices();
     window.nightfeedStatus(status, 'Fetching feed…', 'progress'); status.classList.remove('editor-notice-error');
     try {
@@ -282,6 +282,6 @@
       window.nightfeedUnread(payload.unread_notifications);
       window.nightfeedStatus(status, payload.message);
     } catch (error) { status.classList.add('editor-notice-error'); window.nightfeedStatus(status, error.message, 'error'); }
-    finally { button.disabled = false; button.removeAttribute('aria-busy'); }
+    finally { button.disabled = false; window.nightfeedBusy(button, false); }
   });
 })();

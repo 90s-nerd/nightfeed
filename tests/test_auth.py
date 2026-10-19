@@ -535,6 +535,39 @@ class AuthTests(unittest.TestCase):
         self.assertIn(b'name="password"', forced.get('/auth/login').data)
         self.assertEqual(self.post('/auth/login', dict(username='owner', password=PASSWORD), client=forced).status_code, 302)
 
+    def test_expired_session_respects_automatic_sso_and_preserves_destination(self):
+        self.onboard()
+        self.cfg(oidc_enabled=True, subject='owner-subject', auto_login=True, disable_form=True)
+        with closing(connect(self.db)) as conn:
+            conn.execute('UPDATE auth_sessions SET expires=?', (time.time() - 1,))
+            conn.commit()
+        target = '/feeds?view=configuration'
+        response = self.client.get('/auth/login', query_string={'next': target})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(urlsplit(response.location).path, '/auth/oidc')
+        self.assertEqual(parse_qs(urlsplit(response.location).query)['next'], [target])
+        self.cfg(auto_login=False)
+        self.assertEqual(self.client.get('/auth/login').status_code, 200)
+
+    def test_explicit_logout_stays_signed_out_until_a_successful_sign_in(self):
+        self.onboard()
+        self.cfg(oidc_enabled=True, subject='owner-subject', auto_login=True, disable_form=False)
+        response = self.post('/auth/logout')
+        page = self.client.get(response.location)
+        self.assertIn('You’re signed out of Nightfeed.', page.text)
+        self.assertIn('Your SSO provider may still be signed in.', page.text)
+        # Reopening at the app start URL still respects the deliberate logout.
+        root = self.client.get('/')
+        self.assertEqual(self.client.get(root.location).status_code, 200)
+        self.assertEqual(self.client.get('/auth/login').status_code, 200)
+        self.assertEqual(self.login().status_code, 302)
+        with self.client.session_transaction() as state:
+            self.assertNotIn('signed_out', state)
+        with closing(connect(self.db)) as conn:
+            conn.execute('UPDATE auth_sessions SET expires=?', (time.time() - 1,))
+            conn.commit()
+        self.assertEqual(urlsplit(self.client.get('/auth/login').location).path, '/auth/oidc')
+
     def test_unlinked_sso_cannot_hide_local_login_or_start_sign_in(self):
         self.onboard()
         self.cfg(oidc_enabled=True, subject='', auto_login=True, disable_form=True)

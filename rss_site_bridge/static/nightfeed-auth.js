@@ -17,7 +17,8 @@
     if (redirecting) return;
     redirecting=true;mask();
     try { for (const key of Object.keys(sessionStorage)) if (key.startsWith('nightfeed-submissions:') || key.startsWith('nightfeed-assistant:')) sessionStorage.removeItem(key); } catch (_) {}
-    location.replace('/auth/login?sso=off&next='+encodeURIComponent(location.pathname+location.search));
+    // Let the configured automatic SSO policy renew an expired local session.
+    location.replace('/auth/login?next='+encodeURIComponent(location.pathname+location.search));
   };
   window.fetch = async (input, options = {}) => {
     const target = new URL(input instanceof Request ? input.url : input, location.href);

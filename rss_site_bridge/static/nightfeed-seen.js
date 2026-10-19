@@ -97,7 +97,7 @@
     const all = event.target.closest('[data-topics-seen-all]');
     if (all && !all.disabled) {
       const form = all.closest('form'), status = form.querySelector('[data-topics-seen-status]');
-      all.disabled = true;
+      all.disabled = true; window.nightfeedBusy(all);
       try {
         const response = await fetch('/api/topics/seen-all', {method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}, body: JSON.stringify({browse: form.querySelector('[name=browse]').value})});
@@ -106,7 +106,7 @@
         form.querySelector('[name=browse]').value = '';
         form.requestSubmit();
       } catch (_) { window.nightfeedStatus(status, 'Could not mark topics seen. Reload and try again.', 'error'); }
-      finally { all.disabled = false; }
+      finally { all.disabled = false; window.nightfeedBusy(all, false); }
       return;
     }
     const button = event.target.closest('[data-topic-save]');
@@ -114,7 +114,7 @@
     const topic = button.closest('[data-topic-id]');
     const saved = button.getAttribute('aria-pressed') !== 'true';
     const status = topic.querySelector('.topic-action-status');
-    button.disabled = true; status.textContent = '';
+    button.disabled = true; window.nightfeedBusy(button); status.textContent = '';
     try {
       const response = await fetch(`/api/topics/${topic.dataset.topicId}/save`, {method: 'POST',
         headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}, body: JSON.stringify({saved})});
@@ -128,7 +128,7 @@
         other.querySelector('span').textContent = saved ? 'Saved' : 'Save for later';
       });
     } catch (_) { status.textContent = 'Could not save this change. Try again.'; }
-    finally { button.disabled = false; }
+    finally { button.disabled = false; window.nightfeedBusy(button, false); }
   });
   window.addEventListener('pagehide', flush);
   window.addEventListener('online', () => { clearTimeout(retryTimer); retryTimer = null; flush(); });
