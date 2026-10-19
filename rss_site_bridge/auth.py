@@ -36,7 +36,7 @@ DEFAULTS = dict(session_minutes=720, idle_minutes=30, lockout_attempts=5,
                 lockout_minutes=15, auto_unlock=True, lockout_exclusions='',
                 oidc_enabled=False, oidc_use_name=False, auto_login=False, disable_form=False,
                 button_text='Sign in with SSO', discovery=True, issuer='',
-                client_id='', client_secret='', subject='', redirect_uri='',
+                client_id='', client_secret='', subject='', redirect_uri='', allowed_origins='',
                 authorization_endpoint='', token_endpoint='', jwks_uri='', logout_endpoint='',
                 trusted_proxies='', proxy_hops=0)
 SCOPES = {'rss:read': 'Read RSS XML', 'feeds:read': 'Read feed list through API',
@@ -239,6 +239,17 @@ def parse_settings(form, existing, key):
     result['button_text'] = result['button_text'] or DEFAULTS['button_text']
     for name in ('issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri', 'logout_endpoint', 'redirect_uri'):
         result[name] = https_url(str(form.get(name, '')), name.replace('_', ' ').capitalize())
+    origins = str(form.get('allowed_origins', '')).replace(',', ' ').split()
+    if len(origins) > 20:
+        raise ValueError('Too many allowed site origins.')
+    normalized = []
+    for origin in origins:
+        value = https_url(origin, 'Allowed site origin')
+        parts = urlsplit(value)
+        if parts.path not in ('', '/') or parts.query or parts.fragment:
+            raise ValueError('Allowed site origins must contain only an HTTPS scheme and host, with an optional port.')
+        normalized.append('https://' + parts.netloc.lower())
+    result['allowed_origins'] = ' '.join(dict.fromkeys(normalized))
     secret = str(form.get('client_secret', ''))
     if len(secret) > 4096:
         raise ValueError('Client secret is too long.')
@@ -802,7 +813,14 @@ def register(app):
         if link_user:
             session['oidc_link_user'] = link_user
         try:
-            return oidc_client(cfg).authorize_redirect(cfg['redirect_uri'], nonce=secrets.token_urlsafe(32))
+            # Only owner-approved origins may determine the callback destination.
+            origins = cfg['allowed_origins'].split()
+            incoming = request.host_url.rstrip('/')
+            redirect_uri = cfg['redirect_uri']
+            if incoming in origins:
+                redirect_uri = incoming + '/auth/oidc/callback'
+            # Authlib stores this URI with the state and reuses it at token exchange.
+            return oidc_client(cfg).authorize_redirect(redirect_uri, nonce=secrets.token_urlsafe(32))
         except Exception:
             logging.getLogger(__name__).warning('OIDC authorization failed; provider details omitted')
             return render_template('auth.html', mode='error', error='SSO is unavailable. Contact the instance owner.'), 502

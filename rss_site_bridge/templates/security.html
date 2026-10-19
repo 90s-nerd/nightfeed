@@ -31,6 +31,8 @@
 <label>Client secret<input name="client_secret" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="{{ 'Saved · leave blank to keep' if config.has_secret else 'Required for SSO' }}" maxlength="4096"></label>
 <label>Owner subject (sub, optional until linked)<input name="subject" value="{{ config.subject }}" maxlength="255"></label>
 <small>After saving SSO settings, use “Link owner SSO identity” below to securely capture your provider subject, or enter its exact value here. Other provider users cannot sign in. Use your provider's MFA policy to protect SSO.</small>
+<label>Allowed site origins<textarea name="allowed_origins" rows="3" maxlength="4096" placeholder="https://nightfeed.example.com https://internal.example.com">{{ config.allowed_origins }}</textarea></label>
+<p class="muted">Optional HTTPS origins, separated by spaces or commas. Sign-in on a listed origin uses that origin plus /auth/oidc/callback. Register each callback with your provider. Other origins use the saved callback below.</p>
 <label>Callback URL<input name="redirect_uri" type="url" value="{{ config.redirect_uri }}" placeholder="https://nightfeed.example.com/auth/oidc/callback"></label>
 <small>Filled automatically from this site's address. Register this exact URL with your provider. You can edit it if your public address differs. Use authorization code flow, PKCE S256 and a confidential client.</small>
 <label><input type="checkbox" name="discovery" {% if config.discovery %}checked{% endif %}>Discover endpoints automatically from the issuer</label>
