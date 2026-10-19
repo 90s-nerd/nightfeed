@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ 'Set up' if mode == 'setup' else 'Sign in' }} · Nightfeed</title>
+{% if mode == 'redirect' %}<meta http-equiv="refresh" content="0;url={{ redirect_url }}">{% endif %}
 <link rel="icon" href="{{ url_for('static', filename='nightfeed-mark.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-tokens.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='nightfeed-ui.css') }}">
@@ -24,6 +25,8 @@
 <label>Username<input name="username" required maxlength="64" autocomplete="username" autofocus></label>
 <label>Password<input name="password" type="password" required maxlength="256" autocomplete="current-password"></label>
 <button class="btn btn-primary">Sign in</button></form>{% endif %}
-{% if config.oidc_enabled %}<a class="btn btn-secondary" href="{{ url_for('auth.oidc_start', next=next) }}">{{ config.button_text }}</a>{% endif %}
+{% if config.oidc_enabled and config.subject %}{% if show_form %}<div class="auth-divider">or</div>{% endif %}<a class="btn btn-secondary" href="{{ url_for('auth.oidc_start', next=next) }}">{{ config.button_text }}</a>
+{% elif config.oidc_enabled %}<p>SSO setup is incomplete. Sign in locally, then link your SSO identity in Security settings.</p>{% endif %}
+{% elif mode == 'redirect' %}<p>Redirecting to your SSO provider…</p><a class="btn btn-secondary" href="{{ redirect_url }}">Continue to SSO</a>
 {% else %}<a class="btn btn-secondary" href="{{ url_for('auth.login', sso='off') }}">Return to sign in</a>{% endif %}
 </main></body></html>
