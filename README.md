@@ -313,13 +313,15 @@ separately if a key may have been exposed.
 ### OpenID Connect / Authelia
 
 Under **Settings → Security**, enter the exact HTTPS issuer, client ID, and client secret.
-The callback URL is filled from the current site address and can be overridden.
-For multiple hostnames, enter each HTTPS origin under **Allowed site origins**.
-SSO started on a listed origin uses that origin plus `/auth/oidc/callback`,
-independently of MCP. Register every callback with your provider. Other origins
-continue to use the saved callback, preserving existing single-domain setups.
+Under **Allowed site origins**, list the HTTP or HTTPS site addresses that can start SSO.
+The current origin, including its incoming scheme, is suggested automatically. For multiple hostnames, list each
+origin in its own row; use + to add another and − to remove one. Nightfeed generates the callback from the
+approved incoming origin plus `/auth/oidc/callback`, preserving HTTP or HTTPS; there is no editable callback
+URL and no cross-host fallback. Register each generated callback with your provider.
+Existing callback settings are imported as an allowed origin when no origin list
+has been configured. Each origin must match the incoming scheme, host and port. Nightfeed never upgrades HTTP to HTTPS when choosing a callback.
 Register a
-confidential authorization-code client at your provider with that exact redirect URI,
+confidential authorization-code client at your provider with those exact redirect URIs,
 `openid profile` scopes and PKCE S256. The default token authentication method is
 `client_secret_basic`. See [Authelia client configuration](https://www.authelia.com/configuration/identity-providers/openid-connect/clients/).
 
@@ -378,12 +380,19 @@ configure your reverse proxy to redact credentials and OIDC callback queries too
 
 ### Trusted proxies
 
-Forwarded headers are ignored by default. Configure proxy IPs/CIDRs and the number of
-forwarded hops under **Settings → Security**, or explicitly override them with
+Forwarded headers are ignored by default. Under **Settings → Security**, add a row
+for each proxy IP/CIDR and its client-IP hop count. Use + and − to manage rows.
+The most specific matching network determines the hop count. Existing shared-hop
+configurations are imported as individual rows. You can explicitly override them with
 `NIGHTFEED_TRUSTED_PROXIES` and `NIGHTFEED_TRUSTED_PROXY_HOPS`. Only connections from
-a listed direct proxy may supply `X-Forwarded-For` and `X-Forwarded-Proto`. Your proxy
+a listed direct proxy may supply `X-Forwarded-For`. The hop count applies only to
+client IP resolution. The original browser scheme comes from the incoming
+connection, or a single `X-Forwarded-Proto: http` or `https` value supplied by a
+listed direct proxy. Scheme forwarding is independent of the IP hop count;
+ambiguous multi-value scheme headers are ignored. Your proxy
 must preserve the original Host header and overwrite incoming forwarded headers.
-Forwarded host, port and prefix headers are never trusted. A typical single-proxy
+Forwarded host, port and prefix headers are never trusted. Enforce HTTPS
+at your reverse proxy for every configured HTTPS origin. A typical single-proxy
 deployment uses one hop and the proxy's exact address. Use `Public base URL` for a
 fixed external feed hostname. Do not expose the backend port publicly when deploying
 behind a reverse proxy.
@@ -547,7 +556,7 @@ GitHub setup notes:
 
 Reverse proxy note:
 
-- Nightfeed accepts forwarded client IP and HTTPS headers only from explicitly configured trusted proxies. Configure them under Settings → Security; preserve the Host header at your proxy.
+- Nightfeed accepts forwarded client IP headers only from explicitly configured trusted proxies. The browser scheme is accepted from a listed direct proxy independently of client-IP hop count. Configure them under Settings → Security; preserve the Host header at your proxy.
 - If you want feed URLs to always use a fixed public host, set `Public base URL` in the Nightfeed settings page.
 
 ## Older Pip Fallback

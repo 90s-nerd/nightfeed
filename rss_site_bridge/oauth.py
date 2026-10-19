@@ -122,6 +122,28 @@ def challenge(db, invalid=False):
     return response
 
 
+def require_public_origin(db):
+    if getattr(g, 'oauth_issuer', None):
+        return None
+    with closing(connect(db)) as conn:
+        enabled, issuer = configuration(conn)
+    if not enabled:
+        return jsonify(error='MCP is disabled in Settings.'), 404
+    if not issuer:
+        return jsonify(error='Configure the public HTTPS Nightfeed URL in MCP settings.'), 503
+    if request.host_url.rstrip('/') != issuer:
+        return origin_mismatch(issuer)
+    g.oauth_issuer = issuer
+    return None
+
+
+def origin_mismatch(issuer):
+    # Public origins are already exposed by discovery; never include credentials,
+    # callback queries or forwarded header contents in this diagnostic response.
+    return jsonify(error='Use the configured public HTTPS Nightfeed URL.',
+                   expected_origin=issuer, received_origin=request.host_url.rstrip('/')), 400
+
+
 def authenticate_mcp(db):
     """Only an access token is accepted here, never a cookie or an API key."""
     authorization = request.authorization
@@ -131,7 +153,7 @@ def authenticate_mcp(db):
     with closing(connect(db)) as conn:
         _, issuer = configuration(conn)
         if issuer and request.host_url.rstrip('/') != issuer:
-            return jsonify(error='Use the configured public HTTPS Nightfeed URL.'), 400
+            return origin_mismatch(issuer)
         token = conn.execute('SELECT * FROM auth_oauth_tokens WHERE access_hash=? AND expires>?',
                              (fingerprint(raw), time.time())).fetchone()
         grant = conn.execute('SELECT * FROM auth_oauth_grants WHERE id=?', (token['grant_id'],)).fetchone() if token else None
@@ -286,14 +308,9 @@ def register(app):
     @bp.before_request
     def require_configured_origin():
         request.max_content_length = 16384
-        with closing(connect(db)) as conn:
-            enabled, issuer = configuration(conn)
-        if request.endpoint in ('oauth.connections', 'oauth.disconnect'): return None
-        if not enabled: return jsonify(error='MCP is disabled in Settings.'), 404
-        if not issuer: return jsonify(error='Configure the public HTTPS Nightfeed URL in MCP settings.'), 503
-        if request.host_url.rstrip('/') != issuer:
-            return jsonify(error='Use the configured public HTTPS Nightfeed URL.'), 400
-        g.oauth_issuer = issuer
+        if request.endpoint in ('oauth.connections', 'oauth.disconnect'):
+            return None
+        return require_public_origin(db)
 
     @bp.after_request
     def consent_headers(response):

@@ -153,10 +153,10 @@ class AuthTests(unittest.TestCase):
                     with self.subTest(endpoint=rule.endpoint, method=method):
                         response = client.open(path, method=method)
                         from rss_site_bridge.oauth import PUBLIC as OAUTH_PUBLIC
-                        if rule.endpoint in OAUTH_PUBLIC or rule.endpoint == 'assistant.mcp':
-                            # Protocol discovery/token routes are public, but the
-                            # default-disabled MCP feature exposes no endpoints.
-                            self.assertEqual(response.status_code,404)
+                        if rule.endpoint in OAUTH_PUBLIC or rule.endpoint in ('assistant.mcp', 'oauth.authorize'):
+                            # Disabled MCP rejects discovery, consent and token
+                            # routes before starting authentication.
+                            self.assertEqual(response.status_code, 404)
                         else:
                             self.assertIn(response.status_code, (301, 302, 401))
                         self.assertNotIn(b'PRIVATE_', response.data)
@@ -432,42 +432,46 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(self.client.post('/settings/security', data=data).status_code, 403)
         self.assertEqual(self.post('/settings/security', data).status_code, 200)
         self.assertEqual(other.get('/').status_code, 302)
-        self.assertEqual(settings(self.db)['trusted_proxies'], '10.0.0.2/32')
+        self.assertEqual(settings(self.db)['proxy_rules'], [dict(network='10.0.0.2/32', hops=1)])
         page = BeautifulSoup(self.client.get('/settings/security').data, 'html.parser')
         self.assertIsNone(page.find('input', attrs={'name': 'current_password'}))
 
-    def test_callback_url_is_suggested_saved_when_blank_and_overridable(self):
+    def test_origins_are_suggested_and_callback_field_is_removed(self):
         self.onboard()
-        response = self.client.get('/settings/security', headers={'X-Forwarded-Host': 'untrusted.test'})
-        page = BeautifulSoup(response.data, 'html.parser')
-        self.assertEqual(page.find('input', attrs={'name': 'redirect_uri'})['value'],
-                         'https://localhost/auth/oidc/callback')
+        page = BeautifulSoup(self.client.get('/settings/security',
+            headers={'X-Forwarded-Host': 'untrusted.test'}).data, 'html.parser')
+        self.assertIsNone(page.find('input', attrs={'name': 'redirect_uri'}))
+        self.assertEqual(page.find('input', attrs={'name': 'allowed_origin'})['value'], '')
+        self.assertEqual(page.find('input', attrs={'name': 'allowed_origin'})['placeholder'], 'http://localhost')
         data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
-        data.update(auto_unlock='on', discovery='on', current_password=PASSWORD, redirect_uri='')
+        data.update(auto_unlock='on', discovery='on')
         self.assertEqual(self.post('/settings/security', data).status_code, 200)
-        self.assertEqual(settings(self.db)['redirect_uri'], 'https://localhost/auth/oidc/callback')
-        data['redirect_uri'] = 'https://public.example.test/auth/oidc/callback'
-        self.assertEqual(self.post('/settings/security', data).status_code, 200)
-        self.assertEqual(settings(self.db)['redirect_uri'], data['redirect_uri'])
-        page = BeautifulSoup(self.client.get('/settings/security').data, 'html.parser')
-        self.assertEqual(page.find('input', attrs={'name': 'redirect_uri'})['value'], data['redirect_uri'])
+        self.assertEqual(settings(self.db)['allowed_origins'], '')
+        self.assertNotIn('redirect_uri', settings(self.db))
+
+    def test_legacy_callback_imports_origin_without_retaining_callback(self):
+        self.onboard()
+        self.cfg(redirect_uri='https://legacy.test/custom/callback')
+        cfg = settings(self.db)
+        self.assertEqual(cfg['allowed_origins'], 'https://legacy.test')
+        self.assertNotIn('redirect_uri', cfg)
 
     def test_allowed_site_origins_validation_and_storage(self):
         self.onboard()
         data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
         data.update(auto_unlock='on', discovery='on',
-                    allowed_origins='https://PUBLIC.test/, https://internal.test:8443 https://PUBLIC.test')
+                    allowed_origins='https://PUBLIC.test/, https://internal.test:8443 https://PUBLIC.test http://plain.test:8080')
         self.post('/settings/security', data)
         self.assertEqual(settings(self.db)['allowed_origins'],
-                         'https://public.test https://internal.test:8443')
-        for invalid in ('http://public.test', 'https://public.test/path',
+                         'https://public.test https://internal.test:8443 http://plain.test:8080')
+        for invalid in ('ftp://public.test', 'https://public.test/path',
                         'https://public.test?query=1', 'https://user:secret@public.test',
                         'https://public.test#fragment'):
             with self.subTest(invalid=invalid):
                 data['allowed_origins'] = invalid
                 self.post('/settings/security', data)
                 self.assertEqual(settings(self.db)['allowed_origins'],
-                                 'https://public.test https://internal.test:8443')
+                                 'https://public.test https://internal.test:8443 http://plain.test:8080')
 
     def test_sso_owner_session_can_save_security_without_local_password(self):
         self.onboard()
@@ -479,6 +483,67 @@ class AuthTests(unittest.TestCase):
         data.update(auto_unlock='on', discovery='on', idle_minutes='45')
         self.assertEqual(self.post('/settings/security', data).status_code, 200)
         self.assertEqual(settings(self.db)['idle_minutes'], 45)
+
+    def test_repeatable_security_rows_save_reload_and_clear(self):
+        from werkzeug.datastructures import MultiDict
+        self.onboard()
+        data = MultiDict({k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)})
+        data.update(dict(auto_unlock='on', discovery='on'))
+        for network, hops in [('10.0.0.2', '1'), ('10.0.1.0/24', '2'), ('', '1')]:
+            data.add('proxy_network', network)
+            data.add('proxy_hop', hops)
+        for origin in ['https://public.test', 'http://local.test:8080', '']:
+            data.add('allowed_origin', origin)
+        self.assertEqual(self.post('/settings/security', data).status_code, 200)
+        cfg = settings(self.db)
+        expected = [dict(network='10.0.0.2/32', hops=1), dict(network='10.0.1.0/24', hops=2)]
+        self.assertEqual(cfg['proxy_rules'], expected)
+        self.assertEqual(cfg['allowed_origins'], 'https://public.test http://local.test:8080')
+        page = BeautifulSoup(self.client.get('/settings/security').data, 'html.parser')
+        self.assertEqual([v['value'] for v in page.select('[name=proxy_network]')], ['10.0.0.2/32', '10.0.1.0/24'])
+        self.assertEqual([v['value'] for v in page.select('[name=proxy_hop]')], ['1', '2'])
+        self.assertEqual(len(page.select('[name=allowed_origin]')), 2)
+        bad = data.copy()
+        bad.add('proxy_network', '10.0.0.2/32')
+        bad.add('proxy_hop', '3')
+        response = self.post('/settings/security', bad)
+        self.assertIn(b'The same proxy cannot have different hop counts', response.data)
+        self.assertEqual(settings(self.db)['proxy_rules'], expected)
+        data.setlist('proxy_network', [''])
+        data.setlist('proxy_hop', ['1'])
+        data.setlist('allowed_origin', [''])
+        self.post('/settings/security', data)
+        self.assertEqual(settings(self.db)['proxy_rules'], [])
+        self.assertEqual(settings(self.db)['allowed_origins'], '')
+
+    def test_client_ip_uses_matching_proxy_hops_and_specific_network(self):
+        from flask import request
+        @self.app.get('/test/proxy-rows')
+        def proxy_rows():
+            return request.remote_addr
+        self.onboard()
+        os.environ.pop('NIGHTFEED_TRUSTED_PROXIES')
+        os.environ.pop('NIGHTFEED_TRUSTED_PROXY_HOPS')
+        self.cfg(proxy_rules=[dict(network='10.0.0.0/24', hops=1),
+                              dict(network='10.0.1.0/24', hops=2),
+                              dict(network='10.0.1.5/32', hops=1),
+                              dict(network='fd00::/8', hops=2)])
+        headers = {'X-Forwarded-For': '198.51.100.9, 192.0.2.5'}
+        for peer, expected in [('10.0.0.4', '192.0.2.5'), ('10.0.1.4', '198.51.100.9'),
+                               ('10.0.1.5', '192.0.2.5'), ('fd00::2', '198.51.100.9'),
+                               ('203.0.113.2', '203.0.113.2')]:
+            with self.subTest(peer=peer):
+                response = self.client.get('/test/proxy-rows', headers=headers,
+                    environ_overrides={'REMOTE_ADDR': peer})
+                self.assertEqual(response.text, expected)
+        with patch.dict(os.environ, NIGHTFEED_TRUSTED_PROXY_HOPS='1'):
+            response = self.client.get('/test/proxy-rows', headers=headers,
+                environ_overrides={'REMOTE_ADDR': '10.0.1.4'})
+            self.assertEqual(response.text, '192.0.2.5')
+        with patch.dict(os.environ, NIGHTFEED_TRUSTED_PROXIES='203.0.113.2/32', NIGHTFEED_TRUSTED_PROXY_HOPS='2'):
+            response = self.client.get('/test/proxy-rows', headers=headers,
+                environ_overrides={'REMOTE_ADDR': '203.0.113.2'})
+            self.assertEqual(response.text, '198.51.100.9')
 
     def test_security_activity_pagination_is_bounded_and_stable_during_inserts(self):
         self.onboard()
@@ -588,7 +653,8 @@ class AuthTests(unittest.TestCase):
         self.onboard()
         data = {k: str(v) for k, v in DEFAULTS.items() if not isinstance(v, bool)}
         data.update(oidc_enabled='on', discovery='on', issuer='https://provider.test',
-                    client_id='nightfeed', client_secret='private-client-secret', current_password=PASSWORD)
+                    client_id='nightfeed', client_secret='private-client-secret', current_password=PASSWORD,
+                    allowed_origin='https://localhost')
         for option in ('auto_login', 'disable_form'):
             with self.subTest(option=option):
                 response = self.post('/settings/security', data | {option: 'on'})
@@ -607,6 +673,7 @@ class OIDCTests(unittest.TestCase):
     # Only these protocol tests need the provider; inherited boundary tests stay in AuthTests.
     def configure(self, discovery=True):
         self.onboard()
+        self.app.config['PREFERRED_URL_SCHEME'] = 'https'
         self.signing_key = RSAKey.generate_key(2048)
         self.signing_key.ensure_kid()
         self.claim_changes = {}
@@ -677,27 +744,31 @@ class OIDCTests(unittest.TestCase):
         from bs4 import BeautifulSoup
         from urllib.parse import urlencode
         self.configure()
+        os.environ['NIGHTFEED_TRUSTED_PROXIES'] = '127.0.0.1/32'
         with closing(connect(self.db)) as conn:
             conn.execute('UPDATE assistant_config SET mcp_enabled=1,mcp_public_url=?',(ISSUER,))
             conn.commit()
-        self.cfg(allowed_origins=ISSUER)
+        self.cfg(allowed_origins=ISSUER, auto_login=True)
         client = register_client(self.app)
         destination = '/oauth/authorize?' + urlencode(dict(client_id=client['client_id'],redirect_uri=CALLBACK,
             response_type='code',resource=ISSUER+'/mcp',code_challenge=create_s256_code_challenge(VERIFIER),code_challenge_method='S256'))
         browser = self.app.test_client()
-        response = browser.get('/auth/oidc',query_string=dict(next=destination),base_url=ISSUER)
+        response = browser.get('/auth/login', query_string=dict(next=destination), base_url=ISSUER.replace('https:', 'http:'), headers={'X-Forwarded-Proto': 'https'})
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.location.startswith('/auth/oidc?'))
+        response = browser.get(response.location, base_url=ISSUER.replace('https:', 'http:'), headers={'X-Forwarded-Proto': 'https'})
         params = parse_qs(urlsplit(response.location).query)
         self.assertEqual(params['redirect_uri'], [ISSUER + '/auth/oidc/callback'])
         self.nonce = params['nonce'][0]
-        response = browser.get('/auth/oidc/callback',query_string=dict(state=params['state'][0],code='private-auth-code'),base_url=ISSUER)
+        response = browser.get('/auth/oidc/callback',query_string=dict(state=params['state'][0],code='private-auth-code'),base_url=ISSUER.replace('https:', 'http:'), headers={'X-Forwarded-Proto': 'https'})
         self.assertEqual(response.status_code,302,response.data)
         self.assertEqual(response.location,destination)
         token_call = next(call for call in self.requests if call[1].endswith('/token'))
         self.assertEqual(token_call[2]['data']['redirect_uri'], ISSUER + '/auth/oidc/callback')
-        response = browser.get(destination,base_url=ISSUER)
+        response = browser.get(destination,base_url=ISSUER.replace('https:', 'http:'), headers={'X-Forwarded-Proto': 'https'})
         self.assertEqual(response.status_code,200,response.data)
         soup=BeautifulSoup(response.data,'html.parser')
-        response=browser.post(destination,base_url=ISSUER,data=dict(decision='allow',
+        response=browser.post(destination,base_url=ISSUER.replace('https:', 'http:'), headers={'X-Forwarded-Proto': 'https'},data=dict(decision='allow',
             consent_ticket=soup.select_one('[name=consent_ticket]')['value'],auth_csrf=soup.select_one('[name=auth_csrf]')['value']))
         self.assertEqual(response.status_code,302,response.data)
         code=parse_qs(urlsplit(response.location).query)['code'][0]
@@ -710,9 +781,65 @@ class OIDCTests(unittest.TestCase):
             with self.subTest(origin=origin):
                 response = self.app.test_client().get('/auth/oidc', base_url=origin,
                     headers={'X-Forwarded-Host': 'public.test'})
-                expected = origin if origin != 'https://untrusted.test' else 'https://localhost'
-                self.assertEqual(parse_qs(urlsplit(response.location).query)['redirect_uri'],
-                                 [expected + '/auth/oidc/callback'])
+                if origin == 'https://untrusted.test':
+                    self.assertEqual(response.status_code, 409)
+                    self.assertNotIn('Location', response.headers)
+                else:
+                    self.assertEqual(parse_qs(urlsplit(response.location).query)['redirect_uri'],
+                                     [origin + '/auth/oidc/callback'])
+
+    def test_unlisted_public_origin_never_falls_back_to_internal_callback(self):
+        self.configure()
+        self.cfg(allowed_origins='https://internal.test', auto_login=True)
+        browser = self.app.test_client()
+        response = browser.get('/auth/login?next=/oauth/authorize', base_url='https://public.test')
+        response = browser.get(response.location, base_url='https://public.test')
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn('Location', response.headers)
+        self.assertFalse(self.requests)
+        with browser.session_transaction() as state:
+            self.assertNotIn('oidc_next', state)
+
+    def test_callback_preserves_incoming_scheme_and_requires_exact_origin(self):
+        self.configure()
+        self.cfg(allowed_origins='http://public.test:8080 https://public.test:8443')
+        cases = [('http://public.test:8080', 302), ('https://public.test:8443', 302),
+                 ('https://public.test:8080', 409), ('http://public.test:8443', 409),
+                 ('http://public.test', 409), ('https://unlisted.test:8443', 409)]
+        for origin, status in cases:
+            with self.subTest(origin=origin):
+                response = self.app.test_client().get('/auth/oidc', base_url=origin)
+                self.assertEqual(response.status_code, status)
+                if status == 302:
+                    self.assertEqual(parse_qs(urlsplit(response.location).query)['redirect_uri'],
+                                     [origin + '/auth/oidc/callback'])
+                else:
+                    self.assertNotIn('Location', response.headers)
+
+    def test_untrusted_forwarded_scheme_does_not_upgrade_http(self):
+        self.configure()
+        self.cfg(allowed_origins='https://public.test')
+        response = self.app.test_client().get('/auth/oidc', base_url='http://public.test',
+            headers={'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'public.test'})
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(self.requests)
+
+    def test_oidc_origin_resolves_through_trusted_proxy_chain(self):
+        self.configure()
+        os.environ.pop('NIGHTFEED_TRUSTED_PROXY_HOPS')
+        os.environ.pop('NIGHTFEED_TRUSTED_PROXIES')
+        self.cfg(allowed_origins='https://public.test:443', trusted_proxies='10.0.0.2/32', proxy_hops=2)
+        for forwarded_scheme, expected_status in [('https, http', 409), ('https', 302), ('http', 409)]:
+            with self.subTest(forwarded_scheme=forwarded_scheme):
+                response = self.app.test_client().get('/auth/oidc', base_url='http://public.test',
+                    headers={'X-Forwarded-Proto': forwarded_scheme, 'X-Forwarded-Host': 'internal.test'},
+                    environ_overrides={'REMOTE_ADDR': '10.0.0.2'})
+                self.assertEqual(response.status_code, expected_status)
+                if expected_status == 302:
+                    self.assertEqual(parse_qs(urlsplit(response.location).query)['redirect_uri'],
+                                     ['https://public.test/auth/oidc/callback'])
+                else:
+                    self.assertNotIn('Location', response.headers)
 
     def test_protocol_rejects_wrong_state_before_token_exchange(self):
         self.configure()

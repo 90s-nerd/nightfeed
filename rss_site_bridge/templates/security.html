@@ -20,9 +20,16 @@
 <small>Exclusions bypass password lockout, including the account lock. Use only networks you control. No networks are excluded by default. With automatic unlock disabled, use an active owner session or the offline recovery command.</small>
 </fieldset>
 <fieldset><legend>Trusted reverse proxy</legend>
-<label>Trusted proxy IP addresses and networks<input name="trusted_proxies" value="{{ config.trusted_proxies }}" placeholder="172.20.0.2/32" maxlength="2048"></label>
-<label>Forwarded proxy hops<input type="number" name="proxy_hops" min="0" max="5" value="{{ config.proxy_hops }}" required></label>
-<small>Use 0 for direct connections. Forwarded client IP and HTTPS headers are accepted only when the direct connection comes from a listed proxy. Your proxy must overwrite incoming forwarded headers. Server environment overrides take precedence. Forwarded host headers are never trusted.</small>
+<div class="security-entries" data-security-entries>
+{% for proxy in config.proxy_rules or [{'network':'', 'hops':1}] %}
+<div class="security-entry-row proxy-entry" data-entry-row>
+<label>Proxy address or network<input name="proxy_network" value="{{ proxy.network }}" placeholder="172.20.0.2/32" maxlength="128"></label>
+<label>Client IP hops<input type="number" name="proxy_hop" min="0" max="5" value="{{ proxy.hops }}" required></label>
+<button class="btn btn-secondary entry-icon" type="button" data-entry-add aria-label="Add trusted proxy" title="Add trusted proxy">+</button>
+<button class="btn btn-secondary entry-icon" type="button" data-entry-remove aria-label="Remove trusted proxy" title="Remove trusted proxy">−</button>
+</div>{% endfor %}
+</div>
+<small>Use 0 to ignore forwarded client IPs. Forwarded client IP headers are accepted only when the direct connection comes from a listed proxy. The hop count is only for client IPs. A single original-scheme header is accepted from a listed proxy independently of the hop count. Your proxy must overwrite incoming forwarded headers. Server environment overrides take precedence. Forwarded host headers are never trusted.</small>
 </fieldset>
 <fieldset><legend>OpenID Connect</legend>
 <label><input type="checkbox" name="oidc_enabled" {% if config.oidc_enabled %}checked{% endif %}>Enable SSO</label>
@@ -31,10 +38,15 @@
 <label>Client secret<input name="client_secret" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore placeholder="{{ 'Saved · leave blank to keep' if config.has_secret else 'Required for SSO' }}" maxlength="4096"></label>
 <label>Owner subject (sub, optional until linked)<input name="subject" value="{{ config.subject }}" maxlength="255"></label>
 <small>After saving SSO settings, use “Link owner SSO identity” below to securely capture your provider subject, or enter its exact value here. Other provider users cannot sign in. Use your provider's MFA policy to protect SSO.</small>
-<label>Allowed site origins<textarea name="allowed_origins" rows="3" maxlength="4096" placeholder="https://nightfeed.example.com https://internal.example.com">{{ config.allowed_origins }}</textarea></label>
-<p class="muted">Optional HTTPS origins, separated by spaces or commas. Sign-in on a listed origin uses that origin plus /auth/oidc/callback. Register each callback with your provider. Other origins use the saved callback below.</p>
-<label>Callback URL<input name="redirect_uri" type="url" value="{{ config.redirect_uri }}" placeholder="https://nightfeed.example.com/auth/oidc/callback"></label>
-<small>Filled automatically from this site's address. Register this exact URL with your provider. You can edit it if your public address differs. Use authorization code flow, PKCE S256 and a confidential client.</small>
+<div class="security-entries" data-security-entries>
+{% for origin in config.allowed_origins.split() or [''] %}
+<div class="security-entry-row origin-entry" data-entry-row>
+<label>Allowed origin<input name="allowed_origin" type="url" value="{{ origin }}" placeholder="{{ suggested_origin }}" maxlength="2048"></label>
+<button class="btn btn-secondary entry-icon" type="button" data-entry-add aria-label="Add allowed origin" title="Add allowed origin">+</button>
+<button class="btn btn-secondary entry-icon" type="button" data-entry-remove aria-label="Remove allowed origin" title="Remove allowed origin">−</button>
+</div>{% endfor %}
+</div>
+<p class="muted">Sign-in returns to the matching origin at /auth/oidc/callback. Register that callback with your SSO provider.</p>
 <label><input type="checkbox" name="discovery" {% if config.discovery %}checked{% endif %}>Discover endpoints automatically from the issuer</label>
 <label>Authorization endpoint (manual mode)<input name="authorization_endpoint" type="url" value="{{ config.authorization_endpoint }}"></label>
 <label>Token endpoint (manual mode)<input name="token_endpoint" type="url" value="{{ config.token_endpoint }}"></label>
@@ -60,3 +72,5 @@
 </div></nav></section>
 {% include 'components/unsaved_dialog.html' %}
 </div>{% endblock %}
+
+{% block scripts %}{{ super() }}<script src="{{ url_for('static', filename='nightfeed-security.js') }}" defer></script>{% endblock %}
