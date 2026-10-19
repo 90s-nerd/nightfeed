@@ -21,6 +21,7 @@
 <label>Confirm password<input name="confirm_password" type="password" required minlength="15" maxlength="256" autocomplete="new-password"></label>
 <p>Use a unique passphrase of at least 15 characters.</p><button class="btn btn-primary">Create account</button></form>
 {% elif mode == 'login' %}
+{% if signed_out %}<p role="status">You’re signed out of Nightfeed.{% if config.oidc_enabled and config.subject and not config.logout_endpoint %} Your SSO provider may still be signed in. Choose {{ config.button_text }} to return.{% endif %}</p>{% endif %}
 {% if show_form %}<form method="post"><input type="hidden" name="auth_csrf" value="{{ auth_csrf }}"><input type="hidden" name="next" value="{{ next }}">
 <label>Username<input name="username" required maxlength="64" autocomplete="username" autofocus></label>
 <label>Password<input name="password" type="password" required maxlength="256" autocomplete="current-password"></label>

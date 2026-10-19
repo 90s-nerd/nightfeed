@@ -379,3 +379,81 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('beforeunload', event => {if (dirty()) {event.preventDefault(); event.returnValue = '';}});
   document.querySelector('[data-form-error]')?.focus();
 });
+
+// Explicit action feedback: background requests never acquire a busy control.
+(() => {
+  const pending = new Map();
+  let announcement;
+  window.nightfeedBusy = (control, busy = true, label = '') => {
+    if (!control) return;
+    if (!busy) {
+      const state = pending.get(control);
+      if (!state) return;
+      control.classList.remove('action-pending');
+      if (state.ariaBusy === null) control.removeAttribute('aria-busy');
+      else control.setAttribute('aria-busy', state.ariaBusy);
+      control.style.minWidth = state.minWidth;
+      state.text.forEach(([node, value]) => { node.textContent = value; });
+      pending.delete(control);
+      if (!pending.size && announcement) announcement.textContent = '';
+      return;
+    }
+    if (pending.has(control)) return;
+    const state = {ariaBusy: control.getAttribute('aria-busy'), minWidth: control.style.minWidth, text: []};
+    pending.set(control, state);
+    control.style.minWidth = `${control.getBoundingClientRect().width}px`;
+    if (label) {
+      // Preserve icons, nested controls, and their listeners.
+      const walker = document.createTreeWalker(control, NodeFilter.SHOW_TEXT);
+      let node, replaced = false;
+      while ((node = walker.nextNode())) {
+        if (!node.textContent.trim() || node.parentElement.closest('svg, [hidden]')) continue;
+        state.text.push([node, node.textContent]);
+        node.textContent = replaced ? '' : label; replaced = true;
+      }
+    }
+    control.classList.add('action-pending');
+    control.setAttribute('aria-busy', 'true');
+    if (!announcement) {
+      announcement = document.createElement('span');
+      announcement.className = 'action-announcement';
+      announcement.setAttribute('role', 'status');
+      document.body.append(announcement);
+    }
+    announcement.textContent = label || `${control.getAttribute('aria-label') || control.textContent.trim()} in progress…`;
+  };
+  const reset = () => [...pending.keys()].forEach(control => window.nightfeedBusy(control, false));
+  window.addEventListener('pageshow', reset);
+  // Block only repeated activation of the control performing an action.
+  document.addEventListener('click', event => {
+    if (event.target.closest('.action-pending')) {
+      event.preventDefault(); event.stopImmediatePropagation();
+    }
+  }, true);
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[href]');
+    if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || link.hasAttribute('download') || link.matches('.safe-browser-download-save, .audit-export')) return;
+    if (link.target && link.target !== '_self') return;
+    const url = new URL(link.href, location.href);
+    if (url.origin !== location.origin || !['http:', 'https:'].includes(url.protocol)) return;
+    if (url.pathname === location.pathname && url.search === location.search && url.hash) return;
+    reset();
+    window.nightfeedBusy(link, true, link.classList.contains('safe-link') ? 'Opening…' : '');
+    // Later delegated handlers can cancel navigation (for example, unsaved edits).
+    setTimeout(() => { if (event.defaultPrevented) window.nightfeedBusy(link, false); }, 0);
+  });
+  document.addEventListener('submit', event => {
+    if (pending.has(event.submitter)) { event.preventDefault(); event.stopImmediatePropagation(); }
+  }, true);
+  document.addEventListener('submit', event => {
+    const form = event.target;
+    // AJAX forms manage their own completion and error state.
+    if (event.defaultPrevented || form.matches('[data-loading-form]') || form.method === 'dialog' || (form.target && form.target !== '_self')) return;
+    const button = event.submitter;
+    if (button) {
+      window.nightfeedBusy(button, true, button.dataset.loadingLabel || 'Working…');
+      setTimeout(() => { if (event.defaultPrevented) window.nightfeedBusy(button, false); }, 0);
+    }
+    // Keep named submitters enabled so the browser includes their values.
+  });
+})();

@@ -128,6 +128,8 @@ with TemporaryDirectory(dir='.test-preview') as temp:
    page.get_by_label('Password',exact=True).fill('browser fixture passphrase')
    page.get_by_role('button',name='Sign in',exact=True).click()
    page.wait_for_url(address+'/feeds')
+   # Let the initial passive check finish before changing expiry in the fixture.
+   page.wait_for_timeout(100)
    with closing(connect(db)) as conn:
     conn.execute('UPDATE auth_sessions SET expires=?',(time.time()-1,));conn.commit()
    page.evaluate("window.dispatchEvent(new Event('focus'))")
@@ -136,6 +138,8 @@ with TemporaryDirectory(dir='.test-preview') as temp:
    assert 'Private UI fixture' not in page.content()
    page.get_by_label('Username').fill('owner');page.get_by_label('Password',exact=True).fill('browser fixture passphrase')
    page.get_by_role('button',name='Sign in',exact=True).click();page.wait_for_url(address+'/feeds')
+   # Let the initial passive check finish before changing expiry in the fixture.
+   page.wait_for_timeout(100)
    with closing(connect(db)) as conn:
     conn.execute('UPDATE auth_sessions SET expires=?',(time.time()+2,));conn.commit()
    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}))")
@@ -143,6 +147,8 @@ with TemporaryDirectory(dir='.test-preview') as temp:
    expect(page.get_by_role('heading',name='Sign in to Nightfeed')).to_be_visible()
    page.get_by_label('Username').fill('owner');page.get_by_label('Password',exact=True).fill('browser fixture passphrase')
    page.get_by_role('button',name='Sign in',exact=True).click();page.wait_for_url(address+'/feeds')
+   # Let the initial passive check finish before changing expiry in the fixture.
+   page.wait_for_timeout(100)
    page.locator('.account-menu > summary').click()
    page.get_by_role('button',name='Log out').click()
    page.wait_for_url('**/auth/login?sso=off')

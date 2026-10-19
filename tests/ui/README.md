@@ -20,8 +20,10 @@ python tests/ui/check_topic_seen.py
 python tests/ui/check_topic_features.py
 python tests/ui/check_item_links.py
 python tests/ui/check_notices.py
+python tests/ui/check_loading.py
 python tests/ui/check_push_notifications.py
 python tests/ui/check_auth.py
+python tests/ui/check_sso_resume.py
 python tests/ui/check_oauth.py
 python tests/ui/check_assistant.py
 python tests/ui/check_tasks.py

@@ -72,7 +72,7 @@
   });
   enable.addEventListener('click', async () => {
     if (ios && !installed()) { openGuide(); return; }
-    enable.disabled = true; showError('');
+    enable.disabled = true; window.nightfeedBusy(enable); showError('');
     try {
       // Invoke permission directly from this click, particularly for Safari.
       const permission = await Notification.requestPermission();
@@ -90,33 +90,33 @@
       token = result.device_token; localStorage.setItem('nightfeed.push.device', token);
       renewSubscription = false; fill(result.preferences); subscribed(true);
     } catch (failure) { showError(failure.message); }
-    finally { enable.disabled = false; }
+    finally { enable.disabled = false; window.nightfeedBusy(enable, false); }
   });
   form.addEventListener('submit', async event => {
     event.preventDefault(); showError('');
-    const button = form.querySelector('[type=submit]'); button.disabled = true;
+    const button = form.querySelector('[type=submit]'); button.disabled = true; window.nightfeedBusy(button);
     try {
       const prefs = read();
       if (!form.querySelector('[data-push-all-feeds]').checked && !prefs.feeds.length) throw new Error('Select at least one feed or choose All feeds.');
       await api('preferences', {device_token: token, preferences: prefs});
       window.nightfeedStatus(feedback, 'Notification preferences saved.');
     } catch (failure) { showError(failure.message); }
-    finally { button.disabled = false; }
+    finally { button.disabled = false; window.nightfeedBusy(button, false); }
   });
   test.addEventListener('click', async () => {
-    test.disabled = true; showError('');
+    test.disabled = true; window.nightfeedBusy(test); showError('');
     try { const result = await api('test', {device_token: token}); window.nightfeedStatus(feedback, result.message); }
     catch (failure) { showError(failure.message); }
-    finally { test.disabled = false; }
+    finally { test.disabled = false; window.nightfeedBusy(test, false); }
   });
   disable.addEventListener('click', async () => {
-    disable.disabled = true; showError('');
+    disable.disabled = true; window.nightfeedBusy(disable); showError('');
     try {
       await api('disable', {device_token: token});
       subscribed(false); disable.hidden = true;
       const sub = await registration?.pushManager.getSubscription(); if (sub) await sub.unsubscribe();
     } catch (failure) { showError(failure.message); }
-    finally { disable.disabled = false; }
+    finally { disable.disabled = false; window.nightfeedBusy(disable, false); }
   });
   (async () => {
     if (!window.isSecureContext) { state.textContent = 'Use Nightfeed’s HTTPS address to enable notifications.'; return; }

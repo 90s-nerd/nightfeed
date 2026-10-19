@@ -87,7 +87,7 @@ document.getElementById('downloader-name').addEventListener('input', event => {
 });
 document.querySelectorAll('[data-test-downloader]').forEach(button => button.addEventListener('click', async () => {
   const output = document.querySelector(`[data-test-result="${button.dataset.testDownloader}"]`);
-  button.disabled = true; window.nightfeedStatus(output, 'Connecting…', 'progress');
+  button.disabled = true; window.nightfeedBusy(button); window.nightfeedStatus(output, 'Connecting…', 'progress');
   try {
     const response = await fetch(`/settings/downloaders/${button.dataset.testDownloader}/test`, {method:'POST', headers:{'X-CSRF-Token':token}});
     const result = await response.json(); if (!response.ok) throw new Error(result.error);
@@ -95,10 +95,10 @@ document.querySelectorAll('[data-test-downloader]').forEach(button => button.add
     if (document.querySelector('input[name="id"]').value === button.dataset.testDownloader) {
       document.getElementById('downloader-categories').replaceChildren(...result.categories.map(c => {const option=document.createElement('option');option.value=c.name;return option;}));
     }
-  } catch(error) {window.nightfeedStatus(output, error.message, 'error');} finally {button.disabled=false;}
+  } catch(error) {window.nightfeedStatus(output, error.message, 'error');} finally {button.disabled=false; window.nightfeedBusy(button, false);}
 }));
 document.querySelectorAll('[data-check-job]').forEach(button => button.addEventListener('click', async () => {
-  button.disabled=true;
+  button.disabled=true; window.nightfeedBusy(button);
   try {
     const response=await fetch(`/api/downloader-jobs/${button.dataset.checkJob}/check`,{method:'POST',headers:{'X-CSRF-Token':token}});
     const result=await response.json(); if(!response.ok) throw new Error(result.error);
@@ -110,6 +110,6 @@ document.querySelectorAll('[data-check-job]').forEach(button => button.addEventL
     message.hidden=result.status==='added'; message.textContent=message.hidden ? '' : result.message;
     if(result.status!=='unknown') button.remove();
   }
-  catch(error){window.showRefreshToast(error.message,'error');} finally {button.disabled=false;}
+  catch(error){window.showRefreshToast(error.message,'error');} finally {button.disabled=false; window.nightfeedBusy(button, false);}
 }));
 </script>{% endblock %}

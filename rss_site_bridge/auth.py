@@ -594,10 +594,10 @@ def register(app):
             if authenticate_password(candidate, request.form.get('password', ''), cfg):
                 return sign_in(user, 'password', request.form.get('next'))
             error = 'Sign in failed. Check your credentials or try again after the lockout period.'
-        elif sso_ready and cfg['auto_login'] and not force_form and request.args.get('sso') != 'off':
+        elif sso_ready and cfg['auto_login'] and not force_form and not session.get('signed_out') and request.args.get('sso') != 'off':
             return redirect(url_for('auth.oidc_start', next=safe_next(request.args.get('next'))))
         return render_template('auth.html', mode='login', error=error, show_form=show_form, config=cfg,
-                               next=safe_next(request.args.get('next'))), 401 if error else 200
+                               next=safe_next(request.args.get('next')), signed_out=bool(session.get('signed_out'))), 401 if error else 200
 
     @bp.post('/auth/logout')
     def logout():
@@ -607,6 +607,9 @@ def register(app):
             audit(conn, 'logout', g.auth_user['id'])
             conn.commit()
         session.clear()
+        # Remember an intentional local logout so reopening the app does not
+        # immediately sign back in through a still-active provider session.
+        session['signed_out'] = True
         response = redirect(endpoint or url_for('auth.login', sso='off'))
         response.delete_cookie(COOKIE, secure=secure, httponly=True, samesite='Lax')
         # Storage clearing unregisters the service worker and loses the push-device

@@ -1,6 +1,7 @@
 (() => {
   const el=(tag,text='',cls='')=>{const n=document.createElement(tag);n.textContent=text;if(cls)n.className=cls;return n;};
   const api=async(path,body)=>{const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw Error(data.error||'Could not load tasks.');return data;};
+  const working=async(button,action)=>{window.nightfeedBusy(button);try{return await action();}finally{window.nightfeedBusy(button,false);}};
   const device=()=>{try{return localStorage.getItem('nightfeed.push.device')||'';}catch(_){return '';}};
   const caps=()=>api('/api/tasks/options',{device_token:device()});
   const date=(stamp,tz)=>stamp?new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short',timeZone:tz}).format(new Date(stamp*1000)):'Never';
@@ -58,10 +59,10 @@
       actions.append(cancel,save);
     }
     form.append(actions);
-    const lock=value=>form.querySelectorAll('button').forEach(b=>{b.disabled=value;});
-    preview.addEventListener('click',async()=>{error.textContent='';try{const value=config();lock(true);const result=await api('/api/tasks/preview',{config:value,task_id:task?.id,device_token:device()});sample.replaceChildren(el('p',`${result.total_count} existing matches · Preview only`));for(const item of result.items)sample.append(link(item.title,item.link));sample.append(el('small',result.note));}catch(e){error.textContent=e.message;}finally{lock(false);}});
+    const lock=(value,control)=>{form.querySelectorAll('button').forEach(b=>{b.disabled=value;});if(value)window.nightfeedBusy(control);else{window.nightfeedBusy(preview,false);window.nightfeedBusy(save,false);}};
+    preview.addEventListener('click',async()=>{error.textContent='';try{const value=config();lock(true,preview);const result=await api('/api/tasks/preview',{config:value,task_id:task?.id,device_token:device()});sample.replaceChildren(el('p',`${result.total_count} existing matches · Preview only`));for(const item of result.items)sample.append(link(item.title,item.link));sample.append(el('small',result.note));}catch(e){error.textContent=e.message;}finally{lock(false);}});
     cancel.addEventListener('click',()=>{if(data.onCancel){data.onCancel();return;}target.replaceChildren(el('p','Task setup cancelled. No task created.'));const restart=el('button','Reopen setup','task-link');restart.type='button';restart.addEventListener('click',()=>{target.replaceChildren();setup(target,data,onSaved,task);});target.append(restart);});
-    form.addEventListener('submit',async e=>{e.preventDefault();error.textContent='';try{const value=config();lock(true);const result=await api(task?'/api/tasks/'+task.id:'/api/tasks',{config:value,revision:task?.revision,conversation:data.conversation,setup_id:data.setup_id,device_token:device()});target.replaceChildren(el('p',result.message),link('View task ↗',result.url));onSaved?.(result);}catch(e){error.textContent=e.message;}finally{lock(false);}});
+    form.addEventListener('submit',async e=>{e.preventDefault();error.textContent='';try{const value=config();lock(true,save);const result=await api(task?'/api/tasks/'+task.id:'/api/tasks',{config:value,revision:task?.revision,conversation:data.conversation,setup_id:data.setup_id,device_token:device()});target.replaceChildren(el('p',result.message),link('View task ↗',result.url));onSaved?.(result);}catch(e){error.textContent=e.message;}finally{lock(false);}});
     return form;
   };
   const renderList=(target,tasks,onOpen,onChange)=>{
@@ -72,15 +73,15 @@
       if(task.expires)row.append(el('p',`${task.reason==='expired'?'Expired':'Watch until'} ${date(task.expires,cfg.timezone)} · ${cfg.timezone}`));
       if(task.reason==='expired'&&!task.match_count)row.append(el('p','No matches found before expiry.'));
       if(task.delivery_issues)row.append(el('p',`${task.delivery_issues} delivery issues · Open task for details`,'task-error'));
-      const actions=el('div','','task-actions'),open=el('button','Details');open.type='button';open.addEventListener('click',()=>onOpen(task));actions.append(open);
-      if(task.state==='active'||task.state==='paused'){const pause=el('button',task.state==='active'?'Pause':'Resume');pause.type='button';pause.addEventListener('click',async()=>{pause.disabled=true;try{await api('/api/tasks/'+task.id,{action:task.state==='active'?'pause':'resume'});await onChange();}catch(e){row.append(el('p',e.message,'task-error'));pause.disabled=false;}});actions.append(pause);}
+      const actions=el('div','','task-actions'),open=el('button','Details');open.type='button';open.addEventListener('click',()=>working(open,()=>onOpen(task)));actions.append(open);
+      if(task.state==='active'||task.state==='paused'){const pause=el('button',task.state==='active'?'Pause':'Resume');pause.type='button';pause.addEventListener('click',async()=>{pause.disabled=true;window.nightfeedBusy(pause);try{await api('/api/tasks/'+task.id,{action:task.state==='active'?'pause':'resume'});await onChange();}catch(e){row.append(el('p',e.message,'task-error'));pause.disabled=false;}finally{window.nightfeedBusy(pause,false);}});actions.append(pause);}
       row.append(actions);target.append(row);
     }
   };
   const mount=async(target)=>{
     let selected='all';target.replaceChildren();const tools=el('div','','task-actions'),create=el('button','New task');create.type='button';tools.append(create,link('View all tasks ↗','/tasks'));const filters=el('div','','task-filters'),content=el('div'),status=el('p','','task-error');if(!target.closest('[data-tasks-page]'))target.append(tools);target.append(filters,status,content);
     const refresh=async()=>{try{const result=await api('/api/tasks?state='+selected);renderList(content,result.tasks,open,refresh);}catch(e){status.textContent=e.message;}};
-    for(const state of ['all','active','paused','completed','archived']){const button=el('button',state[0].toUpperCase()+state.slice(1));button.type='button';button.setAttribute('aria-pressed',String(state===selected));button.addEventListener('click',()=>{selected=state;filters.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));refresh();});filters.append(button);}
+    for(const state of ['all','active','paused','completed','archived']){const button=el('button',state[0].toUpperCase()+state.slice(1));button.type='button';button.setAttribute('aria-pressed',String(state===selected));button.addEventListener('click',()=>{selected=state;filters.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));working(button,refresh);});filters.append(button);}
     const back=()=>{content.replaceChildren();refresh();};
     const open=async task=>{try{const detail=await api('/api/tasks/'+task.id),opt=await caps();content.replaceChildren();const backButton=el('button','← Tasks','task-link task-back');backButton.type='button';backButton.addEventListener('click',back);content.append(backButton);renderDetail(content,detail,opt,back);}catch(e){status.textContent=e.message;}};
     create.addEventListener('click',async()=>{try{content.replaceChildren();setup(content,{options:await caps(),onCancel:back},back);}catch(e){status.textContent=e.message;}});
@@ -89,7 +90,7 @@
   const renderDetail=(target,task,opt,back)=>{
     const detail=el('div','','task-detail');target.append(detail);renderList(detail,[task],()=>{},back);const actions=el('div','','task-actions'),edit=el('button','Edit task'),archive=el('button',task.state==='archived'||task.state==='completed'?'Reactivate':'Archive');edit.type=archive.type='button';actions.append(edit,archive);detail.append(actions);
     edit.addEventListener('click',()=>{target.replaceChildren();setup(target,{options:opt,onCancel:back},back,task);});
-    archive.addEventListener('click',async()=>{archive.disabled=true;try{await api('/api/tasks/'+task.id,{action:task.state==='archived'||task.state==='completed'?'resume':'archive'});back();}catch(e){detail.append(el('p',e.message,'task-error'));archive.disabled=false;}});
+    archive.addEventListener('click',async()=>{archive.disabled=true;window.nightfeedBusy(archive);try{await api('/api/tasks/'+task.id,{action:task.state==='archived'||task.state==='completed'?'resume':'archive'});back();}catch(e){detail.append(el('p',e.message,'task-error'));archive.disabled=false;}finally{window.nightfeedBusy(archive,false);}});
     const rule=el('section');rule.append(el('h3','Matching rule'),el('p','Any: '+task.config.terms.join(', ')));if(task.config.required_terms.length)rule.append(el('p','Also require: '+task.config.required_terms.join(', ')));if(task.config.exclude_terms.length)rule.append(el('p','Exclude: '+task.config.exclude_terms.join(', ')));rule.append(el('p',(task.config.fields==='title'?'Title only':'Title and summary')+' · '+(task.config.match_mode==='flexible'?'Punctuation and spacing variations':'Exact wording')));detail.append(rule);
     const matches=el('section');matches.append(el('h3','Recent matches'));const list=el('ul','','task-history');if(!task.matches.length)list.append(el('li','No matches yet.'));for(const match of task.matches){const item=el('li');item.append(link(match.title,`/notifications/${match.notification_id}`),el('small',date(match.created,task.config.timezone)));list.append(item);}matches.append(list);detail.append(matches);
     const delivery=el('section');delivery.append(el('h3','Delivery history'));const rows=el('ul','','task-history');if(!task.deliveries.length)rows.append(el('li','No deliveries yet.'));for(const d of task.deliveries)rows.append(el('li',`${d.channel==='nightfeed'?'Nightfeed':d.channel==='push'?'Push · Device '+d.device_id.slice(0,8):'Email'} · ${d.channel==='nightfeed'?'Available in app':d.state+' · '+d.attempts+' '+(d.attempts===1?'attempt':'attempts')}${d.last_error?' · '+d.last_error:''}`));delivery.append(rows);detail.append(delivery);
